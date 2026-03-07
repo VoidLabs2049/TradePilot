@@ -8,6 +8,42 @@ A股辅助决策看板系统，前后端分离架构。
 - 前端: React 18 + TypeScript + Vite + Ant Design
 - 开发环境: Nix Flakes
 
+## Python Development Rules
+
+### Environment
+
+1. Manage the dev environment with `flake.nix` only.
+2. Assume `nix develop` is active.
+3. Do not use `pip`, `uv`, or `poetry`.
+4. Run programs as modules: `python -m package.module`.
+
+### Library Preferences
+
+1. Use builtin **unittest**.
+   - Discover all tests: `python -m unittest discover`
+   - Run verbose/specific: `python -m unittest -v path/to/test_file.py`
+2. Use **pydantic v2** for schemas and domain models.
+3. Use **PyTorch** and **JAX** for ML models.
+4. Use **loguru** for logging.
+5. Use **click** for CLI/arg parsing.
+6. Prefer **pathlib** over `os.path`.
+7. Use explicit `StrEnum` / `IntEnum` for enums.
+
+### Code Style
+
+1. **Use absolute imports**; do not use relative imports (e.g., avoid `from .x import y`).
+2. Prefer specific imports (e.g., `from pydantic import BaseModel`).
+3. **Use type hints everywhere**:
+   - Annotate all function parameters and return types.
+   - Use builtin generics (`list`, `dict`, `tuple`) instead of `typing.List`, etc.
+   - For optionals, use `MyType | None` instead of `Optional[MyType]`.
+
+### Documentation
+
+1. **Write docstrings for all public modules, functions, classes, methods, and public-facing APIs**. PEP 8 and PEP 257 recommend docstrings for all public elements.
+2. In docstrings:
+   - **Do not include types in the `Args:` section**, type hints in signatures cover that.
+
 ## Quick Start
 
 ```bash
@@ -15,7 +51,7 @@ A股辅助决策看板系统，前后端分离架构。
 nix develop
 
 # 启动后端
-uvicorn tradepilot.main:app --reload
+python -m uvicorn tradepilot.main:app --reload
 
 # 启动前端 (另一个终端)
 cd webapp && yarn dev
