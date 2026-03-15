@@ -38,3 +38,28 @@ export const createPlan = (data: any) => fetch(`${API_BASE}/trade_plan/create`, 
 export const updatePlanStatus = (id: number, data: any) => fetch(`${API_BASE}/trade_plan/${id}/status`, { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data) }).then(r => r.json());
 export const monitorPlan = (id: number) => fetchJson<any>(`/trade_plan/${id}/monitor`);
 export const deletePlan = (id: number) => fetch(`${API_BASE}/trade_plan/${id}`, { method: "DELETE" }).then(r => r.json());
+
+// Summary
+export const getDailySummary = (params?: {
+  industry_top_n?: number;
+  industry_bottom_n?: number;
+  concept_top_n?: number;
+  concept_bottom_n?: number;
+}) => {
+  const qs = params ? "?" + new URLSearchParams(
+    Object.entries(params)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => [k, String(v)])
+  ).toString() : "";
+  return fetchJson<any>(`/summary/daily${qs}`);
+};
+export const get5mBrief = (sectors?: string, stocks?: string) => {
+  const params = new URLSearchParams();
+  if (sectors) params.set("sectors", sectors);
+  if (stocks) params.set("stocks", stocks);
+  const qs = params.toString();
+  return fetchJson<any>(`/summary/5m${qs ? "?" + qs : ""}`);
+};
+export const getTradingStatus = () => fetchJson<any>("/summary/trading-status");
+export const getWatchlist = () => fetchJson<any>("/summary/watchlist");
+export const updateWatchlist = (data: any) => fetch(`${API_BASE}/summary/watchlist`, { method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data) }).then(r => r.json());
