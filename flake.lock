@@ -20,22 +20,27 @@
         "type": "github"
       }
     },
-    "flake-utils": {
+    "nixos-pkgs": {
       "inputs": {
-        "systems": "systems"
+        "flake-parts": [
+          "flake-parts"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
       },
       "locked": {
-        "lastModified": 1731533236,
-        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
-        "owner": "numtide",
-        "repo": "flake-utils",
-        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
-        "type": "github"
+        "lastModified": 1773567887,
+        "narHash": "sha256-FqCXKoLNs91V1ATlUXKyYINjnwyHJpFSYQG8s5LFmjg=",
+        "ref": "refs/heads/master",
+        "rev": "fca91dd01155741aeb8aff19c5a126e1960f4faf",
+        "revCount": 5,
+        "type": "git",
+        "url": "ssh://git@github.com/liuhh666233/nixos-pkgs"
       },
       "original": {
-        "owner": "numtide",
-        "repo": "flake-utils",
-        "type": "github"
+        "type": "git",
+        "url": "ssh://git@github.com/liuhh666233/nixos-pkgs"
       }
     },
     "nixpkgs": {
@@ -57,23 +62,8 @@
     "root": {
       "inputs": {
         "flake-parts": "flake-parts",
-        "flake-utils": "flake-utils",
+        "nixos-pkgs": "nixos-pkgs",
         "nixpkgs": "nixpkgs"
-      }
-    },
-    "systems": {
-      "locked": {
-        "lastModified": 1681028828,
-        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
-        "owner": "nix-systems",
-        "repo": "default",
-        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nix-systems",
-        "repo": "default",
-        "type": "github"
       }
     }
   },

@@ -6,11 +6,10 @@ in {
   # Define custom overlays for development packages
   flake.overlays = {
     dev = inputs.nixpkgs.lib.composeManyExtensions [
+      inputs.nixos-pkgs.overlays.default
       (final: prev: {
         pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
           (python-final: python-prev: {
-            akracer = python-final.callPackage ./pkgs/python/akracer { };
-            akshare = python-final.callPackage ./pkgs/python/akshare { };
           })
         ];
       })
@@ -50,6 +49,7 @@ in {
           pudb
           rich
           akshare
+          tushare
 
           # Jupyter
           jupyterlab
