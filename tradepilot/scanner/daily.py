@@ -22,6 +22,16 @@ from tradepilot.data import get_provider
 from tradepilot.db import get_conn
 
 
+CORE_INSTRUMENTS: list[dict[str, str]] = [
+    {"code": "000001", "name": "上证指数", "kind": "index"},
+    {"code": "399001", "name": "深证成指", "kind": "index"},
+    {"code": "399006", "name": "创业板指", "kind": "index"},
+    {"code": "000688", "name": "科创50", "kind": "index"},
+    {"code": "510300", "name": "沪深300ETF", "kind": "stock"},
+    {"code": "510500", "name": "中证500ETF", "kind": "stock"},
+]
+
+
 class StockAdvice(BaseModel):
     stock_code: str
     stock_name: str
@@ -49,6 +59,7 @@ class DailyScanResult(BaseModel):
     market_overview: dict
     watchlist_advice: list[StockAdvice]
     position_advice: list[StockAdvice]
+    core_instrument_advice: list[StockAdvice]
     rotation_suggestions: list[dict]
     alerts: list[ScanAlert]
 
@@ -66,20 +77,26 @@ class DailyScanner:
         watchlist = self._load_watchlist()
         positions = self._load_positions()
         position_codes = {position["stock_code"] for position in positions}
+        core_codes = {item["code"] for item in CORE_INSTRUMENTS}
 
         watchlist_advice = [
             self._scan_watch_stock(stock, sentiment, sector_result)
             for stock in watchlist
-            if stock["code"] not in position_codes
+            if stock["code"] not in position_codes and stock["code"] not in core_codes
         ]
         position_advice = [
             self._scan_position(position, sentiment, sector_result)
             for position in positions
         ]
+        core_instrument_advice = [
+            self._scan_core_instrument(item, sentiment, sector_result)
+            for item in CORE_INSTRUMENTS
+        ]
         rotation_suggestions = sector_result.get("switch_suggestions", [])[:5]
         alerts = self._build_alerts(
             watchlist_advice=watchlist_advice,
             position_advice=position_advice,
+            core_instrument_advice=core_instrument_advice,
             rotation_suggestions=rotation_suggestions,
         )
 
@@ -89,9 +106,11 @@ class DailyScanner:
                 "sentiment": sentiment,
                 "high_positions": sector_result.get("high_positions", []),
                 "low_opportunities": sector_result.get("low_opportunities", []),
+                "market_stats": self._get_latest_market_stats(),
             },
             watchlist_advice=watchlist_advice,
             position_advice=position_advice,
+            core_instrument_advice=core_instrument_advice,
             rotation_suggestions=rotation_suggestions,
             alerts=alerts,
         )
@@ -137,6 +156,21 @@ class DailyScanner:
         )
         rows = conn.execute(query).fetchdf()
         return rows.to_dict(orient="records")
+
+    def create_system_alert(self, title: str, message: str, urgency: str = "high") -> None:
+        conn = get_conn()
+        conn.execute(
+            """
+            INSERT INTO alerts (id, alert_type, urgency, title, message)
+            VALUES (?, 'system', ?, ?, ?)
+            """,
+            [
+                self._next_id(1, namespace="system_alerts"),
+                urgency,
+                title,
+                message,
+            ],
+        )
 
     def mark_alert_read(self, alert_id: int) -> None:
         conn = get_conn()
@@ -261,6 +295,38 @@ class DailyScanner:
             ],
         )
 
+    def _scan_core_instrument(
+        self,
+        instrument: dict[str, str],
+        market_sentiment: dict,
+        sector_result: dict,
+    ) -> StockAdvice:
+        if instrument["kind"] == "index":
+            current_price = self._provider.get_index_daily(
+                instrument["code"], "2024-01-01", "2025-12-31"
+            )["close"].iloc[-1]
+            score = market_sentiment.get("score", 50)
+            action = "关注" if score >= 60 else "观望"
+            urgency = "关注" if score >= 60 else "无需操作"
+            reasons = [f"市场情绪{market_sentiment.get('label', '中性')}({score:.0f})"]
+            return StockAdvice(
+                stock_code=instrument["code"],
+                stock_name=instrument["name"],
+                action=action,
+                urgency=urgency,
+                score=float(score),
+                reasons=reasons,
+                risk_alerts=[],
+                suggested_price=round(float(current_price), 2),
+                suggested_stop_loss=None,
+                suggested_take_profit=None,
+            )
+        return self._scan_watch_stock(
+            {"code": instrument["code"], "name": instrument["name"]},
+            market_sentiment,
+            sector_result,
+        )
+
     def _evaluate_stock(
         self,
         stock_code: str,
@@ -338,6 +404,7 @@ class DailyScanner:
         self,
         watchlist_advice: list[StockAdvice],
         position_advice: list[StockAdvice],
+        core_instrument_advice: list[StockAdvice],
         rotation_suggestions: list[dict],
     ) -> list[ScanAlert]:
         alerts: list[ScanAlert] = []
@@ -375,6 +442,18 @@ class DailyScanner:
                     )
                 )
 
+        for advice in core_instrument_advice:
+            if advice.urgency == "关注":
+                alerts.append(
+                    ScanAlert(
+                        alert_type="core_signal",
+                        urgency="low",
+                        stock_code=advice.stock_code,
+                        title=f"核心标的关注：{advice.stock_name}",
+                        message="；".join(advice.reasons[:2]),
+                    )
+                )
+
         for suggestion in rotation_suggestions[:3]:
             alerts.append(
                 ScanAlert(
@@ -390,7 +469,7 @@ class DailyScanner:
     def _persist_scan_results(self, result: DailyScanResult) -> None:
         conn = get_conn()
         conn.execute("DELETE FROM daily_scan_results WHERE scan_date = ?", [result.scan_date])
-        rows = result.watchlist_advice + result.position_advice
+        rows = result.watchlist_advice + result.position_advice + result.core_instrument_advice
         for index, advice in enumerate(rows, 1):
             conn.execute(
                 """
@@ -422,7 +501,10 @@ class DailyScanner:
             """
             DELETE FROM alerts
             WHERE DATE(created_at) = ?
-              AND alert_type IN ('stop_loss', 'take_profit', 'watchlist_opportunity', 'rotation')
+              AND (
+                    alert_type IN ('stop_loss', 'take_profit', 'watchlist_opportunity', 'rotation')
+                 OR alert_type = 'core_signal'
+              )
             """,
             [scan_date],
         )
@@ -444,8 +526,13 @@ class DailyScanner:
             )
 
     def _next_id(self, offset: int, namespace: str = "scan") -> int:
-        namespace_offset = 0 if namespace == "scan" else 1_000_000
-        return int(time.time() * 1000) + namespace_offset + offset
+        namespace_offsets = {
+            "scan": 0,
+            "alerts": 1_000_000,
+            "system_alerts": 2_000_000,
+        }
+        namespace_offset = namespace_offsets.get(namespace, 3_000_000)
+        return time.time_ns() + namespace_offset + offset
 
     def _loads_json_list(self, value: object) -> list:
         if value in (None, ""):
@@ -469,6 +556,18 @@ class DailyScanner:
             if len(compacted) >= 6:
                 break
         return compacted
+
+    def _get_latest_market_stats(self) -> list[dict]:
+        conn = get_conn()
+        rows = conn.execute(
+            """
+            SELECT trade_date, market_code, market_name, listed_count, total_mv, float_mv, amount, vol, pe, turnover_rate
+            FROM market_daily_stats
+            WHERE trade_date = (SELECT MAX(trade_date) FROM market_daily_stats)
+            ORDER BY market_code ASC
+            """
+        ).fetchdf()
+        return rows.to_dict(orient="records")
 
 
 def normalize_scan_date(scan_date: str | None) -> str | None:
