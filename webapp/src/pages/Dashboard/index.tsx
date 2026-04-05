@@ -13,6 +13,8 @@ import {
   getLatestScan,
   getAlerts,
   markAlertRead,
+  getSchedulerStatus,
+  getSchedulerHistory,
 } from "../../services/api";
 
 const INDICES = [
@@ -33,12 +35,19 @@ export default function Dashboard() {
   const [activePlans, setActivePlans] = useState<any[]>([]);
   const [scanData, setScanData] = useState<{scan_date: string | null; advice: any[]}>({scan_date: null, advice: []});
   const [alerts, setAlerts] = useState<any[]>([]);
+  const [schedulerStatus, setSchedulerStatus] = useState<any>(null);
+  const [schedulerHistory, setSchedulerHistory] = useState<any[]>([]);
   const [scanLoading, setScanLoading] = useState(false);
   const [readingAlertId, setReadingAlertId] = useState<number | null>(null);
 
   const refreshScanData = () => {
     getLatestScan().then(setScanData).catch(() => setScanData({ scan_date: null, advice: [] }));
     getAlerts().then(setAlerts).catch(() => setAlerts([]));
+  };
+
+  const refreshSchedulerData = () => {
+    getSchedulerStatus().then(setSchedulerStatus).catch(() => setSchedulerStatus(null));
+    getSchedulerHistory().then(setSchedulerHistory).catch(() => setSchedulerHistory([]));
   };
 
   // Load index summary cards
@@ -89,6 +98,7 @@ export default function Dashboard() {
     });
     getPlans("active").then(setActivePlans);
     refreshScanData();
+    refreshSchedulerData();
   }, []);
 
   const upColor = "#cf1322";
@@ -352,6 +362,24 @@ export default function Dashboard() {
           </Card>
         </Col>
         <Col span={10}>
+          <Card title="调度器状态" size="small" style={{ marginBottom: 12 }} extra={<Button size="small" onClick={refreshSchedulerData}>刷新</Button>}>
+            <div style={{ marginBottom: 8 }}>
+              <Tag color={schedulerStatus?.running ? "green" : "default"}>
+                {schedulerStatus?.running ? "运行中" : "未运行"}
+              </Tag>
+            </div>
+            {schedulerStatus?.jobs?.length ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
+                {schedulerStatus.jobs.map((job: any) => (
+                  <div key={job.id} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                    <span>{job.id}</span>
+                    <span style={{ color: "#666" }}>{job.next_run_time ? String(job.next_run_time).slice(5, 16).replace("T", " ") : "-"}</span>
+                  </div>
+                ))}
+              </div>
+            ) : <div style={{ color: "#999" }}>暂无调度任务</div>}
+          </Card>
+
           {/* Portfolio P&L */}
           <Card title="持仓盈亏" size="small" style={{ marginBottom: 12 }}>
             {positions.length > 0 ? (
@@ -397,7 +425,7 @@ export default function Dashboard() {
           </Card>
 
           {/* Active Trade Plans */}
-          <Card title="活跃交易计划" size="small">
+          <Card title="活跃交易计划" size="small" style={{ marginBottom: 12 }}>
             {activePlans.length > 0 ? (
               <Table
                 dataSource={activePlans}
@@ -427,6 +455,32 @@ export default function Dashboard() {
                 ]}
               />
             ) : <div style={{ color: "#999" }}>暂无活跃计划</div>}
+          </Card>
+
+          <Card title="最近调度历史" size="small">
+            {schedulerHistory.length > 0 ? (
+              <Table
+                dataSource={schedulerHistory}
+                rowKey="id"
+                size="small"
+                pagination={false}
+                columns={[
+                  { title: "任务", dataIndex: "job_name", width: 80 },
+                  {
+                    title: "状态",
+                    dataIndex: "status",
+                    width: 70,
+                    render: (v: string) => <Tag color={v === "success" ? "green" : v === "failed" ? "red" : "default"}>{v}</Tag>,
+                  },
+                  { title: "影响", dataIndex: "records_affected", width: 60 },
+                  {
+                    title: "时间",
+                    dataIndex: "started_at",
+                    render: (v: string) => <span style={{ fontSize: 12, color: "#666" }}>{String(v).slice(5, 16).replace("T", " ")}</span>,
+                  },
+                ]}
+              />
+            ) : <div style={{ color: "#999" }}>暂无运行历史</div>}
           </Card>
         </Col>
       </Row>

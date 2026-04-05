@@ -45,6 +45,10 @@ export const getLatestScan = () => fetchJson<{scan_date: string | null; advice: 
 export const getAlerts = (unreadOnly = false) => fetchJson<any[]>(`/briefing/alerts${unreadOnly ? "?unread_only=true" : ""}`);
 export const markAlertRead = (id: number) => fetch(`${API_BASE}/briefing/alerts/${id}/read`, { method: "POST" }).then(r => r.json());
 
+// Scheduler
+export const getSchedulerStatus = () => fetchJson<any>("/scheduler/status");
+export const getSchedulerHistory = (limit = 10) => fetchJson<any[]>(`/scheduler/history?limit=${limit}`);
+
 // Summary
 export const getDailySummary = (params?: {
   industry_top_n?: number;
