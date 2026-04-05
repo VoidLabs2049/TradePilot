@@ -48,8 +48,9 @@ in {
           pendulum
           pudb
           rich
-          akshare
-          tushare
+           akshare
+           tushare
+           apscheduler
 
           # Jupyter
           jupyterlab
