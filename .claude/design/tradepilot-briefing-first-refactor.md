@@ -298,6 +298,35 @@ TradePilot 输出的是：
 
 而不是给 Web 专用的展示 payload，也不是零散底层表。
 
+第一阶段直接通过现有 workflow API 提供，The-One 不直接读取底层表。
+
+#### Context Read API
+
+- `GET /api/workflow/context/latest?phase=pre_market`
+- `GET /api/workflow/context/latest?phase=post_market`
+
+其中：
+- `phase` 为必填 query parameter
+- 合法值固定为 `pre_market` / `post_market`
+- 返回值为 `WorkflowContextPayload | null`
+
+当前 contract 对齐 `tradepilot/api/workflow.py` 与 `tradepilot/workflow/models.py`，返回结构至少包含：
+
+- `schema_version`
+- `producer`
+- `producer_version`
+- `generated_at`
+- `workflow_run_id`
+- `workflow_date`
+- `phase`
+- `context`
+- `metadata`
+
+其中：
+- `workflow_run_id` 是本次 structured context 的唯一上游 run 标识
+- The-One 在回写 insight 时，必须把这个值作为 `source_run_id` 回传
+- `metadata` 用于提供标题、overview、日期解析、执行状态、step 数等补充信息
+
 建议分 phase 输出：
 
 #### Post-market Context
@@ -320,12 +349,67 @@ TradePilot 输出的是：
 - `action_frame_inputs`
 - `metadata`
 
+当前实现中，`context` 的 phase 语义进一步收敛为：
+
+#### Current Post-market Context Keys
+- `market_overview`
+- `sector_positioning`
+- `position_health`
+- `next_day_prep`
+- `watch_context`
+- `alerts`
+
+#### Current Pre-market Context Keys
+- `yesterday_recap`
+- `overnight_news`
+- `today_watchlist`
+- `action_frame`
+- `watch_context`
+- `alerts`
+- `carry_over`
+
 ### 2. The-One -> TradePilot
 The-One 输出的是：
 
 ## Structured Insight JSON
 
 而不是 markdown-only 的最终结果。
+
+第一阶段直接通过现有 write-back API 回写：
+
+#### Insight Write-back API
+
+- `PUT /api/workflow/insight`
+
+请求体为 `WorkflowInsightUpsertRequest`，至少包含：
+
+- `workflow_date`
+- `phase`
+- `producer`（默认应为 `the_one`）
+- `status`
+- `schema_version`
+- `producer_version`
+- `generated_at`
+- `source_run_id`
+- `source_context_schema_version`
+- `insight`
+- `error_message`（失败时可选）
+
+其中：
+- `source_run_id` 必须对应上一步 context read 返回的 `workflow_run_id`
+- `source_context_schema_version` 当前应对齐 `workflow-context.v1`
+- TradePilot 以 `(workflow_date, phase, producer)` 作为 upsert 语义的自然唯一键
+
+完成回写后，可通过以下接口读取最新状态：
+
+- `GET /api/workflow/insight/latest?phase=pre_market&producer=the_one`
+- `GET /api/workflow/insight/latest?phase=post_market&producer=the_one`
+
+该接口用于判断：
+- 当前 insight 是否已存在
+- `state` 是否为 `completed` / `failed` / `pending` / `stale`
+- `is_stale` 是否为 `true`
+- `latest_run_id` 是否已经落后于 The-One 回写时使用的 `source_run_id`
 
 建议包含：
 - `phase`
@@ -347,6 +431,21 @@ The-One 输出的是：
 - `version`
 
 markdown 如有需要，可以作为附加渲染产物，而不是主产物。
+
+### 3. Recommended Integration Sequence
+
+The-One 与 TradePilot 的建议交互顺序为：
+
+1. 调用 `GET /api/workflow/context/latest?phase=...` 拉取对应 phase 的最新 structured context
+2. 读取返回中的 `workflow_run_id` / `workflow_date` / `schema_version`
+3. 基于该 context 生成 The-One insight JSON
+4. 调用 `PUT /api/workflow/insight` 回写 insight，并显式传入 `source_run_id=workflow_run_id`
+5. 调用 `GET /api/workflow/insight/latest?phase=...&producer=the_one` 校验状态与 freshness
+
+该流程明确保证：
+- The-One 始终消费 API contract，而不是内部表结构
+- TradePilot 始终以 workflow run 为 context / insight 关联基准
+- stale 检测可以基于 `source_run_id` 与最新 workflow run 自动完成
 
 ## Storage Model
 
