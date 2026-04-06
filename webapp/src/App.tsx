@@ -1,29 +1,17 @@
-import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
+import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
 import { Layout, Menu } from "antd";
 import {
   DashboardOutlined,
-  LineChartOutlined,
-  AppstoreOutlined,
   FundOutlined,
-  FileTextOutlined,
-  StockOutlined,
 } from "@ant-design/icons";
-import MarketSummary from "./pages/MarketSummary";
 import Dashboard from "./pages/Dashboard";
-import StockAnalysis from "./pages/StockAnalysis";
-import SectorMap from "./pages/SectorMap";
 import Portfolio from "./pages/Portfolio";
-import TradePlan from "./pages/TradePlan";
 
 const { Sider, Content } = Layout;
 
 const menuItems = [
   { key: "/", icon: <DashboardOutlined />, label: <NavLink to="/">Daily Workflow</NavLink> },
-  { key: "/dashboard", icon: <StockOutlined />, label: <NavLink to="/dashboard">市场概览</NavLink> },
-  { key: "/analysis", icon: <LineChartOutlined />, label: <NavLink to="/analysis">个股分析</NavLink> },
-  { key: "/sectors", icon: <AppstoreOutlined />, label: <NavLink to="/sectors">行业地图</NavLink> },
   { key: "/portfolio", icon: <FundOutlined />, label: <NavLink to="/portfolio">持仓管理</NavLink> },
-  { key: "/plans", icon: <FileTextOutlined />, label: <NavLink to="/plans">交易计划</NavLink> },
 ];
 
 function App() {
@@ -39,11 +27,11 @@ function App() {
         <Content style={{ padding: 24 }}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/dashboard" element={<MarketSummary />} />
-            <Route path="/analysis" element={<StockAnalysis />} />
-            <Route path="/sectors" element={<SectorMap />} />
             <Route path="/portfolio" element={<Portfolio />} />
-            <Route path="/plans" element={<TradePlan />} />
+            <Route path="/dashboard" element={<Navigate to="/" replace />} />
+            <Route path="/analysis" element={<Navigate to="/" replace />} />
+            <Route path="/sectors" element={<Navigate to="/" replace />} />
+            <Route path="/plans" element={<Navigate to="/" replace />} />
           </Routes>
         </Content>
       </Layout>
