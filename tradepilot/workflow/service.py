@@ -7,9 +7,10 @@ import time
 from datetime import date, datetime
 from importlib import import_module
 
+import duckdb
+
 from loguru import logger
 
-from tradepilot.data import get_provider
 from tradepilot.db import get_conn
 from tradepilot.ingestion.models import NewsSyncRequest, SyncRequest
 from tradepilot.ingestion.service import IngestionService
@@ -64,7 +65,7 @@ class DailyWorkflowService:
                 date_resolution=date_resolution,
                 yesterday_recap=self._build_yesterday_recap(carry_over),
                 overnight_news={"summary": "非交易日未执行夜间信息同步", "highlights": []},
-                today_watchlist=self._build_today_watchlist(watch_context, alerts),
+                today_watchlist=self._build_today_watchlist(watch_context, alerts, carry_over),
                 action_frame=self._build_action_frame(carry_over, alerts),
                 watch_context=watch_context,
                 alerts=alerts[:5],
@@ -124,7 +125,7 @@ class DailyWorkflowService:
             date_resolution=date_resolution,
             yesterday_recap=self._build_yesterday_recap(carry_over),
             overnight_news=self._build_overnight_news(news_step_status, news_items),
-            today_watchlist=self._build_today_watchlist(watch_context, alerts),
+            today_watchlist=self._build_today_watchlist(watch_context, alerts, carry_over),
             action_frame=self._build_action_frame(carry_over, alerts),
             watch_context=watch_context,
             alerts=alerts[:8],
@@ -235,43 +236,43 @@ class DailyWorkflowService:
             )
         )
 
-        scan_payload: dict = {}
-        latest_scan: dict = {"scan_date": None, "advice": []}
         alerts = self._scanner.list_alerts(unread_only=False)[:10]
         try:
-            scan_result = self._scanner.run(scan_date=resolved_date)
-            latest_scan = self._scanner.get_latest_scan() or {"scan_date": None, "advice": []}
-            scan_payload = scan_result.model_dump()
-            scan_step_status = WorkflowStatus.SUCCESS.value
-            scan_records = len(scan_result.watchlist_advice) + len(scan_result.position_advice) + len(scan_result.core_instrument_advice)
-            scan_error = None
+            market_overview = self._build_market_overview(resolved_date, steps)
+            sector_positioning = self._build_sector_positioning(resolved_date, watch_context)
+            position_health = self._build_position_health(resolved_date, watch_context)
+            next_day_prep = self._build_next_day_prep(sector_positioning, position_health, market_overview)
+            briefing_step_status = WorkflowStatus.SUCCESS.value
+            briefing_records = len(position_health.get("tracked_items", [])) + len(sector_positioning.get("watch_sectors", []))
+            briefing_error = None
         except Exception as exc:
-            logger.exception("post-market workflow scan failed")
-            scan_step_status = WorkflowStatus.FAILED.value
-            scan_records = 0
-            scan_error = str(exc)
-            error_messages.append(scan_error)
+            logger.exception("post-market workflow briefing build failed")
+            market_overview = self._build_market_overview_fallback(resolved_date)
+            sector_positioning = {"market_leaders": [], "market_laggards": [], "watch_sectors": [], "observation_focus": []}
+            position_health = {"portfolio_health_summary": "盘后复盘生成失败。", "sector_health": [], "tracked_items": []}
+            next_day_prep = {"market_bias": "observe", "focus_sectors": [], "focus_items": [], "risk_notes": [], "tomorrow_checkpoints": []}
+            briefing_step_status = WorkflowStatus.FAILED.value
+            briefing_records = 0
+            briefing_error = str(exc)
+            error_messages.append(briefing_error)
         steps.append(
             WorkflowStepResult(
-                name="daily_scan",
-                status=scan_step_status,
-                records_affected=scan_records,
-                error_message=scan_error,
+                name="post_briefing_build",
+                status=briefing_step_status,
+                records_affected=briefing_records,
+                error_message=briefing_error,
             )
         )
 
         status = self._resolve_status(steps)
         overview = self._build_post_market_overview(
-            latest_scan,
-            steps,
+            market_overview,
+            sector_positioning,
+            position_health,
             requested_date,
             resolved_date,
             date_resolution,
         )
-        market_overview = self._build_market_overview(resolved_date, latest_scan, steps)
-        sector_positioning = self._build_sector_positioning(watch_context, latest_scan)
-        position_health = self._build_position_health(watch_context, latest_scan)
-        next_day_prep = self._build_next_day_prep(sector_positioning, position_health)
         summary = WorkflowSummary(
             title="盘后复盘",
             overview=overview,
@@ -285,15 +286,11 @@ class DailyWorkflowService:
             watch_context=watch_context,
             alerts=alerts[:8],
             metadata={
-                "data_sources": ["market_sync", "daily_scan", "alerts", "watchlist"],
+                "data_sources": ["market_sync", "workflow_market_snapshot", "alerts", "watchlist", "portfolio"],
                 "steps_completed": len([step for step in steps if step.status == WorkflowStatus.SUCCESS.value]),
                 "steps_total": len(steps),
             },
             watchlist=watchlist,
-            scan={
-                "latest": latest_scan,
-                "result": scan_payload,
-            },
             scheduler={
                 "steps_completed": len([step for step in steps if step.status == WorkflowStatus.SUCCESS.value]),
                 "steps_total": len(steps),
@@ -492,17 +489,34 @@ class DailyWorkflowService:
                 "carry_over_points": [],
             }
         market_overview = carry_over.get("market_overview", {})
+        breadth = market_overview.get("breadth", {})
+        limit_stats = market_overview.get("limit_stats", {})
+        style = market_overview.get("style", {})
+        summary_parts = []
+        if breadth.get("up_down_ratio") is not None:
+            summary_parts.append(f"涨跌比 {breadth.get('up_down_ratio')}")
+        if breadth.get("ratio_5d_avg") is not None:
+            summary_parts.append(f"5日均值 {breadth.get('ratio_5d_avg')}")
+        if limit_stats.get("limit_up_count") is not None or limit_stats.get("limit_down_count") is not None:
+            summary_parts.append(
+                f"涨停 {limit_stats.get('limit_up_count') or 0} / 跌停 {limit_stats.get('limit_down_count') or 0}"
+            )
+        if style.get("style_label"):
+            summary_parts.append(f"风格 {style.get('style_label')}")
+        summary_text = carry_over.get("overview") or market_overview.get("summary") or "已有上一交易日盘后结论。"
+        if summary_parts:
+            summary_text = f"{summary_text}；" + "；".join(summary_parts[:4])
         return {
-            "summary": carry_over.get("overview") or market_overview.get("summary") or "已有上一交易日盘后结论。",
+            "summary": summary_text,
             "regime": market_overview.get("regime", "unknown"),
             "key_metrics": {
-                "up_down_ratio": market_overview.get("breadth", {}).get("up_down_ratio"),
-                "ratio_5d_avg": market_overview.get("breadth", {}).get("ratio_5d_avg"),
-                "limit_up_count": market_overview.get("limit_stats", {}).get("limit_up_count"),
-                "limit_down_count": market_overview.get("limit_stats", {}).get("limit_down_count"),
-                "broken_board_count": market_overview.get("limit_stats", {}).get("broken_board_count"),
-                "max_consecutive_board": market_overview.get("limit_stats", {}).get("max_consecutive_board"),
-                "style_label": market_overview.get("style", {}).get("style_label"),
+                "up_down_ratio": breadth.get("up_down_ratio"),
+                "ratio_5d_avg": breadth.get("ratio_5d_avg"),
+                "limit_up_count": limit_stats.get("limit_up_count"),
+                "limit_down_count": limit_stats.get("limit_down_count"),
+                "broken_board_count": limit_stats.get("broken_board_count"),
+                "max_consecutive_board": limit_stats.get("max_consecutive_board"),
+                "style_label": style.get("style_label"),
             },
             "carry_over_points": carry_over.get("next_day_prep", {}).get("tomorrow_checkpoints", []),
         }
@@ -525,54 +539,104 @@ class DailyWorkflowService:
             "sector_mappings": [],
         }
 
-    def _build_today_watchlist(self, watch_context: dict, alerts: list[dict]) -> dict:
+    def _build_today_watchlist(self, watch_context: dict, alerts: list[dict], carry_over: dict) -> dict:
         watch_sectors = watch_context.get("watch_sectors", [])
         open_positions = watch_context.get("open_positions", [])
-        return {
-            "market_checkpoints": [
-                "开盘前30分钟涨跌比是否明显强于昨日",
-                "成交额节奏是否延续上一交易日风险偏好",
-                "市场对隔夜信息反应是强化还是钝化",
-            ],
-            "focus_sectors": [
+        next_day_prep = carry_over.get("next_day_prep", {}) if carry_over else {}
+        sector_positioning = carry_over.get("sector_positioning", {}) if carry_over else {}
+        position_health = carry_over.get("position_health", {}) if carry_over else {}
+        watch_sector_map = {
+            item.get("sector_name"): item for item in sector_positioning.get("watch_sectors", []) if item.get("sector_name")
+        }
+        tracked_item_map = {
+            item.get("code"): item for item in position_health.get("tracked_items", []) if item.get("code")
+        }
+        market_checkpoints = next_day_prep.get("tomorrow_checkpoints") or [
+            "开盘前30分钟涨跌比是否明显强于昨日",
+            "成交额节奏是否延续上一交易日风险偏好",
+            "市场对隔夜信息反应是强化还是钝化",
+        ]
+        focus_sectors = []
+        for sector in watch_sectors[:8]:
+            matched = watch_sector_map.get(sector, {})
+            focus_sectors.append(
                 {
                     "sector_name": sector,
-                    "role": "watch_sector",
-                    "trend_5d": "unknown",
-                    "consistency": None,
-                    "leader_stock": None,
-                    "today_observation": f"观察 {sector} 是否进入今日主线。",
+                    "role": matched.get("role", "watch_sector"),
+                    "trend_5d": matched.get("trend_5d", "unknown"),
+                    "consistency": matched.get("consistency"),
+                    "leader_stock": matched.get("leader_stock"),
+                    "today_observation": matched.get("observation_note") or f"观察 {sector} 是否进入今日主线。",
                 }
-                for sector in watch_sectors[:8]
-            ],
-            "position_watch": [
+            )
+        position_watch = []
+        for item in open_positions[:8]:
+            tracked = tracked_item_map.get(item.get("code"), {})
+            position_watch.append(
                 {
                     "code": item.get("code"),
                     "name": item.get("name") or item.get("code"),
-                    "role": "position",
+                    "role": tracked.get("role", "position"),
                     "cost_price": None,
-                    "today_observation": f"跟踪 {item.get('name') or item.get('code')} 的盘中强弱与量价配合。",
-                    "risk_note": None,
+                    "today_observation": tracked.get("observation_note") or f"跟踪 {item.get('name') or item.get('code')} 的盘中强弱与量价配合。",
+                    "risk_note": (tracked.get("risk_flags") or [None])[0],
                 }
-                for item in open_positions[:8]
-            ],
+            )
+        return {
+            "market_checkpoints": market_checkpoints,
+            "focus_sectors": focus_sectors,
+            "position_watch": position_watch,
             "latest_alerts": alerts[:5],
         }
 
     def _build_action_frame(self, carry_over: dict, alerts: list[dict]) -> dict:
         next_day_prep = carry_over.get("next_day_prep", {}) if carry_over else {}
         risk_notes = next_day_prep.get("risk_notes") or [item.get("title") for item in alerts[:3] if item.get("title")]
+        focus_directions = next_day_prep.get("focus_sectors", [])
+        notes = next_day_prep.get("tomorrow_checkpoints", [])
+        if not notes and focus_directions:
+            notes = [f"重点确认 {item} 是否获得开盘资金响应。" for item in focus_directions[:3]]
         return {
             "posture": next_day_prep.get("market_bias", "observe"),
-            "focus_directions": next_day_prep.get("focus_sectors", []),
+            "focus_directions": focus_directions,
             "risk_warnings": risk_notes,
-            "notes": next_day_prep.get("tomorrow_checkpoints", []),
+            "notes": notes,
         }
 
-    def _build_market_overview(self, workflow_date: str, latest_scan: dict, steps: list[WorkflowStepResult]) -> dict:
-        advice_count = len(latest_scan.get("advice", []))
+    def _build_market_overview(self, workflow_date: str, steps: list[WorkflowStepResult]) -> dict:
+        conn = get_conn()
+        indices = self._load_index_snapshots(conn, workflow_date)
+        breadth = self._load_market_breadth(conn, workflow_date)
+        market_stats = conn.execute(
+            """
+            SELECT market_code, market_name, listed_count, amount, pe, turnover_rate
+            FROM market_daily_stats
+            WHERE trade_date = ?
+            ORDER BY market_code ASC
+            """,
+            [workflow_date],
+        ).fetchdf().to_dict(orient="records")
+        limit_stats = self._build_limit_stats(breadth)
+        style = self._build_style_snapshot(indices)
+        regime, confidence = self._build_regime(indices, breadth)
+        completed_steps = len([step for step in steps if step.status == WorkflowStatus.SUCCESS.value])
+        summary = self._build_market_summary_text(workflow_date, regime, breadth, limit_stats)
         return {
-            "summary": f"{workflow_date} 盘后已完成 {len([step for step in steps if step.status == WorkflowStatus.SUCCESS.value])}/{len(steps)} 个步骤，生成 {advice_count} 条观察结果。",
+            "summary": summary,
+            "regime": regime,
+            "confidence": confidence,
+            "indices": indices,
+            "breadth": breadth,
+            "limit_stats": limit_stats,
+            "style": style,
+            "risk_proxies": self._build_risk_proxies(indices),
+            "market_stats": market_stats,
+            "key_takeaways": self._build_market_takeaways(workflow_date, regime, breadth, limit_stats, completed_steps, len(steps)),
+        }
+
+    def _build_market_overview_fallback(self, workflow_date: str) -> dict:
+        return {
+            "summary": f"{workflow_date} 盘后未能完整生成市场大势。",
             "regime": "neutral",
             "confidence": "low",
             "indices": [],
@@ -581,6 +645,8 @@ class DailyWorkflowService:
                 "down_count": None,
                 "up_down_ratio": None,
                 "ratio_5d_avg": None,
+                "up_count_5d_avg": None,
+                "down_count_5d_avg": None,
             },
             "limit_stats": {
                 "limit_up_count": None,
@@ -596,95 +662,448 @@ class DailyWorkflowService:
                 "relative_strength_5d": None,
             },
             "risk_proxies": [],
-            "key_takeaways": [
-                f"workflow 日期：{workflow_date}",
-                f"观察结果数量：{advice_count}",
-            ],
+            "market_stats": [],
+            "key_takeaways": ["需要检查市场数据同步或 briefing builder。"],
         }
 
-    def _build_sector_positioning(self, watch_context: dict, latest_scan: dict) -> dict:
-        leaders = []
-        for advice in latest_scan.get("advice", [])[:5]:
-            leaders.append(
+    def _load_index_snapshots(self, conn: duckdb.DuckDBPyConnection, workflow_date: str) -> list[dict]:
+        rows = conn.execute(
+            """
+            WITH current_day AS (
+                SELECT index_code, close, amount
+                FROM index_daily
+                WHERE date = ?
+                  AND index_code IN ('000001', '399001', '399006', '000688', '000016', '000300')
+            ),
+            previous_day AS (
+                SELECT current_day.index_code, previous.close AS prev_close
+                FROM current_day
+                LEFT JOIN LATERAL (
+                    SELECT close
+                    FROM index_daily
+                    WHERE index_code = current_day.index_code AND date < ?
+                    ORDER BY date DESC
+                    LIMIT 1
+                ) previous ON TRUE
+            )
+            SELECT current_day.index_code, current_day.close, current_day.amount, previous_day.prev_close
+            FROM current_day
+            LEFT JOIN previous_day ON current_day.index_code = previous_day.index_code
+            ORDER BY current_day.index_code ASC
+            """,
+            [workflow_date, workflow_date],
+        ).fetchdf().to_dict(orient="records")
+        snapshots: list[dict] = []
+        for row in rows:
+            close = row.get("close")
+            prev_close = row.get("prev_close")
+            pct_change = None
+            if close not in (None, 0) and prev_close not in (None, 0):
+                pct_change = round((float(close) - float(prev_close)) / float(prev_close) * 100, 2)
+            snapshots.append(
                 {
-                    "sector_name": advice.get("stock_name") or advice.get("stock_code"),
-                    "pct_change": None,
-                    "net_flow": None,
-                    "leader_stock": advice.get("stock_name") or advice.get("stock_code"),
+                    "code": row.get("index_code"),
+                    "name": self._index_name(row.get("index_code")),
+                    "close": close,
+                    "pct_change": pct_change,
+                    "amount": row.get("amount"),
                 }
             )
-        watch_sectors = [
-            {
-                "sector_name": sector,
-                "role": "watch_sector",
-                "trend_5d": "unknown",
-                "consistency": None,
-                "leader_stock": None,
-                "observation_note": f"观察 {sector} 是否强化为当日主线。",
-                "status": "unknown",
-            }
-            for sector in watch_context.get("watch_sectors", [])[:8]
-        ]
+        return snapshots
+
+    def _load_market_breadth(self, conn: duckdb.DuckDBPyConnection, workflow_date: str) -> dict:
+        today = self._load_breadth_for_date(conn, workflow_date)
+        history = conn.execute(
+            """
+            SELECT trade_date
+            FROM market_daily_stats
+            WHERE trade_date <= ?
+            GROUP BY trade_date
+            ORDER BY trade_date DESC
+            LIMIT 5
+            """,
+            [workflow_date],
+        ).fetchall()
+        ratio_values: list[float] = []
+        up_values: list[int] = []
+        down_values: list[int] = []
+        for row in history:
+            trade_date = str(row[0])
+            sample = self._load_breadth_for_date(conn, trade_date)
+            if sample["up_down_ratio"] is not None:
+                ratio_values.append(sample["up_down_ratio"])
+            if sample["up_count"] is not None:
+                up_values.append(sample["up_count"])
+            if sample["down_count"] is not None:
+                down_values.append(sample["down_count"])
+        today["ratio_5d_avg"] = round(sum(ratio_values) / len(ratio_values), 2) if ratio_values else None
+        today["up_count_5d_avg"] = round(sum(up_values) / len(up_values), 0) if up_values else None
+        today["down_count_5d_avg"] = round(sum(down_values) / len(down_values), 0) if down_values else None
+        return today
+
+    def _load_breadth_for_date(self, conn: duckdb.DuckDBPyConnection, workflow_date: str) -> dict:
+        rows = conn.execute(
+            """
+            WITH current_day AS (
+                SELECT stock_code, close
+                FROM stock_daily
+                WHERE date = ?
+            ),
+            previous_day AS (
+                SELECT current_day.stock_code, previous.close AS prev_close
+                FROM current_day
+                LEFT JOIN LATERAL (
+                    SELECT close
+                    FROM stock_daily
+                    WHERE stock_code = current_day.stock_code AND date < ?
+                    ORDER BY date DESC
+                    LIMIT 1
+                ) previous ON TRUE
+            )
+            SELECT current_day.close, previous_day.prev_close
+            FROM current_day
+            LEFT JOIN previous_day ON current_day.stock_code = previous_day.stock_code
+            """,
+            [workflow_date, workflow_date],
+        ).fetchall()
+        up_count = 0
+        down_count = 0
+        limit_up_count = 0
+        limit_down_count = 0
+        valid = 0
+        for close, prev_close in rows:
+            if close in (None, 0) or prev_close in (None, 0):
+                continue
+            change_pct = (float(close) - float(prev_close)) / float(prev_close) * 100
+            valid += 1
+            if change_pct > 0:
+                up_count += 1
+            elif change_pct < 0:
+                down_count += 1
+            if change_pct >= 9.9:
+                limit_up_count += 1
+            if change_pct <= -9.9:
+                limit_down_count += 1
         return {
-            "market_leaders": leaders,
-            "market_laggards": [],
-            "watch_sectors": watch_sectors,
+            "up_count": up_count if valid else None,
+            "down_count": down_count if valid else None,
+            "up_down_ratio": round(up_count / down_count, 2) if down_count else (float(up_count) if valid else None),
+            "limit_up_count": limit_up_count if valid else None,
+            "limit_down_count": limit_down_count if valid else None,
+        }
+
+    def _build_limit_stats(self, breadth: dict) -> dict:
+        limit_up_count = breadth.get("limit_up_count")
+        limit_down_count = breadth.get("limit_down_count")
+        return {
+            "limit_up_count": limit_up_count,
+            "limit_down_count": limit_down_count,
+            "broken_board_count": None,
+            "broken_board_rate": None,
+            "max_consecutive_board": None,
+        }
+
+    def _build_style_snapshot(self, indices: list[dict]) -> dict:
+        hs300_pct = next((item.get("pct_change") for item in indices if item.get("code") == "000300"), None)
+        cyb_pct = next((item.get("pct_change") for item in indices if item.get("code") == "399006"), None)
+        relative_strength = None
+        style_label = "unknown"
+        if hs300_pct is not None and cyb_pct is not None:
+            relative_strength = round(cyb_pct - hs300_pct, 2)
+            if relative_strength >= 1:
+                style_label = "small_cap"
+            elif relative_strength <= -1:
+                style_label = "large_cap"
+            else:
+                style_label = "balanced"
+        return {
+            "style_label": style_label,
+            "hs300_5d_pct": hs300_pct,
+            "zz1000_5d_pct": cyb_pct,
+            "relative_strength_5d": relative_strength,
+        }
+
+    def _build_regime(self, indices: list[dict], breadth: dict) -> tuple[str, str]:
+        hs300_pct = next((item.get("pct_change") for item in indices if item.get("code") == "000300"), 0.0) or 0.0
+        cyb_pct = next((item.get("pct_change") for item in indices if item.get("code") == "399006"), 0.0) or 0.0
+        up_count = breadth.get("up_count") or 0
+        down_count = breadth.get("down_count") or 0
+        limit_up_count = breadth.get("limit_up_count") or 0
+        limit_down_count = breadth.get("limit_down_count") or 0
+        total = up_count + down_count
+        breadth_component = ((up_count - down_count) / total * 100) if total else 0.0
+        index_component = ((hs300_pct + cyb_pct) / 2.0) * 20
+        limit_component = ((limit_up_count - limit_down_count) / total * 1000) if total else 0.0
+        score = index_component * 0.4 + breadth_component * 0.4 + limit_component * 0.2
+        if score >= 20:
+            return "risk_on", "medium"
+        if score <= -20:
+            return "risk_off", "medium"
+        return "neutral", "low"
+
+    def _build_market_summary_text(self, workflow_date: str, regime: str, breadth: dict, limit_stats: dict) -> str:
+        ratio = breadth.get("up_down_ratio")
+        limit_up = limit_stats.get("limit_up_count")
+        limit_down = limit_stats.get("limit_down_count")
+        return f"{workflow_date} 市场状态 {regime}；涨跌比 {ratio if ratio is not None else '-'}；涨停 {limit_up if limit_up is not None else '-'} 家，跌停 {limit_down if limit_down is not None else '-'} 家。"
+
+    def _build_risk_proxies(self, indices: list[dict]) -> list[dict]:
+        return [
+            {
+                "code": item.get("code"),
+                "name": item.get("name"),
+                "pct_change": item.get("pct_change"),
+                "note": "指数风险偏好代理",
+            }
+            for item in indices
+            if item.get("code") in {"000016", "000300", "399006"}
+        ]
+
+    def _build_market_takeaways(
+        self,
+        workflow_date: str,
+        regime: str,
+        breadth: dict,
+        limit_stats: dict,
+        completed_steps: int,
+        total_steps: int,
+    ) -> list[str]:
+        takeaways = [
+            f"workflow 日期：{workflow_date}",
+            f"市场状态：{regime}",
+            f"已完成步骤：{completed_steps}/{total_steps}",
+        ]
+        if breadth.get("up_down_ratio") is not None:
+            takeaways.append(f"涨跌比：{breadth['up_down_ratio']}")
+        if limit_stats.get("limit_up_count") is not None:
+            takeaways.append(f"涨停/跌停：{limit_stats['limit_up_count']}/{limit_stats.get('limit_down_count')}")
+        return takeaways[:5]
+
+    def _build_sector_positioning(self, workflow_date: str, watch_context: dict) -> dict:
+        conn = get_conn()
+        records = conn.execute(
+            """
+            SELECT sector, change_1d, change_5d
+            FROM sector_data
+            WHERE date = ?
+            ORDER BY change_1d DESC NULLS LAST
+            """,
+            [workflow_date],
+        ).fetchdf().to_dict(orient="records")
+
+        if not records:
+            logger.warning("sector positioning falls back to watchlist-only mode")
+
+        market_leaders = [
+            {
+                "sector_name": item.get("sector"),
+                "pct_change": item.get("change_1d"),
+                "net_flow": None,
+                "leader_stock": None,
+            }
+            for item in records[:5]
+        ]
+        market_laggards = [
+            {
+                "sector_name": item.get("sector"),
+                "pct_change": item.get("change_1d"),
+                "net_flow": None,
+                "leader_stock": None,
+            }
+            for item in records[-5:]
+        ] if records else []
+
+        watch_sector_records: list[dict] = []
+        for sector in watch_context.get("watch_sectors", [])[:8]:
+            matched = self._match_watch_sector(records, sector)
+            change_5d = matched.get("change_5d") if matched else None
+            consistency = self._build_sector_consistency(matched)
+            watch_sector_records.append(
+                {
+                    "sector_name": sector,
+                    "role": "watch_sector",
+                    "trend_5d": self._trend_from_change(change_5d),
+                    "consistency": consistency,
+                    "leader_stock": None,
+                    "observation_note": self._build_sector_observation_note(sector, matched),
+                    "status": self._build_sector_status(matched),
+                }
+            )
+        return {
+            "market_leaders": market_leaders,
+            "market_laggards": market_laggards,
+            "watch_sectors": watch_sector_records,
             "observation_focus": [
                 "优先确认当日主线是否与固定观察池重合",
                 "若主线不在观察池内，仅记录不立即扩展系统范围",
             ],
         }
 
-    def _build_position_health(self, watch_context: dict, latest_scan: dict) -> dict:
-        advice_map = {item.get("stock_code"): item for item in latest_scan.get("advice", [])}
+    def _match_watch_sector(self, records: list[dict], watch_name: str) -> dict | None:
+        watch_lower = watch_name.lower()
+        for item in records:
+            sector_name = str(item.get("sector") or "")
+            if sector_name == watch_name:
+                return item
+        for item in records:
+            sector_name = str(item.get("sector") or "")
+            sector_lower = sector_name.lower()
+            if watch_lower in sector_lower or sector_lower in watch_lower:
+                return item
+        return None
+
+    def _trend_from_change(self, change_5d: float | None) -> str:
+        if change_5d is None:
+            return "unknown"
+        if change_5d >= 2:
+            return "up"
+        if change_5d <= -2:
+            return "down"
+        return "range"
+
+    def _build_sector_consistency(self, matched: dict | None) -> int | None:
+        if matched is None:
+            return None
+        change_1d = matched.get("change_1d")
+        change_5d = matched.get("change_5d")
+        if change_1d is None or change_5d is None:
+            return None
+        score = 20
+        if change_1d > 0:
+            score += 40
+        if change_5d > 0:
+            score += 40
+        return score
+
+    def _build_sector_status(self, matched: dict | None) -> str:
+        if matched is None:
+            return "unknown"
+        change_1d = matched.get("change_1d")
+        change_5d = matched.get("change_5d")
+        if change_1d is None or change_5d is None:
+            return "unknown"
+        if change_1d > 1 and change_5d > 2:
+            return "strengthening"
+        if change_1d < -1 and change_5d < -2:
+            return "weakening"
+        return "stable"
+
+    def _build_sector_observation_note(self, sector: str, matched: dict | None) -> str:
+        if matched is None:
+            return f"{sector} 暂无已落库行业快照，先作为固定观察池保留。"
+        change_1d = matched.get("change_1d")
+        change_5d = matched.get("change_5d")
+        return f"{sector} 当日 {change_1d if change_1d is not None else '-'}%，5日 {change_5d if change_5d is not None else '-'}%，观察是否保持一致性。"
+
+    def _build_position_health(self, workflow_date: str, watch_context: dict) -> dict:
         tracked_items = []
         for item in watch_context.get("open_positions", []):
-            advice = advice_map.get(item.get("code"), {})
-            tracked_items.append(
-                {
-                    "subject_type": "position",
-                    "code": item.get("code"),
-                    "name": item.get("name") or item.get("code"),
-                    "role": "position",
-                    "pct_change": None,
-                    "turnover_rate": None,
-                    "volume_ratio": None,
-                    "state": self._map_advice_to_state(advice),
-                    "observation_note": self._build_observation_note(item, advice),
-                    "risk_flags": advice.get("risk_alerts", []),
-                }
-            )
+            tracked_items.append(self._build_tracked_item(workflow_date, item, "position"))
         for item in watch_context.get("watch_stocks", [])[:5]:
-            advice = advice_map.get(item.get("code"), {})
-            tracked_items.append(
-                {
-                    "subject_type": "watch_stock",
-                    "code": item.get("code"),
-                    "name": item.get("name") or item.get("code"),
-                    "role": "watch_stock",
-                    "pct_change": None,
-                    "turnover_rate": None,
-                    "volume_ratio": None,
-                    "state": self._map_advice_to_state(advice),
-                    "observation_note": self._build_observation_note(item, advice),
-                    "risk_flags": advice.get("risk_alerts", []),
-                }
-            )
+            tracked_items.append(self._build_tracked_item(workflow_date, item, "watch_stock"))
         return {
             "portfolio_health_summary": f"当前纳入 {len(tracked_items)} 个持仓/观察对象的健康度跟踪。",
             "sector_health": [],
             "tracked_items": tracked_items,
         }
 
-    def _build_next_day_prep(self, sector_positioning: dict, position_health: dict) -> dict:
+    def _build_tracked_item(self, workflow_date: str, item: dict, subject_type: str) -> dict:
+        code = item.get("code") or item.get("stock_code")
+        name = item.get("name") or item.get("stock_name") or code
+        snapshot = self._load_stock_snapshot(workflow_date, str(code)) if code else {}
+        pct_change = snapshot.get("pct_change")
+        turnover_rate = snapshot.get("turnover_rate")
+        volume_ratio = snapshot.get("volume_ratio")
+        state = self._state_from_snapshot(pct_change, volume_ratio)
+        return {
+            "subject_type": subject_type,
+            "code": code,
+            "name": name,
+            "role": subject_type,
+            "pct_change": pct_change,
+            "turnover_rate": turnover_rate,
+            "volume_ratio": volume_ratio,
+            "state": state,
+            "observation_note": self._observation_from_snapshot(name, pct_change, volume_ratio),
+            "risk_flags": [self._risk_flag_from_state(state)] if self._risk_flag_from_state(state) else [],
+        }
+
+    def _load_stock_snapshot(self, workflow_date: str, stock_code: str) -> dict:
+        conn = get_conn()
+        row = conn.execute(
+            """
+            SELECT close, turnover
+            FROM stock_daily
+            WHERE stock_code = ? AND date = ?
+            LIMIT 1
+            """,
+            [stock_code, workflow_date],
+        ).fetchone()
+        if row is None:
+            return {
+                "pct_change": None,
+                "turnover_rate": None,
+                "volume_ratio": None,
+            }
+        prev = conn.execute(
+            """
+            SELECT close
+            FROM stock_daily
+            WHERE stock_code = ? AND date < ?
+            ORDER BY date DESC
+            LIMIT 1
+            """,
+            [stock_code, workflow_date],
+        ).fetchone()
+        prev_close = prev[0] if prev else None
+        pct_change = None
+        if prev_close not in (None, 0) and row[0] is not None:
+            pct_change = round((float(row[0]) - float(prev_close)) / float(prev_close) * 100, 2)
+        return {
+            "pct_change": pct_change,
+            "turnover_rate": row[1],
+            "volume_ratio": None,
+        }
+
+    def _state_from_snapshot(self, pct_change: float | None, volume_ratio: float | None) -> str:
+        _ = volume_ratio
+        if pct_change is not None and pct_change >= 3:
+            return "breakout"
+        if pct_change is not None and pct_change <= -3:
+            return "breakdown"
+        if pct_change is not None:
+            return "watch"
+        return "neutral"
+
+    def _observation_from_snapshot(self, name: str, pct_change: float | None, volume_ratio: float | None) -> str:
+        _ = volume_ratio
+        if pct_change is None:
+            return f"继续观察 {name} 的强弱变化。"
+        if pct_change >= 3:
+            return f"{name} 当日明显走强，观察次日是否延续。"
+        if pct_change <= -3:
+            return f"{name} 当日明显走弱，优先关注风险演化。"
+        return f"{name} 当日波动有限，继续观察是否出现方向选择。"
+
+    def _risk_flag_from_state(self, state: str) -> str | None:
+        if state == "breakdown":
+            return "价格走弱"
+        if state == "breakout":
+            return "趋势强化"
+        return None
+
+    def _build_next_day_prep(self, sector_positioning: dict, position_health: dict, market_overview: dict) -> dict:
         watch_sector_names = [item.get("sector_name") for item in sector_positioning.get("watch_sectors", []) if item.get("sector_name")]
         risky_items = [
             item.get("name")
             for item in position_health.get("tracked_items", [])
             if item.get("state") == "breakdown"
         ]
+        bias = "observe"
+        if market_overview.get("regime") == "risk_on":
+            bias = "balanced"
         return {
-            "market_bias": "observe",
+            "market_bias": bias,
             "focus_sectors": watch_sector_names[:5],
             "focus_items": [item.get("name") for item in position_health.get("tracked_items", [])[:5] if item.get("name")],
             "risk_notes": [f"重点跟踪 {name} 的风险演化。" for name in risky_items[:3]],
@@ -694,21 +1113,14 @@ class DailyWorkflowService:
             ],
         }
 
-    def _map_advice_to_state(self, advice: dict) -> str:
-        action = advice.get("action")
-        if action in {"建仓", "关注"}:
-            return "breakout"
-        if action in {"减仓", "清仓"}:
-            return "breakdown"
-        if action in {"持有", "观望"}:
-            return "watch"
-        return "neutral"
-
-    def _build_observation_note(self, item: dict, advice: dict) -> str:
-        reasons = advice.get("reasons") or []
-        if isinstance(reasons, list) and reasons:
-            return "；".join(reasons[:2])
-        return f"继续观察 {item.get('name') or item.get('code')} 的强弱变化。"
+    def _index_name(self, index_code: str | None) -> str:
+        mapping = {
+            "000001": "上证指数",
+            "399001": "深证成指",
+            "399006": "创业板指",
+            "000688": "科创50",
+        }
+        return mapping.get(index_code or "", index_code or "未知指数")
 
     def _build_pre_market_overview(
         self,
@@ -731,18 +1143,20 @@ class DailyWorkflowService:
 
     def _build_post_market_overview(
         self,
-        latest_scan: dict,
-        steps: list[WorkflowStepResult],
+        market_overview: dict,
+        sector_positioning: dict,
+        position_health: dict,
         requested_date: str,
         resolved_date: str,
         date_resolution: str,
     ) -> str:
-        latest_date = latest_scan.get("scan_date") or "未生成扫描日期"
-        completed_steps = len([step for step in steps if step.status == WorkflowStatus.SUCCESS.value])
+        leaders = sector_positioning.get("market_leaders", [])
+        tracked_items = position_health.get("tracked_items", [])
         date_text = f"日期：{resolved_date}"
         if date_resolution == "fallback_previous_trading_day":
             date_text = f"请求日期 {requested_date} 为非交易日，已切换到上一个交易日 {resolved_date}"
-        return f"{date_text}；已完成 {completed_steps}/{len(steps)} 个步骤；最新扫描日期：{latest_date}"
+        regime_text = market_overview.get("summary") or "已生成盘后大势摘要"
+        return f"{date_text}；{regime_text}；主线方向 {len(leaders)} 个；纳入健康度跟踪对象 {len(tracked_items)} 个。"
 
     def _persist_run(
         self,
