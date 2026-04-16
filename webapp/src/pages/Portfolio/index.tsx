@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Card, Table, Tag, Button, Modal, Form, Input, InputNumber, DatePicker } from "antd";
+import { Card, Table, Tag, Button, Modal, Form, Input, InputNumber, DatePicker, message } from "antd";
 import { getPositions, addPosition, getTrades } from "../../services/api";
 
 export default function Portfolio() {
@@ -15,10 +15,16 @@ export default function Portfolio() {
   useEffect(load, []);
 
   const handleAdd = async (values: any) => {
-    await addPosition({ ...values, buy_date: values.buy_date?.format("YYYY-MM-DD") });
-    setModalOpen(false);
-    form.resetFields();
-    load();
+    try {
+      await addPosition({ ...values, buy_date: values.buy_date?.format("YYYY-MM-DD") });
+      message.success("持仓已新增");
+      setModalOpen(false);
+      form.resetFields();
+      load();
+    } catch (error) {
+      message.error("新增持仓失败，请检查后端日志");
+      throw error;
+    }
   };
 
   return (

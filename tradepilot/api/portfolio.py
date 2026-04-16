@@ -6,6 +6,13 @@ from tradepilot.db import get_conn
 router = APIRouter()
 
 
+def _next_id(table_name: str) -> int:
+    """Return the next integer id for small CRUD tables."""
+    conn = get_conn()
+    current = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table_name}").fetchone()
+    return int(current[0]) + 1 if current is not None else 1
+
+
 class PositionCreate(BaseModel):
     stock_code: str
     stock_name: str
@@ -35,8 +42,8 @@ def list_positions():
 def add_position(pos: PositionCreate):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO portfolio (stock_code, stock_name, buy_date, buy_price, quantity) VALUES (?, ?, ?, ?, ?)",
-        [pos.stock_code, pos.stock_name, pos.buy_date, pos.buy_price, pos.quantity],
+        "INSERT INTO portfolio (id, stock_code, stock_name, buy_date, buy_price, quantity) VALUES (?, ?, ?, ?, ?, ?)",
+        [_next_id("portfolio"), pos.stock_code, pos.stock_name, pos.buy_date, pos.buy_price, pos.quantity],
     )
     return {"status": "ok"}
 
@@ -59,7 +66,7 @@ def list_trades():
 def add_trade(trade: TradeCreate):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO trades (date, stock_code, stock_name, direction, price, quantity, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [trade.date, trade.stock_code, trade.stock_name, trade.direction, trade.price, trade.quantity, trade.reason],
+        "INSERT INTO trades (id, date, stock_code, stock_name, direction, price, quantity, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [_next_id("trades"), trade.date, trade.stock_code, trade.stock_name, trade.direction, trade.price, trade.quantity, trade.reason],
     )
     return {"status": "ok"}
