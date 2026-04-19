@@ -156,6 +156,7 @@ Stage A 应定义后续实现一定会依赖的最小公共模型。
 - `tradepilot.etl.models` 是新 ETL foundation 的独立契约
 - 它不复用当前 `tradepilot.ingestion.models` 中的 `RunStatus`、`TriggerMode`、`IngestionRun`
 - 两套模型在 Stage A 和 Stage B 中并存，直到后续迁移阶段再决定是否统一
+- 这种并存是有意设计：新 ETL 路径先独立演进，后续再评估是否替换旧数据获取路径
 
 ### 3. Dataset Registry Skeleton
 
@@ -195,12 +196,7 @@ Stage A 还应提供一个统一的路径构造器，例如：
 
 这两个函数在 Stage A 只负责路径规划，不负责真实写入。
 
-为避免后续路径 contract 漂移，`partition_parts` 应在 Stage A 就固定输入形态。建议采用以下二选一方案之一，并在实现中保持稳定：
-
-- `list[tuple[str, str | int]]`，保留显式顺序
-- `dict[str, str | int]`，但由路径构造器负责稳定排序输出
-
-如果 Stage A 需要创建目录，建议单独提供 `ensure_zone_roots()` 一类函数，而不是让 `build_*_path()` 同时承担副作用。
+`partition_parts` 的精确输入 contract、目录创建副作用边界、文件级命名规则都留到 Stage B 再收紧。Stage A 只需要把 zone 级和目录级边界说明清楚。
 
 ### 5. DuckDB Metadata And Reference Schema
 
@@ -396,11 +392,6 @@ Stage A 这里有两个收敛决策：
 - 根据 dataset 和 partition 构造目录
 - 为后续 raw batch manifest 提供标准路径格式
 
-建议将“路径规划”和“目录确保存在”拆成两个显式职责：
-
-- `build_*_path()` / `build_*_dir()` 只返回路径，不产生副作用
-- `ensure_zone_roots()` 负责创建 `raw`、`normalized`、`derived` 根目录
-
 建议路径规则：
 
 - daily datasets: `zone/<dataset_name>/year=YYYY/month=MM/`
@@ -433,13 +424,18 @@ Stage A 同样只定义协议。
 
 Stage A 的 service 不是正式 orchestrator，只是后续入口占位。
 
-建议只暴露最小入口签名，内部可以先抛出 `NotImplementedError` 或返回清晰占位结果：
+建议暴露占位级方法签名，内部可以先抛出 `NotImplementedError` 或返回清晰占位结果：
 
 - `run_dataset_sync(dataset_name, request)`
 
-`run_multi_dataset_sync()`、`run_bootstrap()`、查询类接口先不在 Stage A 固化，避免在还没有首批 dataset 消费者之前过早锁死 orchestrator API。
+如果团队希望提前占位，也可以保留更宽的接口，例如：
 
-关键点是先固定最小入口，而不是提前定义完整应用服务表面。
+- `run_multi_dataset_sync(dataset_names, request)`
+- `run_bootstrap(profile_name)`
+- `list_runs(dataset_name=None)`
+- `list_validation_results(dataset_name=None, run_id=None)`
+
+这些接口在 Stage A 仍然只是规划占位，不代表 orchestrator API 已经定稿。精确 service contract 留到 Stage B 再根据首批 dataset 的真实消费者收敛。
 
 ### `tradepilot/etl/sources/base.py`
 
@@ -536,6 +532,7 @@ Stage A 建议在 `tradepilot/config.py` 增加通用路径常量，但不要删
 - 新增通用 `LAKEHOUSE_*` 路径常量
 - 未来新的 ETL datasets 统一使用 `LAKEHOUSE_*`
 - 现有 ETF 专属模块是否迁移，放到后续阶段决策
+- 当前目标不是兼容旧路径，而是先让新路径作为独立数据体系落地
 
 ## Migration Boundary With Existing Code
 
@@ -561,6 +558,7 @@ Stage A 建议在 `tradepilot/config.py` 增加通用路径常量，但不要删
 - 旧路径继续写 `ingestion_runs`、`trading_calendar` 等 legacy 表
 - 新路径未来写 `etl_*` 和 `canonical_*` 表
 - 两套路径在迁移完成前不要求共用同一套运行枚举与 service 接口
+- 新路径的数据获取和存储边界先独立演进，不要求复用旧 provider 或旧同步实现
 
 ## Testing Strategy
 
@@ -589,8 +587,8 @@ Stage A 需要的测试集中在结构与契约层，而不是数据正确性层
 
 ### 3. Storage Tests
 
-- 能创建 lakehouse zone 根目录
-- 分区路径构造规则稳定
+- zone 根目录和目录层级约定稳定
+- 路径规划函数能返回符合约定的路径
 - `dataset_name` 中的点号保持为目录名一部分或有明确转换规则
 
 这里建议直接保留点号，例如 `market.etf_daily/`，避免 Stage A 过早引入额外命名映射。
@@ -654,7 +652,7 @@ Stage A 完成的验收标准应为：
 
 ### 2. `service.py` 是否直接写数据库
 
-当前结论：不做完整实现，只保留最小入口 contract。
+当前结论：不做完整实现，只保留占位 contract，具体 API 面留待 Stage B。
 
 ### 3. Raw batch 文件名规范是否包含 hash 和时间戳
 
@@ -663,6 +661,10 @@ Stage A 完成的验收标准应为：
 ### 4. Canonical schema 是否使用统一 schema descriptor
 
 当前结论：Stage A 只保留 schema name 或 descriptor 占位。
+
+### 5. Storage path helper 的精确输入输出 contract
+
+当前结论：Stage A 只定义 zone 和目录层级边界，精确 partition 输入形态与副作用边界放到 Stage B 决定。
 
 ## Final Judgment
 
