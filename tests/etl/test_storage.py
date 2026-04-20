@@ -34,8 +34,8 @@ class StoragePathTests(unittest.TestCase):
 
         self.assertEqual(path, Path("/tmp/lakehouse/normalized/market.etf_daily"))
 
-    def test_build_partition_path_supports_ordered_mapping_parts(self) -> None:
-        """Build stable partition paths from key-value parts."""
+    def test_build_partition_path_sorts_mapping_parts(self) -> None:
+        """Build stable partition paths from mapping key-value parts."""
 
         path = build_partition_path(
             dataset_name="market.etf_daily",
@@ -46,8 +46,18 @@ class StoragePathTests(unittest.TestCase):
 
         self.assertEqual(
             path,
-            Path("/tmp/lakehouse/raw/market.etf_daily/year=2026/month=4"),
+            Path("/tmp/lakehouse/raw/market.etf_daily/month=4/year=2026"),
         )
+
+    def test_build_zone_path_rejects_unsafe_dataset_name(self) -> None:
+        """Reject dataset names that would escape the lakehouse root."""
+
+        with self.assertRaisesRegex(ValueError, "single safe path component"):
+            build_zone_path(
+                dataset_name="../legacy",
+                zone=StorageZone.NORMALIZED,
+                lakehouse_root=Path("/tmp/lakehouse"),
+            )
 
 
 if __name__ == "__main__":

@@ -57,6 +57,18 @@ class ETLModelTests(unittest.TestCase):
         self.assertEqual(definition.validation_rule_names, [])
         self.assertFalse(definition.supports_incremental)
 
+    def test_dataset_definition_rejects_unsafe_dataset_name(self) -> None:
+        """Reject dataset names that are not safe path components."""
+
+        with self.assertRaises(ValidationError):
+            DatasetDefinition(
+                dataset_name="../legacy",
+                category=DatasetCategory.MARKET,
+                grain="daily",
+                primary_source="tushare",
+                storage_zone=StorageZone.RAW,
+            )
+
     def test_request_and_run_record_serialize_enums_as_values(self) -> None:
         """Keep model serialization readable for future metadata writes."""
 
