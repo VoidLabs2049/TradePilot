@@ -11,8 +11,14 @@ from pydantic import BaseModel, Field
 class NormalizationResult(BaseModel):
     """Canonical rows and lineage metadata produced by one normalizer."""
 
-    canonical_rows: list[dict[str, Any]] = Field(default_factory=list)
-    lineage_metadata: dict[str, Any] = Field(default_factory=dict)
+    canonical_rows: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Normalized records that conform to the dataset canonical schema.",
+    )
+    lineage_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Source, transformation, and provenance details for the normalized rows.",
+    )
 
 
 class BaseNormalizer(ABC):
