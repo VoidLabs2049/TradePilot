@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import PurePath
-
 from pydantic import BaseModel, Field, field_validator
 
 from tradepilot.etl.models import DatasetCategory, StorageZone
+from tradepilot.etl.path_safety import validate_safe_path_component
 
 
 class DatasetDefinition(BaseModel):
@@ -79,11 +78,4 @@ class DatasetDefinition(BaseModel):
     def _validate_dataset_name(cls, value: str) -> str:
         """Reject dataset names that are not safe path components."""
 
-        path = PurePath(value)
-        if (
-            path.is_absolute()
-            or any(part in {"", ".", ".."} for part in path.parts)
-            or len(path.parts) != 1
-        ):
-            raise ValueError("dataset_name must be a single safe path component")
-        return value
+        return validate_safe_path_component(value, "dataset_name")

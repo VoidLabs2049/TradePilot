@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from pathlib import Path, PurePath
+from pathlib import Path
 
 from tradepilot.config import (
     LAKEHOUSE_DERIVED_ROOT,
@@ -11,6 +11,7 @@ from tradepilot.config import (
     LAKEHOUSE_RAW_ROOT,
 )
 from tradepilot.etl.models import StorageZone
+from tradepilot.etl.path_safety import validate_safe_path_component
 
 PartitionValue = str | int
 PartitionParts = Mapping[str, PartitionValue] | Sequence[tuple[str, PartitionValue]]
@@ -49,7 +50,9 @@ def build_partition_path(
         dataset_name=dataset_name, zone=zone, lakehouse_root=lakehouse_root
     )
     for key, value in _normalize_partition_parts(partition_parts):
-        path = path / f"{key}={value}"
+        partition_key = _validate_partition_key(key)
+        partition_value = _validate_partition_value(value)
+        path = path / f"{partition_key}={partition_value}"
     return path
 
 
@@ -82,11 +85,16 @@ def _normalize_partition_parts(
 def _validate_dataset_name(dataset_name: str) -> str:
     """Reject dataset names that are not safe path components."""
 
-    path = PurePath(dataset_name)
-    if (
-        path.is_absolute()
-        or any(part in {"", ".", ".."} for part in path.parts)
-        or len(path.parts) != 1
-    ):
-        raise ValueError("dataset_name must be a single safe path component")
-    return dataset_name
+    return validate_safe_path_component(dataset_name, "dataset_name")
+
+
+def _validate_partition_key(partition_key: str) -> str:
+    """Reject partition keys that are not safe path components."""
+
+    return validate_safe_path_component(partition_key, "partition key")
+
+
+def _validate_partition_value(partition_value: PartitionValue) -> str:
+    """Reject partition values that are not safe path components."""
+
+    return validate_safe_path_component(str(partition_value), "partition value")

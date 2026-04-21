@@ -63,6 +63,28 @@ class StoragePathTests(unittest.TestCase):
                 lakehouse_root=Path("/tmp/lakehouse"),
             )
 
+    def test_build_partition_path_rejects_unsafe_partition_key(self) -> None:
+        """Reject partition keys that would create path-like segments."""
+
+        with self.assertRaisesRegex(ValueError, "partition key"):
+            build_partition_path(
+                dataset_name="market.etf_daily",
+                zone=StorageZone.RAW,
+                partition_parts={"../year": 2026},
+                lakehouse_root=Path("/tmp/lakehouse"),
+            )
+
+    def test_build_partition_path_rejects_unsafe_partition_value(self) -> None:
+        """Reject partition values that would create path-like segments."""
+
+        with self.assertRaisesRegex(ValueError, "partition value"):
+            build_partition_path(
+                dataset_name="market.etf_daily",
+                zone=StorageZone.RAW,
+                partition_parts={"year": "../2026"},
+                lakehouse_root=Path("/tmp/lakehouse"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
