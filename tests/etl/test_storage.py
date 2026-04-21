@@ -7,7 +7,11 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from tradepilot.etl.models import StorageZone
-from tradepilot.etl.storage import build_partition_path, build_zone_path, ensure_zone_roots
+from tradepilot.etl.storage import (
+    build_partition_path,
+    build_zone_path,
+    ensure_zone_roots,
+)
 
 
 class StoragePathTests(unittest.TestCase):

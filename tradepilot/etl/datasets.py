@@ -12,11 +12,21 @@ from tradepilot.etl.models import DatasetCategory, StorageZone
 class DatasetDefinition(BaseModel):
     """Metadata contract for one dataset in the ETL registry."""
 
-    dataset_name: str = Field(description="Stable registry key and safe path component for the dataset.")
-    category: DatasetCategory = Field(description="Business family used to group related datasets.")
-    grain: str = Field(description="Smallest logical observation level, such as daily stock bars.")
-    primary_source: str = Field(description="Default source adapter name used to fetch the dataset.")
-    storage_zone: StorageZone = Field(description="Lakehouse zone where the dataset is primarily stored.")
+    dataset_name: str = Field(
+        description="Stable registry key and safe path component for the dataset."
+    )
+    category: DatasetCategory = Field(
+        description="Business family used to group related datasets."
+    )
+    grain: str = Field(
+        description="Smallest logical observation level, such as daily stock bars."
+    )
+    primary_source: str = Field(
+        description="Default source adapter name used to fetch the dataset."
+    )
+    storage_zone: StorageZone = Field(
+        description="Lakehouse zone where the dataset is primarily stored."
+    )
     fallback_sources: list[str] = Field(
         default_factory=list,
         description="Ordered fallback source adapter names for degraded fetching.",
@@ -70,6 +80,10 @@ class DatasetDefinition(BaseModel):
         """Reject dataset names that are not safe path components."""
 
         path = PurePath(value)
-        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts) or len(path.parts) != 1:
+        if (
+            path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or len(path.parts) != 1
+        ):
             raise ValueError("dataset_name must be a single safe path component")
         return value

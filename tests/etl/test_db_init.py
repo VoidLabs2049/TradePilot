@@ -41,10 +41,7 @@ class DuckDBInitTests(unittest.TestCase):
 
         conn = db.get_conn()
 
-        table_names = {
-            row[0]
-            for row in conn.execute("SHOW TABLES").fetchall()
-        }
+        table_names = {row[0] for row in conn.execute("SHOW TABLES").fetchall()}
         self.assertIn("etl_ingestion_runs", table_names)
         self.assertIn("etl_raw_batches", table_names)
         self.assertIn("etl_validation_results", table_names)

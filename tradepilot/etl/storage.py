@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePath
 
-from tradepilot.config import LAKEHOUSE_DERIVED_ROOT, LAKEHOUSE_NORMALIZED_ROOT, LAKEHOUSE_RAW_ROOT
+from tradepilot.config import (
+    LAKEHOUSE_DERIVED_ROOT,
+    LAKEHOUSE_NORMALIZED_ROOT,
+    LAKEHOUSE_RAW_ROOT,
+)
 from tradepilot.etl.models import StorageZone
 
 PartitionValue = str | int
@@ -28,7 +32,9 @@ def build_zone_path(
 ) -> Path:
     """Return the root directory for one dataset in one zone."""
 
-    return _zone_roots(lakehouse_root=lakehouse_root)[zone] / _validate_dataset_name(dataset_name)
+    return _zone_roots(lakehouse_root=lakehouse_root)[zone] / _validate_dataset_name(
+        dataset_name
+    )
 
 
 def build_partition_path(
@@ -39,7 +45,9 @@ def build_partition_path(
 ) -> Path:
     """Return one partition directory path for a dataset."""
 
-    path = build_zone_path(dataset_name=dataset_name, zone=zone, lakehouse_root=lakehouse_root)
+    path = build_zone_path(
+        dataset_name=dataset_name, zone=zone, lakehouse_root=lakehouse_root
+    )
     for key, value in _normalize_partition_parts(partition_parts):
         path = path / f"{key}={value}"
     return path
@@ -75,6 +83,10 @@ def _validate_dataset_name(dataset_name: str) -> str:
     """Reject dataset names that are not safe path components."""
 
     path = PurePath(dataset_name)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts) or len(path.parts) != 1:
+    if (
+        path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or len(path.parts) != 1
+    ):
         raise ValueError("dataset_name must be a single safe path component")
     return dataset_name
