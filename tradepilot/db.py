@@ -35,8 +35,7 @@ def get_conn() -> duckdb.DuckDBPyConnection:
 
 
 def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS stock_daily (
             stock_code VARCHAR, date DATE,
             open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
@@ -310,15 +309,13 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             base_note TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-    """
-    )
+    """)
     news_columns = {
         row[1] for row in conn.execute("PRAGMA table_info('news_items')").fetchall()
     }
     if "url" not in news_columns:
         conn.execute("ALTER TABLE news_items ADD COLUMN url VARCHAR")
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY,
             date DATE, stock_code VARCHAR, stock_name VARCHAR,
@@ -354,5 +351,4 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
             composite_score DOUBLE,
             signal_summary VARCHAR
         );
-    """
-    )
+    """)
