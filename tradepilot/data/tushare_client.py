@@ -113,22 +113,47 @@ class TushareClient:
     def get_index_catalog(self) -> pd.DataFrame:
         pro = self._pro
         if pro is None:
-            return _empty_with_columns("code", "name")
+            return _empty_with_columns("code", "name", "list_date", "delist_date")
         frames: list[pd.DataFrame] = []
         for market in ("SSE", "SZSE"):
-            frame = pro.index_basic(market=market, fields="ts_code,name")
+            frame = pro.index_basic(
+                market=market, fields="ts_code,name,list_date,delist_date"
+            )
             if frame.empty:
                 continue
             normalized = frame.rename(
                 columns={"ts_code": "code", "name": "name"}
             ).copy()
             normalized["code"] = normalized["code"].str.split(".").str[0]
-            frames.append(cast(pd.DataFrame, normalized.loc[:, ["code", "name"]]))
+            frames.append(
+                cast(
+                    pd.DataFrame,
+                    normalized.loc[:, ["code", "name", "list_date", "delist_date"]],
+                )
+            )
         if not frames:
-            return _empty_with_columns("code", "name")
+            return _empty_with_columns("code", "name", "list_date", "delist_date")
         return cast(
             pd.DataFrame,
             pd.concat(frames, ignore_index=True)
+            .drop_duplicates()
+            .reset_index(drop=True),
+        )
+
+    def get_etf_catalog(self) -> pd.DataFrame:
+        pro = self._pro
+        if pro is None:
+            return _empty_with_columns("code", "name", "list_date", "delist_date")
+        frame = pro.fund_basic(
+            market="E",
+            fields="ts_code,name,list_date,delist_date",
+        )
+        if frame.empty:
+            return _empty_with_columns("code", "name", "list_date", "delist_date")
+        normalized = frame.rename(columns={"ts_code": "code"}).copy()
+        return cast(
+            pd.DataFrame,
+            normalized.loc[:, ["code", "name", "list_date", "delist_date"]]
             .drop_duplicates()
             .reset_index(drop=True),
         )
@@ -375,6 +400,52 @@ class TushareClient:
         return normalized.loc[
             :,
             ["date", "index_code", "open", "high", "low", "close", "volume", "amount"],
+        ]
+
+    def get_etf_daily(
+        self, etf_code: str, start_date: str, end_date: str
+    ) -> pd.DataFrame:
+        pro = self._pro
+        if pro is None:
+            return _empty_with_columns(
+                "date", "open", "high", "low", "close", "volume", "amount", "etf_code"
+            )
+        daily = pro.fund_daily(
+            ts_code=_with_exchange_suffix(etf_code, kind="fund"),
+            start_date=_to_tushare_date(start_date),
+            end_date=_to_tushare_date(end_date),
+            fields="ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
+        )
+        if daily.empty:
+            return _empty_with_columns(
+                "date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "pre_close",
+                "change",
+                "pct_chg",
+                "volume",
+                "amount",
+                "etf_code",
+            )
+        normalized = _normalize_quotes(daily, "etf_code", etf_code)
+        return normalized.loc[
+            :,
+            [
+                "date",
+                "etf_code",
+                "open",
+                "high",
+                "low",
+                "close",
+                "pre_close",
+                "change",
+                "pct_chg",
+                "volume",
+                "amount",
+            ],
         ]
 
     def get_margin_data(self, start_date: str, end_date: str) -> pd.DataFrame:

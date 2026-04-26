@@ -1,9 +1,9 @@
 ---
 title: "Data Ingestion Stage B"
-status: draft
+status: ready_for_implementation
 mode: "design"
 created: 2026-04-25
-updated: 2026-04-25
+updated: 2026-04-26
 modules: ["backend"]
 ---
 
@@ -105,7 +105,7 @@ Stage B 可以复用旧 client 或 provider 中稳定的取数逻辑，但不能
 
 ## Deliverables
 
-Stage B 的交付物应收敛为以下 6 类。
+Stage B 的交付物应收敛为以下 7 类。
 
 ### 1. Executable Single-Dataset ETL Flow
 
@@ -336,7 +336,121 @@ Stage B 推荐收敛为：
 
 不要在 Stage B 里同时设计 append-only、merge-on-read、version-preserving 三套机制。对 market daily，先把 deterministic partition rewrite 做稳定。
 
-### 6. Initial Validation Engine
+### 6. Canonical Data Contract And Field Semantics
+
+Stage B 必须让实现者和审阅者都能回答两个问题：
+
+1. 每个 dataset 最终写出的 canonical 数据有哪些字段
+2. 每个字段为什么存在、如何解释、如何验证
+
+因此 Stage B 的 normalizer 不只是改列名，而是把 source-specific payload 收敛成以下 canonical contract。
+
+#### Common lineage fields
+
+Market daily normalized Parquet 必须包含以下 lineage 字段。Reference DuckDB 表可不重复保存 `raw_batch_id`，但必须能通过 `etl_ingestion_runs`、`etl_raw_batches`、`etl_validation_results` 回溯到原始批次。
+
+| Field | Type | Applies To | Meaning | Validation |
+|-------|------|------------|---------|------------|
+| `source_name` | string | all canonical outputs | 本次 canonical 数据来自哪个 source adapter，例如 `tushare` | 非空；必须存在于 `source_registry` |
+| `raw_batch_id` | bigint | normalized Parquet facts | 生成该行数据的 raw batch manifest ID | 非空；必须能在 `etl_raw_batches` 查到 |
+| `ingested_at` | timestamp | normalized Parquet facts | canonical 行写出时间，不代表业务日期 | 非空；不得早于 raw `fetched_at` 太多，允许同进程毫秒级差异 |
+| `quality_status` | string | normalized Parquet facts | 该行所在 batch 的质量状态，Stage B 初版为 `pass`、`pass_with_caveat`、`warning` | 不允许 `fail` 行进入 canonical；只允许枚举值 |
+| `updated_at` | timestamp | DuckDB reference tables | reference 表最后一次 upsert 时间 | 由 loader 写入；非业务字段，不参与业务 join |
+
+#### `reference.trading_calendar` canonical fields
+
+Canonical destination: DuckDB `canonical_trading_calendar`。
+
+业务键：`(exchange, trade_date)`。
+
+| Field | Type | Required | Meaning | Source Mapping | Validation |
+|-------|------|----------|---------|----------------|------------|
+| `exchange` | string | yes | 交易所代码。Stage B 至少支持 `SH`、`SZ` | Tushare `exchange` 或 adapter context | 必须在支持枚举内；不能和 instrument 后缀规则冲突 |
+| `trade_date` | date | yes | 日历日期，不一定是开市日 | Tushare `cal_date` | 非空；可解析为日期；同一 `exchange` 下不得重复 |
+| `is_open` | boolean | yes | 当日是否开市 | Tushare `is_open`，通常 `1/0` 转 bool | 必须是 bool；不能保留字符串或整数双态 |
+| `pretrade_date` | date/null | no | 前一个开市日。闭市日也可能指向最近开市日，取决于 source | Tushare `pretrade_date` | 若非空，必须早于 `trade_date`；开市日的 `pretrade_date` 应指向前一个开市日 |
+| `updated_at` | timestamp | yes | 本地 upsert 时间 | loader 写入 | 非空 |
+
+理解方式：
+
+- `trade_date` 是自然日期，不等于“有行情的日期”
+- `is_open = true` 才表示 market daily 应允许出现该日数据
+- market daily validator 不用自己猜节假日，必须引用这张表
+
+#### `reference.instruments` canonical fields
+
+Canonical destination: DuckDB `canonical_instruments`。
+
+业务键：`instrument_id`。
+
+| Field | Type | Required | Meaning | Source Mapping | Validation |
+|-------|------|----------|---------|----------------|------------|
+| `instrument_id` | string | yes | 全局统一证券代码，格式 `<six_digit_code>.<exchange>`，例如 `510300.SH` | source code 标准化后生成 | 非空；唯一；必须匹配 `^\d{6}\.(SH|SZ)$` |
+| `source_instrument_id` | string/null | no | source 原始代码，用于排查 provider 差异，不作为 join key | Tushare `ts_code` 或 raw code | 若存在，应能被 normalizer 映射到 `instrument_id` |
+| `instrument_name` | string | yes | 证券简称或指数名称 | source name 字段 | 非空；trim 后不能为空 |
+| `instrument_type` | string | yes | Stage B 只支持 `etf`、`index` | dataset/source endpoint 或 source 类型字段 | 必须属于枚举；market dataset 必须与类型匹配 |
+| `exchange` | string | yes | `SH` 或 `SZ` | `instrument_id` 后缀或 source exchange | 非空；必须等于 `instrument_id` 后缀 |
+| `list_date` | date/null | no | 上市日期或指数发布日期 | source list date 字段 | 若存在，不得晚于 `delist_date`；market data 不应早于该日期 |
+| `delist_date` | date/null | no | 退市、终止或停用日期 | source delist date 字段 | 若存在，必须晚于或等于 `list_date` |
+| `is_active` | boolean | yes | 当前是否可视为活跃 instrument | source 状态字段或缺省 true | 必须是 bool |
+| `source_name` | string | yes | 当前 reference snapshot 来源 | adapter 写入 | 非空；必须存在于 `source_registry` |
+| `updated_at` | timestamp | yes | 本地 upsert 时间 | loader 写入 | 非空 |
+
+理解方式：
+
+- 所有下游 join 都用 `instrument_id`
+- `source_instrument_id` 只用于审计和排错，不能成为 canonical 主键
+- `instrument_type` 是 Stage B 的 scope guard：ETF daily 不能写入 index instrument，index daily 不能写入 ETF instrument
+
+#### `market.etf_daily` and `market.index_daily` canonical fields
+
+Canonical destination:
+
+- `market.etf_daily`: `data/lakehouse/normalized/market.etf_daily/year=YYYY/month=MM/part-00000.parquet`
+- `market.index_daily`: `data/lakehouse/normalized/market.index_daily/year=YYYY/month=MM/part-00000.parquet`
+
+业务键：`(instrument_id, trade_date)`。
+
+| Field | Type | Required | Meaning | Source Mapping | Validation |
+|-------|------|----------|---------|----------------|------------|
+| `instrument_id` | string | yes | 统一证券代码，必须能 join 到 `canonical_instruments` | Tushare `ts_code` 标准化 | 非空；格式合法；必须存在于 instruments；类型与 dataset 匹配 |
+| `trade_date` | date | yes | 行情所属交易日 | Tushare `trade_date` | 非空；必须是 `canonical_trading_calendar.is_open = true` 的日期 |
+| `open` | double/null | no | 当日开盘价或点位 | source `open` | 若非空必须大于等于 0；有成交行情时通常应非空 |
+| `high` | double/null | no | 当日最高价或点位 | source `high` | 若 OHLC 全量存在，应满足 `high >= max(open, close, low)` |
+| `low` | double/null | no | 当日最低价或点位 | source `low` | 若 OHLC 全量存在，应满足 `low <= min(open, close, high)` |
+| `close` | double | yes | 当日收盘价或点位，是 Stage B 最小必需价格字段 | source `close` | 非空；大于等于 0 |
+| `pre_close` | double/null | no | 前一交易日收盘价或点位，用于收益 sanity check | source `pre_close` | 若非空必须大于等于 0 |
+| `change` | double/null | no | 绝对涨跌额。可由 source 提供，也可后续派生 | source `change` | 若 `pre_close` 和 `close` 存在，应与 `close - pre_close` 近似一致；不一致为 warning |
+| `pct_chg` | double/null | no | 涨跌幅百分比，不是小数收益率 | source `pct_chg` | 极端值 warning；若可重算，应与 `(close/pre_close - 1) * 100` 近似一致 |
+| `volume` | double/null | no | 成交量。Stage B 保留 source 单位，不在 normalizer 中强行换手 | Tushare `vol` 或 `volume` | 若非空必须大于等于 0 |
+| `amount` | double/null | no | 成交额。Stage B 保留 source 单位 | Tushare `amount` | 若非空必须大于等于 0 |
+| `source_name` | string | yes | 行情来源 | adapter 写入 | 非空；必须存在于 `source_registry` |
+| `raw_batch_id` | bigint | yes | 原始批次 ID | service 写入 | 必须能在 raw manifest 查到 |
+| `ingested_at` | timestamp | yes | canonical 写入时间 | service/normalizer 写入 | 非空 |
+| `quality_status` | string | yes | batch 校验后质量状态 | validator 汇总 | 不允许 `fail` |
+
+理解方式：
+
+- `close` 是 Stage B 的核心价格字段，后续收益、趋势、回撤都依赖它
+- `pct_chg` 若来自 source，只作为 sanity / convenience 字段；严肃收益计算应优先用 `close` 和 corporate-action-aware 规则，Stage B 不处理复权语义
+- `volume` 与 `amount` 在不同 source 中单位可能不同，Stage B 先保留 source 单位，并通过 `source_name` 和 raw batch 保持可追溯
+- `market.etf_daily` 和 `market.index_daily` 共用 schema，差异由 `instrument_type` 和 dataset name 约束
+
+#### Request context fields
+
+`IngestionRequest.context` 在 Stage B 只允许承载简单、可序列化的筛选参数。建议键名：
+
+| Context Key | Applies To | Meaning | Validation |
+|-------------|------------|---------|------------|
+| `exchange` | calendar / instruments | 单交易所筛选，例如 `SH`、`SZ` | 必须属于支持枚举 |
+| `exchanges` | calendar / instruments | 多交易所筛选 | 每项必须属于支持枚举 |
+| `instrument_ids` | market daily | 指定同步的 canonical instrument 列表 | 每项必须匹配 canonical code 格式 |
+| `instrument_type` | instruments / market daily | `etf` 或 `index` | 必须与 dataset definition 一致 |
+| `snapshot_date` | instruments | reference snapshot 日期 | 可解析为 date；不能晚于运行日期 |
+
+Stage B 不应允许 arbitrary provider 参数穿透到 source adapter。若需要新增 context 键，必须先在 dataset definition 或 adapter contract 中显式声明。
+
+### 7. Initial Validation Engine
 
 Stage B 必须把 validator 从协议推进到真实 gating 机制。
 
@@ -374,6 +488,266 @@ Stage B 必须把 validator 从协议推进到真实 gating 机制。
 - 极端收益做 warning 级 sanity check
 
 Stage B 不需要实现 cross-source agreement，也不需要通用 rule DSL。规则可以先是显式 Python 实现。
+
+## Data Validation Design
+
+本节把“怎么做数据验证”明确到可实现的规则级别。Stage B 的 validation 是 canonical gating，不是事后日志：只要出现 `fail`，本次 run 必须保留 raw batch，但不能写 canonical，也不能推进 watermark。
+
+### Validation Phases
+
+Stage B 每次 `run_dataset_sync()` 按以下顺序执行验证：
+
+1. `dependency_preflight`
+   - 在 source fetch 前运行
+   - 检查依赖 reference dataset 是否存在、是否覆盖请求窗口或 snapshot 语义
+   - 缺失时允许 service 自动补跑依赖
+2. `source_contract`
+   - 在 fetch 后、raw write 前后运行
+   - 检查 adapter 是否返回 `SourceFetchResult`、payload 是否为 `pandas.DataFrame`、`row_count` 是否与 DataFrame 长度一致
+3. `normalization_contract`
+   - 在 normalizer 后运行
+   - 检查 canonical 必需列是否存在、类型是否可写入目标存储
+4. `dataset_quality`
+   - 对 normalized rows 运行 dataset-specific 规则
+   - 产生 `ValidationResultRecord`
+5. `load_guard`
+   - 汇总 validation 结果
+   - 若存在 `fail`，阻断 canonical write 和 watermark
+   - 若只有 `warning` 或 `pass_with_caveat`，允许写入，但 `quality_status` 必须体现该状态
+
+### Validation Status Semantics
+
+| Status | Blocks Canonical Write | Blocks Watermark | Meaning |
+|--------|-------------------------|------------------|---------|
+| `pass` | no | no | 规则完全通过 |
+| `pass_with_caveat` | no | no | 规则通过，但存在需要记录的边界情况，例如空窗口 |
+| `warning` | no | no | 数据可用但需要关注，例如极端涨跌幅 |
+| `fail` | yes | yes | 数据违反 canonical contract，不能进入下游事实层 |
+| `validation_only` | n/a | n/a | 仅校验模式使用，Stage B 不作为默认同步状态 |
+| `defer` | yes | yes | 规则需要人工决策或外部条件，Stage B 应尽量少用 |
+
+### Validation Result Fields
+
+每条校验结果都写入 `etl_validation_results`，用于解释“哪个数据为什么通过或失败”。
+
+| Field | Meaning | How To Read |
+|-------|---------|-------------|
+| `validation_id` | validation result 主键 | 只用于定位记录 |
+| `run_id` | 所属 ETL run | join `etl_ingestion_runs` 查看本次同步上下文 |
+| `raw_batch_id` | 关联 raw batch | join `etl_raw_batches` 找到原始 Parquet |
+| `dataset_name` | 被校验 dataset | 区分 calendar / instruments / market facts |
+| `check_name` | 稳定规则名 | 例如 `market_daily.non_trading_day` |
+| `check_level` | 规则作用域 | 建议值：`dataset`、`partition`、`row`、`dependency`、`contract` |
+| `status` | 规则结果 | 决定是否阻断写入 |
+| `subject_key` | 问题对象 | 可填 `510300.SH|2026-04-24`、`SH|2026-04-24`、`year=2026/month=04` |
+| `metric_value` | 观察值 | 例如重复键数量、缺失数量、最大涨跌幅 |
+| `threshold_value` | 阈值 | 例如允许重复数为 `0`，极端涨跌 warning 阈值为 `20` |
+| `details_json` | 诊断详情 | 存放样例 key、缺失字段、source endpoint、自动补跑信息 |
+| `created_at` | 记录时间 | 审计用 |
+
+### Stable Check Names
+
+Stage B validator 应使用稳定 check name，避免测试、告警和人工排查依赖易变文本。
+
+#### Dependency and contract checks
+
+| Check Name | Level | Applies To | Fail Condition |
+|------------|-------|------------|----------------|
+| `dependency_preflight.snapshot_missing` | dependency | market datasets | `canonical_instruments` 为空或缺少请求 instrument |
+| `dependency_preflight.window_missing` | dependency | market datasets | calendar 不覆盖请求窗口 |
+| `source_contract.payload_type` | contract | all datasets | payload 不是 DataFrame |
+| `source_contract.row_count` | contract | all datasets | `row_count != len(payload)` |
+| `normalization_contract.required_columns` | contract | all datasets | canonical 必需列缺失 |
+| `normalization_contract.type_coercion` | contract | all datasets | 必需字段无法转换成目标类型 |
+
+#### `reference.trading_calendar` checks
+
+| Check Name | Level | Status On Violation | What It Protects |
+|------------|-------|---------------------|------------------|
+| `calendar.duplicate_key` | dataset | `fail` | 防止同一 `(exchange, trade_date)` 多行导致 market validation 不确定 |
+| `calendar.trade_date_required` | row | `fail` | 防止无业务日期的日历记录进入 reference 表 |
+| `calendar.exchange_supported` | row | `fail` | 防止未知交易所污染 canonical reference |
+| `calendar.is_open_boolean` | row | `fail` | 防止 `is_open` 字符串/整数双态扩散 |
+| `calendar.pretrade_before_trade_date` | row | `fail` | 防止前一交易日晚于或等于当前日期 |
+| `calendar.open_day_pretrade_sequence` | dataset | `warning` | 发现开市日的 `pretrade_date` 序列异常 |
+| `calendar.date_continuity` | dataset | `warning` | 发现请求窗口内自然日缺口，通常是 source 或请求参数问题 |
+
+#### `reference.instruments` checks
+
+| Check Name | Level | Status On Violation | What It Protects |
+|------------|-------|---------------------|------------------|
+| `instruments.instrument_id_required` | row | `fail` | 所有下游 join 都依赖 canonical ID |
+| `instruments.instrument_id_format` | row | `fail` | 强制 `<six_digit_code>.<exchange>` 统一格式 |
+| `instruments.duplicate_instrument_id` | dataset | `fail` | 防止 reference upsert 非确定性 |
+| `instruments.exchange_suffix_match` | row | `fail` | 防止 `exchange` 与代码后缀冲突 |
+| `instruments.name_required` | row | `fail` | 避免不可读 instrument 进入 universe |
+| `instruments.type_supported` | row | `fail` | Stage B 只允许 `etf` / `index` |
+| `instruments.list_delist_order` | row | `fail` | 防止有效期倒置 |
+| `instruments.active_boolean` | row | `fail` | 防止活跃状态双态 |
+
+#### `market.etf_daily` and `market.index_daily` checks
+
+| Check Name | Level | Status On Violation | What It Protects |
+|------------|-------|---------------------|------------------|
+| `market_daily.duplicate_business_key` | dataset | `fail` | 防止同一 `(instrument_id, trade_date)` 多行 |
+| `market_daily.instrument_exists` | row | `fail` | 确保行情可 join 到 instrument universe |
+| `market_daily.instrument_type_matches_dataset` | row | `fail` | 防止 ETF / index 行情串表 |
+| `market_daily.trade_date_open` | row | `fail` | 防止非交易日行情进入 canonical facts |
+| `market_daily.close_required` | row | `fail` | `close` 是最小可用行情字段 |
+| `market_daily.ohlc_non_negative` | row | `fail` | 防止负价格或负点位 |
+| `market_daily.ohlc_order` | row | `fail` | 防止高低开收逻辑不可能 |
+| `market_daily.volume_non_negative` | row | `fail` | 防止负成交量 |
+| `market_daily.amount_non_negative` | row | `fail` | 防止负成交额 |
+| `market_daily.extreme_return` | row | `warning` | 标记异常涨跌幅，Stage B 不直接否定 source |
+| `market_daily.change_consistency` | row | `warning` | 标记 `change` 与 `close - pre_close` 不一致 |
+| `market_daily.pct_chg_consistency` | row | `warning` | 标记 `pct_chg` 与价格重算涨跌幅不一致 |
+
+### Dataset Validation Matrix
+
+#### `reference.trading_calendar`
+
+执行逻辑：
+
+1. 先把 `cal_date` 转为 `trade_date: date`
+2. 把 `is_open` 统一成 bool
+3. 按 `(exchange, trade_date)` 查重
+4. 对每个 exchange 单独按 `trade_date` 排序检查 `pretrade_date`
+5. 对请求窗口做自然日连续性检查
+
+阻断规则：
+
+- 缺 `trade_date`
+- 重复业务键
+- `is_open` 无法转 bool
+- 不支持的 exchange
+- `pretrade_date >= trade_date`
+
+允许 warning 的情况：
+
+- 请求窗口中缺少部分自然日
+- 开市日 `pretrade_date` 与上一开市日不一致
+
+#### `reference.instruments`
+
+执行逻辑：
+
+1. 从 source code 生成 `instrument_id`
+2. 从 `instrument_id` 后缀派生或校验 `exchange`
+3. 固定 `instrument_type` 为 `etf` 或 `index`
+4. 检查 `instrument_id` 唯一性
+5. 检查 `list_date` / `delist_date` 的有效期关系
+
+阻断规则：
+
+- `instrument_id` 缺失、格式错误、重复
+- `exchange` 与 `instrument_id` 后缀不一致
+- `instrument_name` 为空
+- `instrument_type` 不在 Stage B 枚举中
+- `list_date > delist_date`
+
+允许 warning 的情况：
+
+- `list_date` 缺失
+- `source_instrument_id` 缺失但 `instrument_id` 已合法
+
+#### `market.etf_daily`
+
+执行逻辑：
+
+1. 将 source code 标准化为 `instrument_id`
+2. 将 `trade_date` 转为 date
+3. 用 `canonical_instruments` 确认 instrument 存在且 `instrument_type = etf`
+4. 用 `canonical_trading_calendar` 确认 `trade_date` 是开市日
+5. 检查 OHLC、成交量、成交额
+6. 检查极端收益和 source 提供的涨跌字段一致性
+7. 按 `(instrument_id, trade_date)` 去重前先验证重复，重复为 fail
+
+阻断规则：
+
+- instrument 不存在或不是 ETF
+- 非交易日行情
+- `close` 缺失
+- 负价格、负成交量、负成交额
+- OHLC 顺序不可能
+- 重复业务键
+
+允许 warning 的情况：
+
+- `abs(pct_chg) >= 20`，初版阈值可配置但默认 20%
+- `change` / `pct_chg` 与价格重算结果不一致，但价格字段自身可用
+- `volume` 或 `amount` 缺失
+
+#### `market.index_daily`
+
+执行逻辑与 ETF daily 相同，但 instrument 类型必须是 `index`。
+
+阻断规则：
+
+- instrument 不存在或不是 index
+- 非交易日行情
+- `close` 缺失
+- 负点位、负成交量、负成交额
+- OHLC 顺序不可能
+- 重复业务键
+
+允许 warning 的情况：
+
+- 指数涨跌幅超过 warning 阈值
+- source 涨跌字段与价格重算结果不一致
+- 部分指数没有成交量或成交额
+
+### How To Investigate A Validation Problem
+
+人工排查应按 metadata -> canonical sample -> raw batch 的顺序进行。
+
+1. 先看 run 是否成功：
+
+```sql
+SELECT run_id, dataset_name, source_name, status, request_start, request_end,
+       records_discovered, records_inserted, records_updated, records_failed,
+       error_message
+FROM etl_ingestion_runs
+ORDER BY started_at DESC
+LIMIT 20;
+```
+
+2. 再看本次 run 的 validation 结果：
+
+```sql
+SELECT check_name, check_level, status, subject_key,
+       metric_value, threshold_value, details_json
+FROM etl_validation_results
+WHERE run_id = ?
+ORDER BY status, check_name, subject_key;
+```
+
+3. 如果需要回到原始数据，找到 raw batch：
+
+```sql
+SELECT raw_batch_id, dataset_name, source_name, source_endpoint,
+       storage_path, row_count, content_hash, window_start, window_end
+FROM etl_raw_batches
+WHERE run_id = ?;
+```
+
+4. 对 market daily，优先检查两张 reference 表：
+
+```sql
+SELECT *
+FROM canonical_instruments
+WHERE instrument_id = ?;
+
+SELECT *
+FROM canonical_trading_calendar
+WHERE exchange = ? AND trade_date BETWEEN ? AND ?
+ORDER BY trade_date;
+```
+
+读法：
+
+- `fail` 多数表示 canonical contract 被破坏，应先修 normalizer、source mapping 或依赖数据
+- `warning` 表示可以进入下游，但需要确认是否是 source 异常、单位差异或真实市场事件
+- `subject_key` 是定位具体数据的入口；market daily 建议格式为 `<instrument_id>|<trade_date>`
 
 ## Proposed Stage B Architecture
 
@@ -600,12 +974,14 @@ Stage A 只创建了 placeholder schema，Stage B 允许做增量收紧，但必
 
 建议在 Stage B 追加最小必要字段：
 
+- `source_instrument_id`
 - `source_name`
 - `list_date`
 - `delist_date`
 
 原因：
 
+- `source_instrument_id` 保留 source 原始代码，便于解释 normalizer 如何生成 canonical `instrument_id`
 - `list_date` 是 market daily backfill 与有效窗口判断的必要字段
 - `source_name` 有助于 reference drift 审计
 - `delist_date` 即使暂时经常为空，也应预留
@@ -677,6 +1053,8 @@ Stage B 的测试重点不再只是结构契约，而是“第一条真实纵切
 - instrument metadata 能稳定产生 `instrument_id`
 - ETF / index daily 共用 normalizer 后输出列集一致
 - lineage 字段被正确注入
+- canonical field contract 中的 required 字段全部存在，optional 字段缺失时行为稳定
+- `source_instrument_id` 只作为审计字段存在，不参与 canonical join key
 
 ### 3. Validator Tests
 
@@ -684,6 +1062,8 @@ Stage B 的测试重点不再只是结构契约，而是“第一条真实纵切
 - 非交易日数据会产生 `fail`
 - 极端收益会产生 `warning`
 - required field 缺失会被正确分类
+- 每条 `fail` 或 `warning` 都包含可定位的 `subject_key`
+- stable check names 与本文档的规则表一致
 
 ### 4. Storage Tests
 
@@ -724,11 +1104,13 @@ Stage B 完成的验收标准应为：
 5. `raw_batch_id` 由 service 在 raw write 前预分配，raw 文件名固定为 `batch-<raw_batch_id>.parquet`。
 6. `reference.trading_calendar` 可写入 `canonical_trading_calendar`。
 7. `reference.instruments` 可写入 `canonical_instruments`，且 `instrument_id` 固定为带交易所后缀的统一 canonical code。
-8. dependency preflight 区分 snapshot dependency 与 window dependency，`reference.instruments` 不套用请求窗口覆盖语义。
-9. `market.etf_daily` 与 `market.index_daily` 可写入 normalized Parquet，且每分区保持单 canonical 文件并通过 tmp replace 完成重写。
-10. validation result 会写入 `etl_validation_results`，且 `fail` 会阻断 canonical write。
-11. watermark 仅在成功 run 后推进。
-12. 现有 legacy API、legacy ingestion、legacy scheduler 无回归。
+8. 四个 Stage B dataset 都有明确 canonical field contract，并在 normalizer / validator 测试中覆盖字段含义和类型。
+9. dependency preflight 区分 snapshot dependency 与 window dependency，`reference.instruments` 不套用请求窗口覆盖语义。
+10. `market.etf_daily` 与 `market.index_daily` 可写入 normalized Parquet，且每分区保持单 canonical 文件并通过 tmp replace 完成重写。
+11. validation result 会写入 `etl_validation_results`，且 `fail` 会阻断 canonical write。
+12. validation result 使用稳定 `check_name`、`subject_key` 和 `details_json`，能解释每一项失败或 warning 数据。
+13. watermark 仅在成功 run 后推进。
+14. 现有 legacy API、legacy ingestion、legacy scheduler 无回归。
 
 ## Implementation Sequence
 

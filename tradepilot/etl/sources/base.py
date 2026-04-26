@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import StrEnum
-from typing import Any
-
-from tradepilot.etl.models import IngestionRequest
+from tradepilot.etl.models import IngestionRequest, SourceFetchResult
 
 
 class SourceRole(StrEnum):
@@ -30,7 +28,7 @@ class BaseSourceAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def fetch(self, dataset_name: str, request: IngestionRequest) -> Any:
+    def fetch(self, dataset_name: str, request: IngestionRequest) -> SourceFetchResult:
         """Fetch raw data for one dataset."""
 
         raise NotImplementedError

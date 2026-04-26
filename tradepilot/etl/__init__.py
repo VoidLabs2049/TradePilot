@@ -7,6 +7,7 @@ from tradepilot.etl.models import (
     IngestionRunRecord,
     RawBatchRecord,
     RunStatus,
+    SourceFetchResult,
     SourceWatermarkRecord,
     StorageZone,
     TriggerMode,
@@ -19,6 +20,7 @@ from tradepilot.etl.registry import (
     has_dataset,
     list_datasets,
     register_dataset,
+    register_stage_b_datasets,
 )
 
 __all__ = [
@@ -29,6 +31,7 @@ __all__ = [
     "IngestionRunRecord",
     "RawBatchRecord",
     "RunStatus",
+    "SourceFetchResult",
     "SourceWatermarkRecord",
     "StorageZone",
     "TriggerMode",
@@ -38,4 +41,5 @@ __all__ = [
     "has_dataset",
     "list_datasets",
     "register_dataset",
+    "register_stage_b_datasets",
 ]

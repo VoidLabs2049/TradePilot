@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tradepilot.etl.datasets import DatasetDefinition
+from tradepilot.etl.datasets import DatasetDefinition, build_stage_b_datasets
 
 
 class DatasetRegistry:
@@ -17,6 +17,12 @@ class DatasetRegistry:
         if definition.dataset_name in self._definitions:
             raise ValueError(f"dataset already registered: {definition.dataset_name}")
         self._definitions[definition.dataset_name] = definition
+
+    def register_dataset_if_missing(self, definition: DatasetDefinition) -> None:
+        """Register one dataset unless it is already present."""
+
+        if definition.dataset_name not in self._definitions:
+            self._definitions[definition.dataset_name] = definition
 
     def get_dataset(self, dataset_name: str) -> DatasetDefinition:
         """Return one dataset definition by name."""
@@ -44,6 +50,14 @@ def register_dataset(definition: DatasetDefinition) -> None:
     """Register one dataset in the module-level registry."""
 
     _REGISTRY.register_dataset(definition)
+
+
+def register_stage_b_datasets(registry: DatasetRegistry | None = None) -> None:
+    """Register the built-in Stage B dataset definitions."""
+
+    target = registry or _REGISTRY
+    for definition in build_stage_b_datasets():
+        target.register_dataset_if_missing(definition)
 
 
 def get_dataset(dataset_name: str) -> DatasetDefinition:

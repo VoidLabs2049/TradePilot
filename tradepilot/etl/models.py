@@ -5,7 +5,9 @@ from __future__ import annotations
 from datetime import date, datetime
 from enum import StrEnum
 
+import pandas as pd
 from pydantic import BaseModel, Field
+from pydantic import ConfigDict
 
 
 class DatasetCategory(StrEnum):
@@ -83,6 +85,13 @@ class ValidationStatus(StrEnum):
     FAIL = "fail"
 
 
+class DependencyType(StrEnum):
+    """How one dataset dependency should be checked before a run."""
+
+    SNAPSHOT = "snapshot"
+    WINDOW = "window"
+
+
 class IngestionRequest(BaseModel):
     """Common request envelope for future dataset sync entrypoints."""
 
@@ -102,10 +111,65 @@ class IngestionRequest(BaseModel):
         default=TriggerMode.MANUAL,
         description="Operational reason that started the ingestion run.",
     )
-    context: dict[str, str | int | float | bool | None] = Field(
+    context: dict[str, str | int | float | bool | list[str] | list[int] | None] = Field(
         default_factory=dict,
         description="Additional primitive request parameters passed to source adapters.",
     )
+
+
+class SourceFetchResult(BaseModel):
+    """Typed payload returned by one source adapter fetch."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    dataset_name: str = Field(description="Dataset registry key that was fetched.")
+    source_name: str = Field(description="Source adapter name used for the fetch.")
+    source_endpoint: str = Field(description="Provider endpoint or resource name.")
+    payload: pd.DataFrame = Field(description="Tabular source payload.")
+    row_count: int = Field(description="Number of rows in the payload.")
+    window_start: date | None = Field(
+        default=None, description="Inclusive source data window start."
+    )
+    window_end: date | None = Field(
+        default=None, description="Inclusive source data window end."
+    )
+    partition_hints: dict[str, str | int] = Field(
+        default_factory=dict,
+        description="Suggested storage partition fields for this payload.",
+    )
+    fetched_at: datetime = Field(description="Timestamp when the payload was fetched.")
+    schema_version: str | None = Field(
+        default=None, description="Observed or adapter-defined source schema version."
+    )
+    is_fallback_source: bool = Field(
+        default=False, description="Whether the payload came from a fallback source."
+    )
+
+
+class CanonicalWriteResult(BaseModel):
+    """Summary of one canonical write operation."""
+
+    records_written: int = Field(default=0)
+    records_inserted: int = Field(default=0)
+    records_updated: int = Field(default=0)
+    partitions_written: int = Field(default=0)
+    storage_paths: list[str] = Field(default_factory=list)
+
+
+class DatasetSyncResult(BaseModel):
+    """Public result returned by a single dataset sync."""
+
+    run_id: int
+    dataset_name: str
+    status: RunStatus
+    raw_batch_ids: list[int] = Field(default_factory=list)
+    validation_counts: dict[str, int] = Field(default_factory=dict)
+    records_discovered: int = 0
+    records_written: int = 0
+    watermark_updated: bool = False
+    started_at: datetime
+    finished_at: datetime | None = None
+    error_message: str | None = None
 
 
 class IngestionRunRecord(BaseModel):
