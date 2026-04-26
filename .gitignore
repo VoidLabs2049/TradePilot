@@ -189,3 +189,6 @@ briefings/*
 
 # research
 research_report/*
+
+# local lakehouse data
+data/lakehouse/
