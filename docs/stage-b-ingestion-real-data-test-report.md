@@ -80,7 +80,7 @@ Successful rerun:
 - `market.etf_daily` run `7`: success
 - `reference.instruments` run `8`: success
 - ETF canonical instruments written: `2539`
-- Normalized file: `data/lakehouse/normalized/market.etf_daily/year=2024/month=04/part-00000.parquet`
+- Normalized file: `data/lakehouse/normalized/market.etf_daily/2024/04/part-00000.parquet`
 
 Sample normalized row:
 
@@ -155,7 +155,7 @@ Successful rerun:
 - `reference.instruments` run `16`: success
 - Index raw instruments fetched: `1041`
 - Index canonical instruments written: `732`
-- Normalized file: `data/lakehouse/normalized/market.index_daily/year=2024/month=04/part-00000.parquet`
+- Normalized file: `data/lakehouse/normalized/market.index_daily/2024/04/part-00000.parquet`
 - Duplicate `(instrument_id, trade_date)` count: `0`
 
 Sample normalized row:

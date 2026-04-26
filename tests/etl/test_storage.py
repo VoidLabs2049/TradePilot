@@ -38,8 +38,8 @@ class StoragePathTests(unittest.TestCase):
 
         self.assertEqual(path, Path("/tmp/lakehouse/normalized/market.etf_daily"))
 
-    def test_build_partition_path_sorts_mapping_parts(self) -> None:
-        """Build stable partition paths from mapping key-value parts."""
+    def test_build_partition_path_preserves_mapping_order(self) -> None:
+        """Build partition paths from mapping parts without key prefixes."""
 
         path = build_partition_path(
             dataset_name="market.etf_daily",
@@ -50,7 +50,7 @@ class StoragePathTests(unittest.TestCase):
 
         self.assertEqual(
             path,
-            Path("/tmp/lakehouse/raw/market.etf_daily/month=4/year=2026"),
+            Path("/tmp/lakehouse/raw/market.etf_daily/2026/4"),
         )
 
     def test_build_zone_path_rejects_unsafe_dataset_name(self) -> None:

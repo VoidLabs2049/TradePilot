@@ -66,9 +66,9 @@ def build_partition_path(
         dataset_name=dataset_name, zone=zone, lakehouse_root=lakehouse_root
     )
     for key, value in _normalize_partition_parts(partition_parts):
-        partition_key = _validate_partition_key(key)
+        _validate_partition_key(key)
         partition_value = _validate_partition_value(value)
-        path = path / f"{partition_key}={partition_value}"
+        path = path / partition_value
     return path
 
 
@@ -219,10 +219,10 @@ def _sha256_file(path: Path) -> str:
 def _normalize_partition_parts(
     partition_parts: PartitionParts,
 ) -> list[tuple[str, PartitionValue]]:
-    """Return partition parts in deterministic order."""
+    """Return partition parts in declared order."""
 
     if isinstance(partition_parts, Mapping):
-        return sorted(partition_parts.items())
+        return list(partition_parts.items())
     return list(partition_parts)
 
 

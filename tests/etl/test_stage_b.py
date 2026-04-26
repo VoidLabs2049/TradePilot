@@ -442,8 +442,8 @@ class StageBServiceIntegrationTests(unittest.TestCase):
             / "lakehouse"
             / "normalized"
             / "market.etf_daily"
-            / "year=2026"
-            / "month=04"
+            / "2026"
+            / "04"
             / "part-00000.parquet"
         )
         self.assertTrue(normalized_file.exists())
