@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import re
 from typing import Any
 
 import pandas as pd
@@ -69,6 +70,8 @@ class TradingCalendarNormalizer(BaseNormalizer):
 class InstrumentNormalizer(BaseNormalizer):
     """Normalize ETF and index instrument metadata."""
 
+    _SUPPORTED_CODE_RE = re.compile(r"^\d{6}(\.(SH|SZ))?$")
+
     def normalize(
         self,
         raw_payload: pd.DataFrame,
@@ -88,6 +91,10 @@ class InstrumentNormalizer(BaseNormalizer):
         if "instrument_type" not in frame.columns:
             frame["instrument_type"] = ctx.get("instrument_type")
         frame["instrument_type"] = frame["instrument_type"].astype("string").str.lower()
+        supported_code = (
+            frame["source_instrument_id"].map(_is_supported_stage_b_code).astype(bool)
+        )
+        frame = frame[supported_code].copy()
         frame["instrument_id"] = frame.apply(
             lambda row: normalize_instrument_id(
                 row.get("source_instrument_id") or row.get("instrument_id"),
@@ -224,6 +231,16 @@ def normalize_instrument_id(
     else:
         exchange = "SH" if code.startswith(("5", "6")) else "SZ"
     return f"{code}.{exchange}"
+
+
+def _is_supported_stage_b_code(value: object) -> bool:
+    """Return whether a source code fits the Stage B six-digit SH/SZ scope."""
+
+    if value is None or pd.isna(value):
+        return False
+    return bool(
+        InstrumentNormalizer._SUPPORTED_CODE_RE.match(str(value).strip().upper())
+    )
 
 
 def _result(

@@ -220,15 +220,16 @@ class StageBSourceNormalizerValidatorTests(unittest.TestCase):
             .normalize(
                 pd.DataFrame(
                     {
-                        "code": ["510300"],
-                        "name": ["沪深300ETF"],
-                        "instrument_type": ["etf"],
+                        "code": ["510300", "5012011.SH"],
+                        "name": ["沪深300ETF", "科创红土LOF(退市)"],
+                        "instrument_type": ["etf", "etf"],
                     }
                 ),
                 {"source_name": "tushare"},
             )
             .canonical_payload
         )
+        self.assertEqual(len(instruments), 1)
         self.assertEqual(instruments.iloc[0]["instrument_id"], "510300.SH")
 
         daily = (

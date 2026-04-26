@@ -125,6 +125,8 @@ class TushareClient:
                 columns={"ts_code": "code", "name": "name"}
             ).copy()
             normalized["code"] = normalized["code"].str.split(".").str[0]
+            if "delist_date" not in normalized.columns:
+                normalized["delist_date"] = None
             frames.append(
                 cast(
                     pd.DataFrame,
