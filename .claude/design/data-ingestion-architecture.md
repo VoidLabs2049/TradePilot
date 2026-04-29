@@ -11,25 +11,25 @@ modules: ["backend"]
 
 ## Overview
 
-Design a unified ingestion architecture for TradePilot that supports multiple data types, preserves raw-source traceability, standardizes canonical storage, and embeds data validation into the pipeline itself.
+为 TradePilot 设计一套统一的数据接入架构，使其能够支持多种数据类型、保留 raw source traceability、标准化 canonical storage，并将数据校验内嵌到整条 pipeline 中。
 
-The initial implementation target is to support the ETF all-weather Stage 1 data foundation, but the architecture must remain general enough to serve future stock, index, macro, rates, news, and derived-feature datasets without redesigning the ingestion core.
+当前的首个实施目标，是为 ETF all-weather Stage 1 提供可靠的数据基础，但这套架构本身必须保持足够通用，能够在不重新设计 ingestion core 的前提下，继续服务未来的 stock、index、macro、rates、news 与 derived-feature datasets。
 
 ## Goals
 
-- [ ] Build one ingestion foundation that supports multiple dataset families
-- [ ] Define a clear `raw -> normalized -> derived` storage boundary
-- [ ] Make validation and lineage first-class concerns of the ingestion framework
-- [ ] Fit the architecture into the current `DuckDB + Python` backend with minimal disruption to existing flows
-- [ ] Provide a reliable Stage 1 foundation for ETF all-weather data without overfitting the framework to that single use case
+- [ ] 构建一套能够支持多种 dataset family 的统一 ingestion foundation
+- [ ] 明确 `raw -> normalized -> derived` 的存储边界
+- [ ] 将 validation 与 lineage 提升为 ingestion framework 的一等能力
+- [ ] 在尽量少打扰现有流程的前提下，将这套架构接入当前 `DuckDB + Python` 后端
+- [ ] 为 ETF all-weather Stage 1 提供可靠基础，但不过度把架构绑定到这一个策略用例上
 
 ## Constraints
 
-- Preserve current application behavior for existing ingestion and API flows
-- Prefer additive architecture over refactoring existing provider code in place
-- Use `DuckDB` for metadata and query-serving support, not as the only storage layer for large raw history
-- Keep Stage 1 focused on ingestion, normalization, validation, and traceability
-- Support incremental extension to new dataset families without reopening the core architecture
+- 保持当前 ingestion 与 API 流程的既有行为不被破坏
+- 优先采用 additive architecture，而不是直接在现有 provider 代码上做侵入式重构
+- 将 `DuckDB` 用于 metadata 与 query-serving support，而不是把它当作大体量 raw history 的唯一存储层
+- 保持 Stage 1 聚焦在 ingestion、normalization、validation 与 traceability
+- 支持未来按 dataset family 增量扩展，而不需要反复重开 core architecture
 
 ## Scope
 
@@ -43,25 +43,25 @@ The initial implementation target is to support the ETF all-weather Stage 1 data
 
 | File | Planned Role |
 |------|--------------|
-| `tradepilot/db.py` | Extend schema initialization with ingestion metadata and canonical reference tables |
-| `tradepilot/data/` | Existing provider layer remains available for current app flows; selective logic may be reused by new source adapters |
-| `tradepilot/ingestion/service.py` | Existing sync service remains intact; new ingestion foundation should live alongside it rather than replacing it |
-| `tradepilot/etl/` | Proposed new generic ingestion module for dataset-oriented extraction, normalization, validation, and storage |
-| `docs/etf-all-weather-data-sources/` | Source-of-truth research inputs for ETF all-weather Stage 1 dataset choices, timing rules, and validation needs |
+| `tradepilot/db.py` | 扩展 schema 初始化逻辑，承载 ingestion metadata 与 canonical reference tables |
+| `tradepilot/data/` | 现有 provider layer 继续保留给当前应用流程使用；其中稳定逻辑可被新的 source adapter 选择性复用 |
+| `tradepilot/ingestion/service.py` | 现有 sync service 保持不变；新的 ingestion foundation 应与其并存，而不是直接替换 |
+| `tradepilot/etl/` | 新的通用 ingestion 模块，负责 dataset-oriented extraction、normalization、validation 与 storage |
+| `docs/etf-all-weather-data-sources/` | ETF all-weather Stage 1 的数据源选择、时间规则与验证需求的 source-of-truth 研究输入 |
 
 ### Out of Scope
 
-- Replacing the current market/news/bilibili ingestion flows immediately
-- Building the ETF allocation engine itself
-- Building the full backtest layer
-- Building the final strategy read model or wide feature snapshot layer in Stage 1
-- Expanding to every optional or deferred dataset before the core foundation is stable
+- 立即替换当前 market / news / bilibili ingestion 流程
+- 构建 ETF allocation engine 本身
+- 构建完整 backtest layer
+- 在 Stage 1 内就构建最终 strategy read model 或宽表 feature snapshot layer
+- 在 core foundation 还未稳定前，提前扩展所有 optional 或 deferred datasets
 
 ## Design
 
 ### Architecture Summary
 
-The recommended architecture is a dataset-oriented ingestion platform with six layers:
+推荐采用一套以 dataset 为中心的 ingestion platform，总共分为六层：
 
 1. source adapter layer
 2. raw landing layer
@@ -70,41 +70,41 @@ The recommended architecture is a dataset-oriented ingestion platform with six l
 5. metadata and lineage layer
 6. derived and read-model layer
 
-This architecture separates three concerns that are currently mixed together in simpler sync flows:
+这套架构的目的，是将当前较简单 sync 流程中经常混在一起的三类职责拆开：
 
-- data fetching from external sources
-- canonicalization for downstream use
-- reliability verification and auditability
+- 外部数据抓取
+- 面向下游使用的 canonicalization
+- 面向可靠性与审计的验证与追踪
 
 ### Design Principles
 
 #### 1. Additive first
 
-The new ingestion foundation should be introduced as a parallel backend module. Existing app behavior should continue working while the new architecture matures.
+新的 ingestion foundation 应以并行后端模块的方式引入。现有应用行为在新架构成熟之前应继续保持可用。
 
-#### 2. Dataset-oriented, not endpoint-oriented
+#### 2. Dataset-oriented，而不是 endpoint-oriented
 
-The system should model ingestion around dataset families such as `market.etf_daily` or `macro.slow_fields`, not around specific provider methods or one-off endpoints.
+系统应围绕 `market.etf_daily`、`macro.slow_fields` 这类 dataset family 建模，而不是围绕某个 provider method 或一次性 endpoint 堆积逻辑。
 
 #### 3. Immutable raw storage
 
-Raw fetched payloads must be persisted in immutable storage so normalization and validation can be replayed without depending on live source fetches.
+抓取到的 raw payload 必须以 immutable 方式持久化，这样 normalization 和 validation 才能在不依赖实时 source fetch 的情况下反复 replay。
 
-#### 4. Validation as a first-class capability
+#### 4. Validation 是 first-class capability
 
-Every dataset must ship with explicit validation rules. Validation must produce structured outputs stored in the metadata layer, not only logs or prose notes.
+每个 dataset 都必须自带显式 validation rules。Validation 的输出必须是结构化结果，并持久化到 metadata layer，而不只是日志或人工说明。
 
 #### 5. Time-aware semantics
 
-Slow fields must explicitly carry release and effective timing semantics to prevent look-ahead leakage.
+slow fields 必须显式携带 release 与 effective timing semantics，以避免未来函数泄漏。
 
 #### 6. Hybrid storage
 
-Use filesystem Parquet datasets for large raw and normalized facts, and `DuckDB` for metadata tables, reference dimensions, and query-serving views.
+大体量 raw 与 normalized facts 使用文件系统上的 Parquet datasets；`DuckDB` 用于 metadata tables、reference dimensions 与 query-serving views。
 
 ## Supported Dataset Families
 
-The ingestion foundation should support at least these dataset families:
+这套 ingestion foundation 至少应支持以下 dataset families：
 
 ### 1. Reference and dimensions
 
@@ -1315,84 +1315,202 @@ Cover:
 
 ## Delivery Phases
 
-### Stage A: foundation skeleton
+原始的 Stage A / B / C / D 划分在方向上仍然成立，但结合当前已经落地的代码状态，后续执行顺序需要进一步明确。
 
-- create `tradepilot/etl/` module
-- create core models and registry structures
-- create metadata tables and reference-table initialization
-- define storage layout
+### Stage A：foundation skeleton
 
-### Stage B: first generic datasets
+已交付范围：
+
+- 创建 `tradepilot/etl/` 模块
+- 创建核心 models 与 registry 结构
+- 创建 metadata tables 与 reference table 初始化逻辑
+- 定义存储布局
+
+Stage A 建立了通用 ETL foundation 的边界，但还没有证明整条运行链路已经可执行。
+
+### Stage B：first generic datasets
+
+已交付范围：
 
 - trading calendar ingestion
 - instrument metadata ingestion
 - core market-daily ingestion pattern
 - initial validation engine
 
-### Stage C: ETF all-weather minimum serious panel
+Stage B 是这套架构第一条真实可执行的纵切链路。完成 Stage B 后，项目已经具备以下运行路径：
 
-- five canonical ETF sleeves
-- benchmark index series
-- core slow macro fields
-- core rates and yield series
+- source fetch
+- raw landing
+- normalization
+- structured validation
+- canonical write
+- watermark advancement
+- dependency preflight
 
-### Stage D: downstream support
+这意味着后续阶段应该建立在这条已验证路径之上继续扩展，而不是重新设计执行引擎。
+
+### Stage C：calendar foundation completion
+
+Stage C 不应该一开始就扩张为完整的 ETF all-weather serious panel。当前最实际的 Stage C 目标，是先完成后续所有数据集所依赖的时间基座。
+
+执行目标：
+
+- 为 `reference.trading_calendar` 完成 SH/SZ 全量历史 bootstrap 与 backfill
+- 严格复用现有 Stage B ETL contract
+- 让历史回放在“月窗口”粒度上具备幂等和可重跑能力
+- 保证 backfill 过程中 watermark 语义保持单调
+- 让后续 SH/SZ 共同开市日 rebalance-date 的推导可以只依赖 canonical data 完成
+
+为什么必须先做这一阶段：
+
+- `reference.rebalance_calendar` 依赖可靠的 SH/SZ 日历覆盖
+- `market.*` 的历史校验依赖完整交易日历
+- slow macro 与 rates 的 `effective_date` timing 规则依赖 canonical trading day
+- 如果没有这一层，后续 Stage C 的数据都会建立在不稳定的时间基座上
+
+本阶段应保持收口，不应包含：
 
 - rebalance calendar materialization
-- freshness and health read models
-- validation result query surfaces
-- derived features after Stage 1 normalized layer is stable
+- sleeves table materialization
+- macro / rates / curve datasets
+- derived strategy snapshots
+- generic profile orchestration 或 DAG scheduling
+
+### Stage D：strategy reference layer
+
+在完整交易日历基础稳定之后，下一步应当冻结策略层的 reference boundary。
+
+执行目标：
+
+- materialize `reference.etf_aw_sleeves`
+- materialize `reference.rebalance_calendar`
+- 显式编码 ETF all-weather v1 冻结的五个 sleeves universe
+- 按以下规则生成月度 rebalance dates：每月 20 日及以后，SH/SZ 共同开市的第一个交易日
+
+为什么这一阶段在 Stage C 之后：
+
+- sleeve validity checks 依赖稳定的历史 calendar window
+- rebalance dates 必须从完整的 SH/SZ canonical calendar 中推导，而不是通过临时 source 调用获得
+
+这一阶段仍应避免过早扩展到大范围 market features 与 macro/rates。
+
+### Stage E：minimum market panel
+
+当策略 reference layer 冻结后，下一优先级是构建能够支持 ETF all-weather v1 research 与 notebook consumption 的最小市场面板。
+
+执行目标：
+
+- add `market.etf_adj_factor`
+- add `derived.etf_aw_sleeve_daily`
+- 补齐 HS300 与 ZZ1000 所需 benchmark series 支持
+- 保持 `market.etf_daily` 继续作为 raw-close canonical market fact
+- 将 `derived.etf_aw_sleeve_daily` 作为 adjustment-aware strategy return boundary
+
+为什么这一阶段先于 macro/rates：
+
+- 它可以先交付第一版真正可用于策略研究的 market panel，时间语义相对简单
+- 它允许 notebook MVP 和 market-only validation 更早启动
+- 它避免把当前进度绑定到 timing-sensitive 数据集中最高风险的部分
+
+### Stage F：timing-sensitive macro and rates layer
+
+只有在市场面板稳定之后，架构才应扩展到 point-in-time leakage 风险最高的数据集。
+
+执行目标：
+
+- 增加 `macro.slow_fields`
+- 增加 `rates.daily_rates`
+- 增加 `rates.lpr`
+- 增加 `rates.gov_curve_points`
+- 在进入策略消费边界之前，严格执行 `release_date` / `effective_date` 的时间纪律
+
+为什么这一阶段后置：
+
+- slow macro 与 rates 是系统中未来函数风险最高的部分
+- 它们依赖前面已完成的 calendar 与 rebalance-date foundation
+- 它们应建立在稳定的 market 与 reference layer 之上做验证，而不应并行推进
+
+### Stage G：strategy-facing derived boundary
+
+当 reference、market、macro、rates 各层都稳定后，Stage 1 的最后一步才是发布统一的 strategy-facing artifact。
+
+执行目标：
+
+- 增加 `derived.etf_aw_market_features`
+- 增加 `derived.etf_aw_rebalance_snapshot`
+- 确保 notebook、backtest、shadow portfolio 只消费 canonical / derived data
+- 让下游 research code 不再直接调用 Tushare
+
+这一阶段刻意放在最后，因为它依赖前面所有层都已经满足 point-in-time safety。
+
+## Recommended Execution Order
+
+结合当前仓库状态，后续实际执行顺序应明确为：
+
+1. Stage C —— 完整 SH/SZ trading calendar foundation
+2. Stage D —— frozen sleeves 与 rebalance calendar reference layer
+3. Stage E —— minimum adjustment-aware market panel
+4. Stage F —— timing-sensitive macro and rates layer
+5. Stage G —— strategy-facing derived snapshot boundary
+
+一句话概括：
+
+- 先补全时间基座
+- 再冻结策略 reference layer
+- 然后发布最小 market panel
+- 接着补 timing-sensitive 的 macro / rates 数据
+- 最后发布统一的 strategy-facing snapshot
 
 ## Risks
 
-### 1. Source stability is uneven
+### 1. 数据源稳定性并不均衡
 
-The architecture must distinguish primary, fallback, and validation roles explicitly and not assume all providers are equally reliable.
+架构必须显式区分 primary、fallback 和 validation source 的角色，不能假设所有 provider 都同样可靠。
 
-### 2. Slow-field timing is the highest leakage risk
+### 2. slow-field timing 是未来函数风险最高的部分
 
-Timing metadata must be attached before data reaches strategy-facing logic.
+时间元数据必须在数据进入策略消费逻辑之前就被附着并验证完成。
 
-### 3. Different dataset families have different grains
+### 3. 不同 dataset family 具有不同 grain
 
-One-table-fits-all design should be avoided. The registry and storage model must be dataset-family aware.
+应避免 one-table-fits-all 的设计。registry 与 storage model 必须具备 dataset-family awareness。
 
-### 4. DuckDB should not be treated as the only historical lake
+### 4. DuckDB 不应被视为唯一历史湖仓
 
-Large raw and normalized histories belong in Parquet storage.
+大体量 raw 与 normalized 历史数据应落在 Parquet storage 中。
 
-### 5. Scope drift is easy with optional fields
+### 5. 可选字段很容易带来范围漂移
 
-Each dataset and field should have explicit role labels so optional fields do not quietly become permanent requirements.
+每个 dataset 和字段都应具有显式角色标签，避免 optional fields 在没有明确决策的情况下悄悄变成长期必需项。
 
 ## Deferred Topics
 
-The following topics are intentionally not fully designed in the current phase.
+以下主题在当前阶段明确暂缓，不做完整设计。
 
-### 1. Schema evolution as a framework feature
+### 1. Schema evolution 作为框架能力
 
-Current decision:
+当前决策：
 
-- do not design a general schema evolution subsystem yet
-- use raw-to-schema mapping as the primary compatibility boundary
-- if canonical schema changes materially, replay history from raw with the new mapping
+- 暂不设计通用 schema evolution 子系统
+- 继续以 raw-to-schema mapping 作为主要兼容边界
+- 如果 canonical schema 发生实质变化，则通过 raw replay 结合新 mapping 重建历史
 
-### 2. Storage retention, archival, and compaction
+### 2. Storage retention、archival 与 compaction
 
-Current decision:
+当前决策：
 
-- not part of the current Stage 1 design
-- raw and normalized storage layout is defined, but lifecycle management is deferred
+- 不属于当前 Stage 1 设计范围
+- raw 与 normalized storage layout 已定义，但生命周期管理暂缓
 
-### 3. Observability, SLA, and alerting framework
+### 3. Observability、SLA 与 alerting framework
 
-Current decision:
+当前决策：
 
-- freshness and health read models remain in scope later
-- full alerting and operational observability design is deferred for now
+- freshness 与 health read models 仍保留在后续范围内
+- 完整的 alerting 与运维级可观测性框架暂缓
 
 ## Final Judgment
 
-The best long-term ingestion architecture for TradePilot is a generic dataset-oriented foundation that treats raw landing, canonical normalization, validation, and lineage as separate but integrated concerns.
+TradePilot 最合理的长期 ingestion architecture，是一套通用的、dataset-oriented 的 foundation，将 raw landing、canonical normalization、validation 与 lineage 视为彼此分离但又集成的一体化能力。
 
-For implementation, the correct next step is not to further stretch the existing workflow-specific provider abstraction. It is to introduce a new ingestion foundation that can support ETF all-weather Stage 1 immediately while remaining reusable for future stock, macro, rates, and alternative-data expansion.
+从实施顺序上看，正确的下一步不是继续拉伸现有 workflow-specific provider abstraction，而是继续在已经落地的 ingestion foundation 上推进：先补全时间基座，再冻结策略 reference layer，再逐步扩展 market、macro、rates 与 strategy-facing derived boundary。
