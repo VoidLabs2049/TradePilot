@@ -25,6 +25,7 @@ class TushareSourceAdapter(BaseSourceAdapter):
     _SUPPORTED = {
         "reference.trading_calendar",
         "reference.instruments",
+        "market.etf_adj_factor",
         "market.etf_daily",
         "market.index_daily",
     }
@@ -49,6 +50,9 @@ class TushareSourceAdapter(BaseSourceAdapter):
         elif dataset_name == "reference.instruments":
             payload = self._fetch_instruments(request)
             endpoint = _instrument_endpoint(request)
+        elif dataset_name == "market.etf_adj_factor":
+            payload = self._fetch_etf_adj_factor(request)
+            endpoint = "fund_adj"
         elif dataset_name == "market.etf_daily":
             payload = self._fetch_market_daily(request, instrument_type="etf")
             endpoint = "fund_daily"
@@ -132,6 +136,20 @@ class TushareSourceAdapter(BaseSourceAdapter):
         return _concat_or_empty(
             frames, list(_empty_market_daily(instrument_type).columns)
         )
+
+    def _fetch_etf_adj_factor(self, request: IngestionRequest) -> pd.DataFrame:
+        start_date, end_date = _date_window(request)
+        instrument_ids = _context_list(request, "instrument_ids")
+        if not instrument_ids:
+            return _empty_etf_adj_factor()
+        frames: list[pd.DataFrame] = []
+        for instrument_id in _unique_list(instrument_ids):
+            frame = self._client.get_etf_adj_factor(
+                str(instrument_id), start_date.isoformat(), end_date.isoformat()
+            )
+            if not frame.empty:
+                frames.append(frame)
+        return _concat_or_empty(frames, list(_empty_etf_adj_factor().columns))
 
 
 def _date_window(request: IngestionRequest) -> tuple[date, date]:
@@ -245,5 +263,17 @@ def _empty_market_daily(instrument_type: str) -> pd.DataFrame:
             "pct_chg": pd.Series(dtype="float64"),
             "volume": pd.Series(dtype="float64"),
             "amount": pd.Series(dtype="float64"),
+        }
+    )
+
+
+def _empty_etf_adj_factor() -> pd.DataFrame:
+    """Return an empty ETF adjustment factor payload frame."""
+
+    return pd.DataFrame(
+        {
+            "date": pd.Series(dtype="datetime64[ns]"),
+            "etf_code": pd.Series(dtype="object"),
+            "adj_factor": pd.Series(dtype="float64"),
         }
     )

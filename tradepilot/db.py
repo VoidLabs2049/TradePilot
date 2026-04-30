@@ -337,6 +337,24 @@ def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:
         conn.execute("ALTER TABLE canonical_instruments ADD COLUMN delist_date DATE")
     if "source_name" not in instrument_columns:
         conn.execute("ALTER TABLE canonical_instruments ADD COLUMN source_name VARCHAR")
+    sleeve_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info('canonical_sleeves')").fetchall()
+    }
+    if "sleeve_role" not in sleeve_columns:
+        conn.execute("ALTER TABLE canonical_sleeves ADD COLUMN sleeve_role VARCHAR")
+    if "listing_exchange" not in sleeve_columns:
+        conn.execute(
+            "ALTER TABLE canonical_sleeves ADD COLUMN listing_exchange VARCHAR"
+        )
+    if "benchmark_name" not in sleeve_columns:
+        conn.execute("ALTER TABLE canonical_sleeves ADD COLUMN benchmark_name VARCHAR")
+    if "list_date" not in sleeve_columns:
+        conn.execute("ALTER TABLE canonical_sleeves ADD COLUMN list_date DATE")
+    if "exposure_note" not in sleeve_columns:
+        conn.execute("ALTER TABLE canonical_sleeves ADD COLUMN exposure_note TEXT")
+    if "created_at" not in sleeve_columns:
+        conn.execute("ALTER TABLE canonical_sleeves ADD COLUMN created_at TIMESTAMP")
     news_columns = {
         row[1] for row in conn.execute("PRAGMA table_info('news_items')").fetchall()
     }

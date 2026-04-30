@@ -199,6 +199,50 @@ class MarketDailyNormalizer(BaseNormalizer):
         return _result(canonical, context=ctx)
 
 
+class EtfAdjFactorNormalizer(BaseNormalizer):
+    """Normalize ETF adjustment factor rows."""
+
+    def normalize(
+        self,
+        raw_payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> NormalizationResult:
+        """Normalize ETF adjustment factor payloads."""
+
+        ctx = context or {}
+        frame = raw_payload.copy()
+        source_name = str(ctx.get("source_name", ""))
+        raw_batch_id = ctx.get("raw_batch_id")
+        if "date" in frame.columns and "trade_date" not in frame.columns:
+            frame = frame.rename(columns={"date": "trade_date"})
+        code_column = _first_existing(frame, ["instrument_id", "ts_code", "etf_code"])
+        if code_column is None:
+            frame["instrument_id"] = None
+        else:
+            frame["instrument_id"] = frame[code_column].map(
+                lambda value: normalize_instrument_id(value, "etf")
+            )
+        frame["trade_date"] = _to_date_series(frame.get("trade_date"))
+        frame["adj_factor"] = pd.to_numeric(frame.get("adj_factor"), errors="coerce")
+        frame["source_name"] = source_name
+        frame["raw_batch_id"] = raw_batch_id
+        frame["ingested_at"] = pd.Timestamp.utcnow().tz_localize(None)
+        frame["quality_status"] = str(ctx.get("quality_status", "pass"))
+        canonical = frame.loc[
+            :,
+            [
+                "instrument_id",
+                "trade_date",
+                "adj_factor",
+                "source_name",
+                "raw_batch_id",
+                "ingested_at",
+                "quality_status",
+            ],
+        ].copy()
+        return _result(canonical, context=ctx)
+
+
 def get_normalizer(dataset_name: str) -> BaseNormalizer:
     """Return the normalizer for one Stage B dataset."""
 
@@ -206,6 +250,8 @@ def get_normalizer(dataset_name: str) -> BaseNormalizer:
         return TradingCalendarNormalizer()
     if dataset_name == "reference.instruments":
         return InstrumentNormalizer()
+    if dataset_name == "market.etf_adj_factor":
+        return EtfAdjFactorNormalizer()
     if dataset_name in {"market.etf_daily", "market.index_daily"}:
         return MarketDailyNormalizer()
     raise KeyError(f"no normalizer registered for dataset: {dataset_name}")

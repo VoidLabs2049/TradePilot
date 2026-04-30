@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
 import json
@@ -20,6 +21,7 @@ from tradepilot.etl.models import (
     IngestionRequest,
     RunStatus,
     SourceFetchResult,
+    StorageZone,
     TriggerMode,
     ValidationResultRecord,
     ValidationStatus,
@@ -29,8 +31,10 @@ from tradepilot.etl.normalizers import get_normalizer
 from tradepilot.etl.registry import DatasetRegistry, register_stage_b_datasets
 from tradepilot.etl.sources import BaseSourceAdapter, TushareSourceAdapter
 from tradepilot.etl.storage import (
+    build_dataset_file_path,
     build_normalized_file_path,
     cleanup_temp_files,
+    write_dataset_parquet,
     write_normalized_parquet,
     write_raw_parquet,
 )
@@ -48,6 +52,69 @@ _ID_SEQUENCES: dict[tuple[str, str], str] = {
         "validation_id",
     ): "etl_validation_results_validation_id_seq",
 }
+
+_TRADING_CALENDAR_FULL_HISTORY_PROFILE = "reference.trading_calendar.full_history"
+_TRADING_CALENDAR_HISTORY_START = date(2016, 1, 1)
+_TRADING_CALENDAR_BOOTSTRAP_EXCHANGES = ["SH", "SZ"]
+_REBALANCE_CALENDAR_MONTHLY_PROFILE = "reference.rebalance_calendar.monthly_post_20"
+_REBALANCE_CALENDAR_NAME = "etf_aw_v1_monthly_post_20"
+_REBALANCE_ANCHOR_DAY = 20
+_ETF_AW_SLEEVES_PROFILE = "reference.etf_aw_sleeves.frozen_v1"
+_ETF_AW_SLEEVE_DAILY_PROFILE = "derived.etf_aw_sleeve_daily.build"
+_ETF_AW_SLEEVES: list[dict[str, Any]] = [
+    {
+        "sleeve_code": "510300.SH",
+        "sleeve_role": "equity_large",
+        "sleeve_name": "沪深300ETF华泰柏瑞",
+        "listing_exchange": "SH",
+        "benchmark_name": "沪深300指数",
+        "list_date": None,
+        "exposure_note": "Large-cap China equity beta proxy.",
+    },
+    {
+        "sleeve_code": "159845.SZ",
+        "sleeve_role": "equity_small",
+        "sleeve_name": "中证1000ETF华夏",
+        "listing_exchange": "SZ",
+        "benchmark_name": "中证1000指数收益率",
+        "list_date": None,
+        "exposure_note": "Small-cap and higher-beta China equity proxy.",
+    },
+    {
+        "sleeve_code": "511010.SH",
+        "sleeve_role": "bond",
+        "sleeve_name": "国债ETF国泰",
+        "listing_exchange": "SH",
+        "benchmark_name": "上证5年期国债指数收益率",
+        "list_date": date(2013, 3, 25),
+        "exposure_note": (
+            "Duration-bearing sovereign bond defense sleeve; not a universal "
+            "bond factor or maximally convex crisis hedge."
+        ),
+    },
+    {
+        "sleeve_code": "518850.SH",
+        "sleeve_role": "gold",
+        "sleeve_name": "黄金ETF华夏",
+        "listing_exchange": "SH",
+        "benchmark_name": "上海黄金交易所黄金现货实盘合约Au99.99价格收益率",
+        "list_date": None,
+        "exposure_note": "Gold hedge sleeve for inflation and stress diversification.",
+    },
+    {
+        "sleeve_code": "159001.SZ",
+        "sleeve_role": "cash",
+        "sleeve_name": "货币ETF易方达",
+        "listing_exchange": "SZ",
+        "benchmark_name": "活期存款基准利率*(1-利息税税率)",
+        "list_date": date(2014, 10, 20),
+        "exposure_note": (
+            "Cash-like neutral buffer sleeve with low-volatility behavior."
+        ),
+    },
+]
+_ETF_AW_SLEEVE_CODES = [str(row["sleeve_code"]) for row in _ETF_AW_SLEEVES]
+_ETF_AW_SLEEVE_ROLES = {str(row["sleeve_role"]) for row in _ETF_AW_SLEEVES}
 
 
 class ETLService:
@@ -225,10 +292,33 @@ class ETLService:
             for dataset_name in dataset_names
         }
 
-    def run_bootstrap(self, profile_name: str) -> dict:
-        """Stage B does not implement profile bootstrap runners."""
+    def run_bootstrap(
+        self,
+        profile_name: str,
+        *,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> dict:
+        """Run a narrow bootstrap profile."""
 
-        raise NotImplementedError("profile bootstrap is deferred beyond Stage B")
+        if profile_name == _TRADING_CALENDAR_FULL_HISTORY_PROFILE:
+            return self._bootstrap_trading_calendar_full_history(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        if profile_name == _REBALANCE_CALENDAR_MONTHLY_PROFILE:
+            return self._bootstrap_rebalance_calendar_monthly_post_20(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        if profile_name == _ETF_AW_SLEEVES_PROFILE:
+            return self._bootstrap_etf_aw_sleeves()
+        if profile_name == _ETF_AW_SLEEVE_DAILY_PROFILE:
+            return self._build_etf_aw_sleeve_daily(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        raise KeyError(f"unsupported bootstrap profile: {profile_name}")
 
     def list_runs(self, dataset_name: str | None = None) -> list[dict]:
         """List ETL run history."""
@@ -369,34 +459,7 @@ class ETLService:
             exchanges = self._required_calendar_exchanges(definition, request)
             if not exchanges:
                 return False
-            self.conn.register(
-                "stage_b_required_calendar_exchanges",
-                pd.DataFrame({"exchange": exchanges}),
-            )
-            try:
-                rows = self.conn.execute(
-                    """
-                    SELECT c.exchange,
-                           COUNT(DISTINCT c.trade_date) AS covered_days,
-                           MIN(c.trade_date) AS min_date,
-                           MAX(c.trade_date) AS max_date
-                    FROM canonical_trading_calendar c
-                    JOIN stage_b_required_calendar_exchanges r
-                      ON c.exchange = r.exchange
-                    WHERE c.trade_date BETWEEN ? AND ?
-                    GROUP BY c.exchange
-                    """,
-                    [start, end],
-                ).fetchall()
-            finally:
-                self.conn.unregister("stage_b_required_calendar_exchanges")
-            expected_days = (end - start).days + 1
-            if len(rows) != len(exchanges):
-                return False
-            return all(
-                int(count) == expected_days and min_date == start and max_date == end
-                for _, count, min_date, max_date in rows
-            )
+            return self._calendar_window_covered(start, end, exchanges)
         return True
 
     def _fresh_dependency_available(
@@ -506,6 +569,8 @@ class ETLService:
             return self._write_trading_calendar(canonical)
         if definition.dataset_name == "reference.instruments":
             return self._write_instruments(canonical)
+        if definition.dataset_name == "market.etf_adj_factor":
+            return self._write_etf_adj_factor(definition, canonical)
         return self._write_market_daily(definition, canonical)
 
     def _write_trading_calendar(self, canonical: pd.DataFrame) -> CanonicalWriteResult:
@@ -600,6 +665,62 @@ class ETLService:
                 merged = partition_frame
                 existing_keys = set()
             partition_keys = _market_daily_keys(partition_frame)
+            merged = (
+                merged.sort_values(["instrument_id", "trade_date", "ingested_at"])
+                .drop_duplicates(["instrument_id", "trade_date"], keep="last")
+                .reset_index(drop=True)
+            )
+            merged["trade_date"] = pd.to_datetime(
+                merged["trade_date"], errors="coerce"
+            ).dt.date
+            write_result = write_normalized_parquet(
+                merged,
+                definition.dataset_name,
+                parts,
+                lakehouse_root=self.lakehouse_root,
+            )
+            storage_paths.append(write_result.relative_path)
+            partitions_written += 1
+            records_inserted += len(partition_keys - existing_keys)
+            records_updated += len(partition_keys & existing_keys)
+        return CanonicalWriteResult(
+            records_written=len(canonical),
+            records_inserted=records_inserted,
+            records_updated=records_updated,
+            partitions_written=partitions_written,
+            storage_paths=storage_paths,
+        )
+
+    def _write_etf_adj_factor(
+        self, definition: DatasetDefinition, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        if canonical.empty:
+            return CanonicalWriteResult()
+        frame = canonical.copy()
+        frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce")
+        frame["year"] = frame["trade_date"].dt.year
+        frame["month"] = frame["trade_date"].dt.month
+        storage_paths: list[str] = []
+        partitions_written = 0
+        records_inserted = 0
+        records_updated = 0
+        for (year, month), partition in frame.groupby(["year", "month"], dropna=True):
+            parts = [("year", int(year)), ("month", f"{int(month):02d}")]
+            final_path = build_normalized_file_path(
+                definition.dataset_name, parts, lakehouse_root=self.lakehouse_root
+            )
+            partition_frame = partition.drop(columns=["year", "month"]).copy()
+            if final_path.exists():
+                existing = pd.read_parquet(final_path)
+                existing["trade_date"] = pd.to_datetime(
+                    existing["trade_date"], errors="coerce"
+                )
+                merged = pd.concat([existing, partition_frame], ignore_index=True)
+                existing_keys = _instrument_date_keys(existing)
+            else:
+                merged = partition_frame
+                existing_keys = set()
+            partition_keys = _instrument_date_keys(partition_frame)
             merged = (
                 merged.sort_values(["instrument_id", "trade_date", "ingested_at"])
                 .drop_duplicates(["instrument_id", "trade_date"], keep="last")
@@ -817,17 +938,26 @@ class ETLService:
             latest_date = None
         self.conn.execute(
             """
-            DELETE FROM etl_source_watermarks
-            WHERE dataset_name = ? AND source_name = ?
-            """,
-            [definition.dataset_name, source_name],
-        )
-        self.conn.execute(
-            """
             INSERT INTO etl_source_watermarks (
                 dataset_name, source_name, latest_available_date,
                 latest_fetched_date, latest_successful_run_id, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (dataset_name, source_name) DO UPDATE SET
+                latest_available_date = GREATEST(
+                    etl_source_watermarks.latest_available_date,
+                    excluded.latest_available_date
+                ),
+                latest_fetched_date = GREATEST(
+                    etl_source_watermarks.latest_fetched_date,
+                    excluded.latest_fetched_date
+                ),
+                latest_successful_run_id = CASE
+                    WHEN etl_source_watermarks.latest_fetched_date IS NULL
+                      OR excluded.latest_fetched_date >= etl_source_watermarks.latest_fetched_date
+                    THEN excluded.latest_successful_run_id
+                    ELSE etl_source_watermarks.latest_successful_run_id
+                END,
+                updated_at = excluded.updated_at
             """,
             [
                 definition.dataset_name,
@@ -837,6 +967,661 @@ class ETLService:
                 run_id,
                 _utc_now(),
             ],
+        )
+
+    def _bootstrap_trading_calendar_full_history(self, start: date, end: date) -> dict:
+        start, end = _ordered_dates(start, end)
+        windows = _month_windows(start, end)
+        processed: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        runs: list[dict[str, Any]] = []
+
+        for window_start, window_end in windows:
+            window = {
+                "start": window_start.isoformat(),
+                "end": window_end.isoformat(),
+            }
+            if self._calendar_window_covered(
+                window_start, window_end, _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES
+            ):
+                skipped.append(window)
+                continue
+            result = self.run_dataset_sync(
+                "reference.trading_calendar",
+                IngestionRequest(
+                    request_start=window_start,
+                    request_end=window_end,
+                    trigger_mode=TriggerMode.BACKFILL,
+                    context={"exchanges": _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES},
+                ),
+            )
+            run = {
+                **window,
+                "run_id": result.run_id,
+                "status": result.status.value,
+                "records_written": result.records_written,
+            }
+            runs.append(run)
+            processed.append(window)
+            if result.status != RunStatus.SUCCESS:
+                return {
+                    "profile_name": _TRADING_CALENDAR_FULL_HISTORY_PROFILE,
+                    "dataset_name": "reference.trading_calendar",
+                    "status": RunStatus.FAILED.value,
+                    "requested_start": start.isoformat(),
+                    "requested_end": end.isoformat(),
+                    "windows_total": len(windows),
+                    "windows_processed": len(processed),
+                    "windows_skipped": len(skipped),
+                    "runs": runs,
+                    "skipped_windows": skipped,
+                    "error_message": result.error_message,
+                }
+
+        final_coverage_ok = self._calendar_window_covered(
+            start, end, _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES
+        )
+        duplicate_keys = int(
+            self.conn.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT exchange, trade_date, COUNT(*) AS rows_per_key
+                    FROM canonical_trading_calendar
+                    WHERE trade_date BETWEEN ? AND ?
+                      AND exchange IN ('SH', 'SZ')
+                    GROUP BY exchange, trade_date
+                    HAVING COUNT(*) > 1
+                )
+                """,
+                [start, end],
+            ).fetchone()[0]
+        )
+        final_validation_results = self._validate_trading_calendar_window(start, end)
+        final_validation_counts = validation_counts(final_validation_results)
+        final_validation_passed = not has_blocking_failures(final_validation_results)
+        status = (
+            RunStatus.SUCCESS.value
+            if final_coverage_ok and duplicate_keys == 0 and final_validation_passed
+            else RunStatus.FAILED.value
+        )
+        return {
+            "profile_name": _TRADING_CALENDAR_FULL_HISTORY_PROFILE,
+            "dataset_name": "reference.trading_calendar",
+            "status": status,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "windows_total": len(windows),
+            "windows_processed": len(processed),
+            "windows_skipped": len(skipped),
+            "runs": runs,
+            "skipped_windows": skipped,
+            "final_coverage_ok": final_coverage_ok,
+            "duplicate_business_keys": duplicate_keys,
+            "final_validation_passed": final_validation_passed,
+            "final_validation_counts": final_validation_counts,
+        }
+
+    def _bootstrap_etf_aw_sleeves(self) -> dict:
+        rows = [dict(row) for row in _ETF_AW_SLEEVES]
+        self._write_etf_aw_sleeves(rows)
+        self._ensure_etf_aw_sleeve_instruments(rows)
+        validation = self._validate_etf_aw_sleeves()
+        status = (
+            RunStatus.SUCCESS.value
+            if all(validation.values())
+            else RunStatus.FAILED.value
+        )
+        return {
+            "profile_name": _ETF_AW_SLEEVES_PROFILE,
+            "dataset_name": "reference.etf_aw_sleeves",
+            "status": status,
+            "records_written": len(rows),
+            "sleeve_codes": _ETF_AW_SLEEVE_CODES,
+            "validation": validation,
+        }
+
+    def _write_etf_aw_sleeves(self, rows: list[dict[str, Any]]) -> None:
+        frame = pd.DataFrame(rows)
+        frame["sleeve_type"] = frame["sleeve_role"]
+        frame["is_active"] = True
+        now = _utc_now()
+        frame["created_at"] = now
+        frame["updated_at"] = now
+        self.conn.register("stage_c_etf_aw_sleeves", frame)
+        try:
+            self.conn.execute("""
+                DELETE FROM canonical_sleeves
+                WHERE sleeve_code IN (
+                    SELECT sleeve_code FROM stage_c_etf_aw_sleeves
+                )
+                """)
+            self.conn.execute("""
+                INSERT INTO canonical_sleeves (
+                    sleeve_code, sleeve_name, sleeve_type, is_active, updated_at,
+                    sleeve_role, listing_exchange, benchmark_name, list_date,
+                    exposure_note, created_at
+                )
+                SELECT sleeve_code, sleeve_name, sleeve_type, is_active, updated_at,
+                       sleeve_role, listing_exchange, benchmark_name, list_date,
+                       exposure_note, created_at
+                FROM stage_c_etf_aw_sleeves
+                """)
+        finally:
+            self.conn.unregister("stage_c_etf_aw_sleeves")
+
+    def _ensure_etf_aw_sleeve_instruments(self, rows: list[dict[str, Any]]) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "instrument_id": row["sleeve_code"],
+                    "source_instrument_id": row["sleeve_code"],
+                    "instrument_name": row["sleeve_name"],
+                    "instrument_type": "etf",
+                    "exchange": row["listing_exchange"],
+                    "list_date": row["list_date"],
+                    "delist_date": None,
+                    "is_active": True,
+                    "source_name": "static_etf_aw_v1",
+                }
+                for row in rows
+            ]
+        )
+        self.conn.register("stage_c_etf_aw_instruments", frame)
+        try:
+            self.conn.execute("""
+                INSERT INTO canonical_instruments (
+                    instrument_id, source_instrument_id, instrument_name,
+                    instrument_type, exchange, list_date, delist_date, is_active,
+                    source_name, updated_at
+                )
+                SELECT s.instrument_id, s.source_instrument_id, s.instrument_name,
+                       s.instrument_type, s.exchange, s.list_date, s.delist_date,
+                       s.is_active, s.source_name, CURRENT_TIMESTAMP
+                FROM stage_c_etf_aw_instruments s
+                LEFT JOIN canonical_instruments c
+                  ON s.instrument_id = c.instrument_id
+                WHERE c.instrument_id IS NULL
+                """)
+        finally:
+            self.conn.unregister("stage_c_etf_aw_instruments")
+
+    def _validate_etf_aw_sleeves(self) -> dict[str, bool]:
+        rows = self.conn.execute("""
+            SELECT sleeve_code, sleeve_role, listing_exchange, exposure_note,
+                   is_active
+            FROM canonical_sleeves
+            WHERE sleeve_code IN ('510300.SH', '159845.SZ', '511010.SH',
+                                  '518850.SH', '159001.SZ')
+            ORDER BY sleeve_code
+            """).fetchall()
+        active_codes = [row[0] for row in rows if row[4] is True]
+        roles = {row[1] for row in rows}
+        exchanges = {row[0]: row[2] for row in rows}
+        notes_present = all(bool(str(row[3] or "").strip()) for row in rows)
+        instrument_count = int(self.conn.execute("""
+                SELECT COUNT(*)
+                FROM canonical_instruments
+                WHERE instrument_id IN ('510300.SH', '159845.SZ', '511010.SH',
+                                        '518850.SH', '159001.SZ')
+                  AND instrument_type = 'etf'
+                """).fetchone()[0])
+        return {
+            "exact_frozen_codes": active_codes == sorted(_ETF_AW_SLEEVE_CODES),
+            "roles_supported": roles == _ETF_AW_SLEEVE_ROLES,
+            "listing_exchange_matches_suffix": all(
+                code.rsplit(".", 1)[-1] == exchange
+                for code, exchange in exchanges.items()
+            ),
+            "exposure_notes_present": notes_present,
+            "canonical_instruments_available": instrument_count == len(rows),
+        }
+
+    def _build_etf_aw_sleeve_daily(self, start: date, end: date) -> dict:
+        start, end = _ordered_dates(start, end)
+        self._bootstrap_etf_aw_sleeves()
+        daily = self._read_partitioned_dataset(
+            "market.etf_daily",
+            start,
+            end,
+            StorageZone.NORMALIZED,
+        )
+        adj = self._read_partitioned_dataset(
+            "market.etf_adj_factor",
+            start,
+            end,
+            StorageZone.NORMALIZED,
+        )
+        missing_inputs = []
+        if daily.empty:
+            missing_inputs.append("market.etf_daily")
+        if adj.empty:
+            missing_inputs.append("market.etf_adj_factor")
+        if missing_inputs:
+            return {
+                "profile_name": _ETF_AW_SLEEVE_DAILY_PROFILE,
+                "dataset_name": "derived.etf_aw_sleeve_daily",
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "missing_inputs": missing_inputs,
+                "error_message": "required normalized market inputs are missing",
+            }
+
+        panel = self._make_etf_aw_sleeve_daily_frame(daily, adj, start, end)
+        validation = _validate_sleeve_daily_frame(panel)
+        if not all(validation.values()):
+            return {
+                "profile_name": _ETF_AW_SLEEVE_DAILY_PROFILE,
+                "dataset_name": "derived.etf_aw_sleeve_daily",
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "validation": validation,
+                "error_message": "derived sleeve daily validation failed",
+            }
+
+        write_result = self._write_etf_aw_sleeve_daily(panel)
+        return {
+            "profile_name": _ETF_AW_SLEEVE_DAILY_PROFILE,
+            "dataset_name": "derived.etf_aw_sleeve_daily",
+            "status": RunStatus.SUCCESS.value,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "records_written": write_result.records_written,
+            "records_inserted": write_result.records_inserted,
+            "records_updated": write_result.records_updated,
+            "partitions_written": write_result.partitions_written,
+            "storage_paths": write_result.storage_paths,
+            "validation": validation,
+        }
+
+    def _read_partitioned_dataset(
+        self,
+        dataset_name: str,
+        start: date,
+        end: date,
+        zone: StorageZone,
+    ) -> pd.DataFrame:
+        frames: list[pd.DataFrame] = []
+        for window_start, _ in _month_windows(start, end):
+            path = build_dataset_file_path(
+                dataset_name,
+                zone,
+                [
+                    ("year", window_start.year),
+                    ("month", f"{window_start.month:02d}"),
+                ],
+                lakehouse_root=self.lakehouse_root,
+            )
+            if path.exists():
+                frames.append(pd.read_parquet(path))
+        if not frames:
+            return pd.DataFrame()
+        frame = pd.concat(frames, ignore_index=True)
+        if "trade_date" in frame.columns:
+            frame["trade_date"] = pd.to_datetime(
+                frame["trade_date"], errors="coerce"
+            ).dt.date
+            frame = frame[
+                frame["trade_date"].between(start, end, inclusive="both")
+            ].copy()
+        return frame
+
+    def _make_etf_aw_sleeve_daily_frame(
+        self,
+        daily: pd.DataFrame,
+        adj: pd.DataFrame,
+        start: date,
+        end: date,
+    ) -> pd.DataFrame:
+        sleeves = self.conn.execute("""
+            SELECT sleeve_code, sleeve_role
+            FROM canonical_sleeves
+            WHERE sleeve_code IN ('510300.SH', '159845.SZ', '511010.SH',
+                                  '518850.SH', '159001.SZ')
+              AND is_active = TRUE
+            """).fetchdf()
+        daily = daily.copy()
+        adj = adj.copy()
+        daily["trade_date"] = pd.to_datetime(
+            daily["trade_date"], errors="coerce"
+        ).dt.date
+        adj["trade_date"] = pd.to_datetime(adj["trade_date"], errors="coerce").dt.date
+        merged = daily.merge(
+            adj.loc[:, ["instrument_id", "trade_date", "adj_factor"]],
+            on=["instrument_id", "trade_date"],
+            how="left",
+        )
+        merged = merged.merge(
+            sleeves.rename(columns={"sleeve_code": "instrument_id"}),
+            on="instrument_id",
+            how="inner",
+        )
+        merged = merged[
+            merged["trade_date"].between(start, end, inclusive="both")
+        ].copy()
+        merged = merged.sort_values(["instrument_id", "trade_date"]).reset_index(
+            drop=True
+        )
+        merged["adj_close"] = merged["close"] * merged["adj_factor"]
+        merged["adj_pct_chg"] = (
+            merged.groupby("instrument_id")["adj_close"].pct_change() * 100
+        )
+        merged["sleeve_code"] = merged["instrument_id"]
+        merged["source_name"] = "derived.market_etf_daily_plus_adj_factor"
+        merged["ingested_at"] = _utc_now()
+        merged["quality_status"] = "pass"
+        columns = [
+            "sleeve_code",
+            "sleeve_role",
+            "instrument_id",
+            "trade_date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "adj_factor",
+            "adj_close",
+            "pct_chg",
+            "adj_pct_chg",
+            "volume",
+            "amount",
+            "source_name",
+            "ingested_at",
+            "quality_status",
+        ]
+        return merged.loc[:, columns].copy()
+
+    def _write_etf_aw_sleeve_daily(
+        self, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        if canonical.empty:
+            return CanonicalWriteResult()
+        frame = canonical.copy()
+        frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce")
+        frame["year"] = frame["trade_date"].dt.year
+        frame["month"] = frame["trade_date"].dt.month
+        storage_paths: list[str] = []
+        partitions_written = 0
+        records_inserted = 0
+        records_updated = 0
+        for (year, month), partition in frame.groupby(["year", "month"], dropna=True):
+            parts = [("year", int(year)), ("month", f"{int(month):02d}")]
+            final_path = build_dataset_file_path(
+                "derived.etf_aw_sleeve_daily",
+                StorageZone.DERIVED,
+                parts,
+                lakehouse_root=self.lakehouse_root,
+            )
+            partition_frame = partition.drop(columns=["year", "month"]).copy()
+            if final_path.exists():
+                existing = pd.read_parquet(final_path)
+                existing["trade_date"] = pd.to_datetime(
+                    existing["trade_date"], errors="coerce"
+                )
+                merged = pd.concat([existing, partition_frame], ignore_index=True)
+                existing_keys = _sleeve_daily_keys(existing)
+            else:
+                merged = partition_frame
+                existing_keys = set()
+            partition_keys = _sleeve_daily_keys(partition_frame)
+            merged = (
+                merged.sort_values(["sleeve_code", "trade_date", "ingested_at"])
+                .drop_duplicates(["sleeve_code", "trade_date"], keep="last")
+                .reset_index(drop=True)
+            )
+            merged["trade_date"] = pd.to_datetime(
+                merged["trade_date"], errors="coerce"
+            ).dt.date
+            write_result = write_dataset_parquet(
+                merged,
+                "derived.etf_aw_sleeve_daily",
+                StorageZone.DERIVED,
+                parts,
+                lakehouse_root=self.lakehouse_root,
+            )
+            storage_paths.append(write_result.relative_path)
+            partitions_written += 1
+            records_inserted += len(partition_keys - existing_keys)
+            records_updated += len(partition_keys & existing_keys)
+        return CanonicalWriteResult(
+            records_written=len(canonical),
+            records_inserted=records_inserted,
+            records_updated=records_updated,
+            partitions_written=partitions_written,
+            storage_paths=storage_paths,
+        )
+
+    def _bootstrap_rebalance_calendar_monthly_post_20(
+        self, start: date, end: date
+    ) -> dict:
+        start, end = _ordered_dates(start, end)
+        month_starts = _month_starts_for_anchor_range(start, end, _REBALANCE_ANCHOR_DAY)
+        generated: list[dict[str, Any]] = []
+        missing_calendar_windows: list[dict[str, str]] = []
+
+        for month_start in month_starts:
+            anchor = date(month_start.year, month_start.month, _REBALANCE_ANCHOR_DAY)
+            search_end = date(
+                month_start.year,
+                month_start.month,
+                monthrange(month_start.year, month_start.month)[1],
+            )
+            if not self._calendar_window_covered(
+                anchor, search_end, _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES
+            ):
+                missing_calendar_windows.append(
+                    {
+                        "calendar_month": _calendar_month(month_start),
+                        "start": anchor.isoformat(),
+                        "end": search_end.isoformat(),
+                    }
+                )
+                continue
+            rebalance_date = self._first_common_open_day(anchor, search_end)
+            if rebalance_date is None:
+                missing_calendar_windows.append(
+                    {
+                        "calendar_month": _calendar_month(month_start),
+                        "start": anchor.isoformat(),
+                        "end": search_end.isoformat(),
+                    }
+                )
+                continue
+            generated.append(
+                {
+                    "calendar_month": _calendar_month(month_start),
+                    "rebalance_date": rebalance_date,
+                    "effective_date": rebalance_date,
+                    "notes": json.dumps(
+                        {
+                            "anchor_day": _REBALANCE_ANCHOR_DAY,
+                            "calendar_month": _calendar_month(month_start),
+                            "exchanges": _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES,
+                            "rule_name": "first_common_open_day_on_or_after_20th",
+                        },
+                        sort_keys=True,
+                    ),
+                }
+            )
+
+        if missing_calendar_windows:
+            return {
+                "profile_name": _REBALANCE_CALENDAR_MONTHLY_PROFILE,
+                "dataset_name": "reference.rebalance_calendar",
+                "calendar_name": _REBALANCE_CALENDAR_NAME,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "months_total": len(month_starts),
+                "months_processed": len(generated),
+                "records_written": 0,
+                "missing_calendar_windows": missing_calendar_windows,
+                "error_message": "trading calendar coverage is incomplete",
+            }
+
+        self._write_rebalance_calendar_rows(generated)
+        duplicate_rows = self._rebalance_calendar_duplicate_months(start, end)
+        status = (
+            RunStatus.SUCCESS.value if duplicate_rows == 0 else RunStatus.FAILED.value
+        )
+        return {
+            "profile_name": _REBALANCE_CALENDAR_MONTHLY_PROFILE,
+            "dataset_name": "reference.rebalance_calendar",
+            "calendar_name": _REBALANCE_CALENDAR_NAME,
+            "status": status,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "months_total": len(month_starts),
+            "months_processed": len(generated),
+            "records_written": len(generated),
+            "duplicate_calendar_months": duplicate_rows,
+            "rows": [
+                {
+                    **row,
+                    "rebalance_date": row["rebalance_date"].isoformat(),
+                    "effective_date": row["effective_date"].isoformat(),
+                }
+                for row in generated
+            ],
+        }
+
+    def _first_common_open_day(self, start: date, end: date) -> date | None:
+        row = self.conn.execute(
+            """
+            SELECT trade_date
+            FROM canonical_trading_calendar
+            WHERE exchange IN ('SH', 'SZ')
+              AND is_open = TRUE
+              AND trade_date BETWEEN ? AND ?
+            GROUP BY trade_date
+            HAVING COUNT(DISTINCT exchange) = 2
+            ORDER BY trade_date
+            LIMIT 1
+            """,
+            [start, end],
+        ).fetchone()
+        return row[0] if row else None
+
+    def _write_rebalance_calendar_rows(self, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        frame = pd.DataFrame(rows)
+        frame["calendar_name"] = _REBALANCE_CALENDAR_NAME
+        frame["updated_at"] = _utc_now()
+        self.conn.register("stage_c_rebalance_calendar", frame)
+        try:
+            self.conn.execute(
+                """
+                DELETE FROM canonical_rebalance_calendar
+                WHERE calendar_name = ?
+                  AND rebalance_date IN (
+                      SELECT rebalance_date FROM stage_c_rebalance_calendar
+                  )
+                """,
+                [_REBALANCE_CALENDAR_NAME],
+            )
+            self.conn.execute("""
+                INSERT INTO canonical_rebalance_calendar (
+                    calendar_name, rebalance_date, effective_date, notes, updated_at
+                )
+                SELECT calendar_name, rebalance_date, effective_date, notes, updated_at
+                FROM stage_c_rebalance_calendar
+                """)
+        finally:
+            self.conn.unregister("stage_c_rebalance_calendar")
+
+    def _rebalance_calendar_duplicate_months(self, start: date, end: date) -> int:
+        month_starts = _month_starts_for_anchor_range(start, end, _REBALANCE_ANCHOR_DAY)
+        if not month_starts:
+            return 0
+        month_values = [_calendar_month(month_start) for month_start in month_starts]
+        self.conn.register(
+            "stage_c_rebalance_months",
+            pd.DataFrame({"calendar_month": month_values}),
+        )
+        try:
+            return int(
+                self.conn.execute(
+                    """
+                    SELECT COUNT(*) FROM (
+                        SELECT
+                               json_extract_string(notes, '$.calendar_month')
+                                   AS calendar_month,
+                               COUNT(*) AS rows_per_month
+                        FROM canonical_rebalance_calendar
+                        WHERE calendar_name = ?
+                          AND json_extract_string(notes, '$.calendar_month') IN (
+                              SELECT calendar_month FROM stage_c_rebalance_months
+                          )
+                        GROUP BY calendar_month
+                        HAVING COUNT(*) > 1
+                    )
+                    """,
+                    [_REBALANCE_CALENDAR_NAME],
+                ).fetchone()[0]
+            )
+        finally:
+            self.conn.unregister("stage_c_rebalance_months")
+
+    def _calendar_window_covered(
+        self, start: date, end: date, exchanges: Iterable[str]
+    ) -> bool:
+        start, end = _ordered_dates(start, end)
+        exchange_list = _unique_strings(exchanges)
+        if not exchange_list:
+            return False
+        self.conn.register(
+            "stage_b_required_calendar_exchanges",
+            pd.DataFrame({"exchange": exchange_list}),
+        )
+        try:
+            rows = self.conn.execute(
+                """
+                SELECT c.exchange,
+                       COUNT(DISTINCT c.trade_date) AS covered_days,
+                       MIN(c.trade_date) AS min_date,
+                       MAX(c.trade_date) AS max_date
+                FROM canonical_trading_calendar c
+                JOIN stage_b_required_calendar_exchanges r
+                  ON c.exchange = r.exchange
+                WHERE c.trade_date BETWEEN ? AND ?
+                GROUP BY c.exchange
+                """,
+                [start, end],
+            ).fetchall()
+        finally:
+            self.conn.unregister("stage_b_required_calendar_exchanges")
+        expected_days = (end - start).days + 1
+        if len(rows) != len(exchange_list):
+            return False
+        return all(
+            int(count) == expected_days and min_date == start and max_date == end
+            for _, count, min_date, max_date in rows
+        )
+
+    def _validate_trading_calendar_window(
+        self, start: date, end: date
+    ) -> list[ValidationResultRecord]:
+        frame = self.conn.execute(
+            """
+            SELECT exchange, trade_date, is_open, pretrade_date
+            FROM canonical_trading_calendar
+            WHERE trade_date BETWEEN ? AND ?
+              AND exchange IN ('SH', 'SZ')
+            ORDER BY exchange, trade_date
+            """,
+            [start, end],
+        ).fetchdf()
+        validator = get_validator("reference.trading_calendar")
+        return validator.validate(
+            frame,
+            {
+                "dataset_name": "reference.trading_calendar",
+                "run_id": 0,
+            },
         )
 
     def _ensure_source_registry(self, source_name: str) -> None:
@@ -909,8 +1694,71 @@ def _unique_strings(values: Iterable[object]) -> list[str]:
     return result
 
 
+def _ordered_dates(start: date, end: date) -> tuple[date, date]:
+    """Return dates in ascending order."""
+
+    if start > end:
+        return end, start
+    return start, end
+
+
+def _month_windows(start: date, end: date) -> list[tuple[date, date]]:
+    """Split an inclusive date range into calendar-month windows."""
+
+    start, end = _ordered_dates(start, end)
+    windows: list[tuple[date, date]] = []
+    cursor = date(start.year, start.month, 1)
+    while cursor <= end:
+        month_start = max(start, cursor)
+        month_end = min(
+            end,
+            date(
+                cursor.year,
+                cursor.month,
+                monthrange(cursor.year, cursor.month)[1],
+            ),
+        )
+        windows.append((month_start, month_end))
+        if cursor.month == 12:
+            cursor = date(cursor.year + 1, 1, 1)
+        else:
+            cursor = date(cursor.year, cursor.month + 1, 1)
+    return windows
+
+
+def _month_starts_for_anchor_range(
+    start: date, end: date, anchor_day: int
+) -> list[date]:
+    """Return month starts whose anchor day falls inside an inclusive range."""
+
+    start, end = _ordered_dates(start, end)
+    month_starts: list[date] = []
+    cursor = date(start.year, start.month, 1)
+    while cursor <= end:
+        anchor = date(cursor.year, cursor.month, anchor_day)
+        if start <= anchor <= end:
+            month_starts.append(cursor)
+        if cursor.month == 12:
+            cursor = date(cursor.year + 1, 1, 1)
+        else:
+            cursor = date(cursor.year, cursor.month + 1, 1)
+    return month_starts
+
+
+def _calendar_month(month_start: date) -> str:
+    """Return the canonical YYYY-MM label for a calendar month."""
+
+    return f"{month_start.year:04d}-{month_start.month:02d}"
+
+
 def _market_daily_keys(frame: pd.DataFrame) -> set[tuple[str, date]]:
     """Return business keys from a market daily frame."""
+
+    return _instrument_date_keys(frame)
+
+
+def _instrument_date_keys(frame: pd.DataFrame) -> set[tuple[str, date]]:
+    """Return instrument/date business keys from a canonical frame."""
 
     if frame.empty:
         return set()
@@ -925,8 +1773,46 @@ def _market_daily_keys(frame: pd.DataFrame) -> set[tuple[str, date]]:
     }
 
 
+def _sleeve_daily_keys(frame: pd.DataFrame) -> set[tuple[str, date]]:
+    """Return sleeve/date business keys from the derived sleeve panel."""
+
+    if frame.empty:
+        return set()
+    key_frame = frame.loc[:, ["sleeve_code", "trade_date"]].copy()
+    key_frame["trade_date"] = pd.to_datetime(
+        key_frame["trade_date"], errors="coerce"
+    ).dt.date
+    return {
+        (str(row.sleeve_code), row.trade_date)
+        for row in key_frame.itertuples(index=False)
+        if pd.notna(row.sleeve_code) and pd.notna(row.trade_date)
+    }
+
+
+def _validate_sleeve_daily_frame(frame: pd.DataFrame) -> dict[str, bool]:
+    """Validate the minimum contract for the ETF all-weather sleeve panel."""
+
+    if frame.empty:
+        return {
+            "non_empty": False,
+            "no_duplicate_business_keys": False,
+            "adj_factor_present": False,
+            "adj_close_positive": False,
+            "known_frozen_sleeves_only": False,
+        }
+    duplicate_count = int(frame.duplicated(["sleeve_code", "trade_date"]).sum())
+    known_codes = set(frame["sleeve_code"].dropna().astype(str).tolist())
+    return {
+        "non_empty": True,
+        "no_duplicate_business_keys": duplicate_count == 0,
+        "adj_factor_present": bool(frame["adj_factor"].notna().all()),
+        "adj_close_positive": bool((frame["adj_close"] > 0).all()),
+        "known_frozen_sleeves_only": known_codes.issubset(set(_ETF_AW_SLEEVE_CODES)),
+    }
+
+
 def _instrument_type_for_dataset(dataset_name: str) -> str | None:
-    if dataset_name == "market.etf_daily":
+    if dataset_name in {"market.etf_daily", "market.etf_adj_factor"}:
         return "etf"
     if dataset_name == "market.index_daily":
         return "index"

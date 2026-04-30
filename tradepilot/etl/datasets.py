@@ -132,6 +132,46 @@ def build_reference_instruments_dataset() -> DatasetDefinition:
     )
 
 
+def build_reference_rebalance_calendar_dataset() -> DatasetDefinition:
+    """Return the ETF all-weather monthly rebalance calendar definition."""
+
+    return DatasetDefinition(
+        dataset_name="reference.rebalance_calendar",
+        category=DatasetCategory.REFERENCE,
+        grain="calendar_month",
+        primary_source="derived",
+        storage_zone=StorageZone.NORMALIZED,
+        canonical_schema_name="canonical_rebalance_calendar",
+        validation_rule_names=[
+            "rebalance_calendar.monthly_post_20_common_open_day",
+            "rebalance_calendar.effective_date_required",
+            "rebalance_calendar.duplicate_calendar_month",
+        ],
+        dependencies=["reference.trading_calendar"],
+        dependency_types={
+            "reference.trading_calendar": DependencyType.WINDOW,
+        },
+    )
+
+
+def build_reference_etf_aw_sleeves_dataset() -> DatasetDefinition:
+    """Return the frozen ETF all-weather v1 sleeve registry definition."""
+
+    return DatasetDefinition(
+        dataset_name="reference.etf_aw_sleeves",
+        category=DatasetCategory.REFERENCE,
+        grain="sleeve",
+        primary_source="static",
+        storage_zone=StorageZone.NORMALIZED,
+        canonical_schema_name="canonical_sleeves",
+        validation_rule_names=[
+            "sleeves.frozen_v1_exact_codes",
+            "sleeves.role_supported",
+            "sleeves.exposure_note_present",
+        ],
+    )
+
+
 def build_market_etf_daily_dataset() -> DatasetDefinition:
     """Return the Stage B ETF daily dataset definition."""
 
@@ -165,6 +205,60 @@ def build_market_etf_daily_dataset() -> DatasetDefinition:
             "reference.instruments": DependencyType.SNAPSHOT,
             "reference.trading_calendar": DependencyType.WINDOW,
         },
+    )
+
+
+def build_market_etf_adj_factor_dataset() -> DatasetDefinition:
+    """Return the ETF adjustment factor dataset definition."""
+
+    dependencies = ["reference.instruments", "reference.trading_calendar"]
+    return DatasetDefinition(
+        dataset_name="market.etf_adj_factor",
+        category=DatasetCategory.MARKET,
+        grain="instrument_trade_date",
+        primary_source="tushare",
+        storage_zone=StorageZone.NORMALIZED,
+        partition_strategy="year_month",
+        canonical_schema_name="etf_adj_factor_v1",
+        validation_rule_names=[
+            "etf_adj_factor.duplicate_business_key",
+            "etf_adj_factor.instrument_id_required",
+            "etf_adj_factor.trade_date_required",
+            "etf_adj_factor.adj_factor_required",
+            "etf_adj_factor.adj_factor_positive",
+            "etf_adj_factor.instrument_exists",
+        ],
+        supports_incremental=True,
+        watermark_key="trade_date",
+        dependencies=dependencies,
+        dependency_types={
+            "reference.instruments": DependencyType.SNAPSHOT,
+            "reference.trading_calendar": DependencyType.WINDOW,
+        },
+    )
+
+
+def build_derived_etf_aw_sleeve_daily_dataset() -> DatasetDefinition:
+    """Return the adjustment-aware ETF all-weather sleeve daily panel definition."""
+
+    return DatasetDefinition(
+        dataset_name="derived.etf_aw_sleeve_daily",
+        category=DatasetCategory.DERIVED,
+        grain="sleeve_trade_date",
+        primary_source="derived",
+        storage_zone=StorageZone.DERIVED,
+        partition_strategy="year_month",
+        canonical_schema_name="etf_aw_sleeve_daily_v1",
+        validation_rule_names=[
+            "sleeve_daily.duplicate_business_key",
+            "sleeve_daily.adjustment_factor_present",
+            "sleeve_daily.adjusted_close_positive",
+        ],
+        dependencies=[
+            "reference.etf_aw_sleeves",
+            "market.etf_daily",
+            "market.etf_adj_factor",
+        ],
     )
 
 
@@ -210,6 +304,10 @@ def build_stage_b_datasets() -> list[DatasetDefinition]:
     return [
         build_reference_trading_calendar_dataset(),
         build_reference_instruments_dataset(),
+        build_reference_rebalance_calendar_dataset(),
+        build_reference_etf_aw_sleeves_dataset(),
+        build_market_etf_adj_factor_dataset(),
         build_market_etf_daily_dataset(),
         build_market_index_daily_dataset(),
+        build_derived_etf_aw_sleeve_daily_dataset(),
     ]

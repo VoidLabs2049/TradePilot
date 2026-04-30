@@ -111,6 +111,25 @@ def build_normalized_file_path(
     )
 
 
+def build_dataset_file_path(
+    dataset_name: str,
+    zone: StorageZone,
+    partition_parts: PartitionParts,
+    lakehouse_root: Path | None = None,
+) -> Path:
+    """Return the single canonical parquet file for one dataset partition."""
+
+    return (
+        build_partition_path(
+            dataset_name=dataset_name,
+            zone=zone,
+            partition_parts=partition_parts,
+            lakehouse_root=lakehouse_root,
+        )
+        / "part-00000.parquet"
+    )
+
+
 def write_raw_parquet(
     frame: pd.DataFrame,
     dataset_name: str,
@@ -139,6 +158,24 @@ def write_normalized_parquet(
 
     final_path = build_normalized_file_path(
         dataset_name=dataset_name,
+        partition_parts=partition_parts,
+        lakehouse_root=lakehouse_root,
+    )
+    return _write_parquet_atomic(frame, final_path, lakehouse_root=lakehouse_root)
+
+
+def write_dataset_parquet(
+    frame: pd.DataFrame,
+    dataset_name: str,
+    zone: StorageZone,
+    partition_parts: PartitionParts,
+    lakehouse_root: Path | None = None,
+) -> ParquetWriteResult:
+    """Write one canonical parquet partition in a requested storage zone."""
+
+    final_path = build_dataset_file_path(
+        dataset_name=dataset_name,
+        zone=zone,
         partition_parts=partition_parts,
         lakehouse_root=lakehouse_root,
     )

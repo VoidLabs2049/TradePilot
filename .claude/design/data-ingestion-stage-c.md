@@ -181,6 +181,8 @@ Stage C 第一阶段只解决这些问题。
 7. 对已完整覆盖月份直接跳过
 8. 对缺失月份继续执行 ETL
 
+默认历史起点取 `2016-01-01`。这足以覆盖当前 ETF all-weather v1 的研究与生产基础窗口；调用方仍可为测试、修复或受限回补显式传入 `start` / `end` 覆盖窗口。
+
 这意味着 Stage C 第一阶段不是新写一套 calendar loader，而是**用现有单 dataset ETL path 做月度循环 backfill**。
 
 ### 3. Full-history fetch remains service-driven

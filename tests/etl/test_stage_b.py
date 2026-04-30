@@ -20,6 +20,7 @@ from tradepilot.etl.models import (
     RunStatus,
     SourceFetchResult,
     StorageZone,
+    TriggerMode,
     ValidationStatus,
 )
 from tradepilot.etl.normalizers import (
@@ -142,6 +143,25 @@ class EmptyReferenceMockTushareClient(MockTushareClient):
                 "name": pd.Series(dtype="object"),
                 "list_date": pd.Series(dtype="object"),
                 "delist_date": pd.Series(dtype="object"),
+            }
+        )
+
+
+class FullCalendarMockTushareClient(MockTushareClient):
+    """Mock client that returns complete natural-day calendar windows."""
+
+    def get_trade_calendar(
+        self, start_date: str, end_date: str, exchange: str = "SSE"
+    ) -> pd.DataFrame:
+        self.trade_calendar_calls.append(exchange)
+        self.trade_calendar_windows.append((start_date, end_date))
+        dates = pd.date_range(start_date, end_date, freq="D")
+        return pd.DataFrame(
+            {
+                "exchange": ["SH" if exchange == "SSE" else "SZ"] * len(dates),
+                "trade_date": dates,
+                "is_open": [True] * len(dates),
+                "pretrade_date": dates - pd.Timedelta(days=1),
             }
         )
 
@@ -694,6 +714,104 @@ class StageBServiceIntegrationTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(inserted, 0)
         self.assertEqual(updated, 1)
+
+    def test_calendar_full_history_bootstrap_runs_monthly_backfill(self) -> None:
+        client = FullCalendarMockTushareClient()
+        service = ETLService(
+            conn=self.conn,
+            source_adapters=[TushareSourceAdapter(client)],
+            lakehouse_root=Path(self._temp_dir.name) / "bootstrap-lakehouse",
+        )
+
+        result = service.run_bootstrap(
+            "reference.trading_calendar.full_history",
+            start=date(2026, 1, 30),
+            end=date(2026, 2, 2),
+        )
+
+        self.assertEqual(result["status"], RunStatus.SUCCESS.value)
+        self.assertEqual(result["windows_total"], 2)
+        self.assertEqual(result["windows_processed"], 2)
+        self.assertEqual(result["windows_skipped"], 0)
+        self.assertTrue(result["final_coverage_ok"])
+        self.assertEqual(result["duplicate_business_keys"], 0)
+        self.assertTrue(result["final_validation_passed"])
+        self.assertEqual(
+            client.trade_calendar_windows,
+            [
+                ("2026-01-30", "2026-01-31"),
+                ("2026-01-30", "2026-01-31"),
+                ("2026-02-01", "2026-02-02"),
+                ("2026-02-01", "2026-02-02"),
+            ],
+        )
+        self.assertEqual(client.trade_calendar_calls, ["SSE", "SZSE", "SSE", "SZSE"])
+
+        trigger_modes = self.conn.execute("""
+            SELECT DISTINCT trigger_mode
+            FROM etl_ingestion_runs
+            WHERE dataset_name = 'reference.trading_calendar'
+            """).fetchall()
+        self.assertEqual(trigger_modes, [(TriggerMode.BACKFILL.value,)])
+
+        covered_rows = self.conn.execute("""
+            SELECT COUNT(*)
+            FROM canonical_trading_calendar
+            WHERE trade_date BETWEEN DATE '2026-01-30' AND DATE '2026-02-02'
+              AND exchange IN ('SH', 'SZ')
+            """).fetchone()[0]
+        self.assertEqual(covered_rows, 8)
+
+    def test_calendar_bootstrap_skips_complete_windows_and_keeps_watermark(
+        self,
+    ) -> None:
+        client = FullCalendarMockTushareClient()
+        service = ETLService(
+            conn=self.conn,
+            source_adapters=[TushareSourceAdapter(client)],
+            lakehouse_root=Path(self._temp_dir.name) / "bootstrap-lakehouse",
+        )
+        self.conn.execute("""
+            INSERT INTO etl_source_watermarks (
+                dataset_name, source_name, latest_available_date,
+                latest_fetched_date, latest_successful_run_id, updated_at
+            ) VALUES (
+                'reference.trading_calendar', 'tushare',
+                DATE '2026-03-31', DATE '2026-03-31', 99, CURRENT_TIMESTAMP
+            )
+            """)
+
+        first = service.run_bootstrap(
+            "reference.trading_calendar.full_history",
+            start=date(2026, 1, 1),
+            end=date(2026, 1, 2),
+        )
+        count_after_first = self.conn.execute(
+            "SELECT COUNT(*) FROM canonical_trading_calendar"
+        ).fetchone()[0]
+        watermark_after_first = self.conn.execute("""
+            SELECT latest_fetched_date, latest_successful_run_id
+            FROM etl_source_watermarks
+            WHERE dataset_name = 'reference.trading_calendar'
+              AND source_name = 'tushare'
+            """).fetchone()
+
+        second = service.run_bootstrap(
+            "reference.trading_calendar.full_history",
+            start=date(2026, 1, 1),
+            end=date(2026, 1, 2),
+        )
+        count_after_second = self.conn.execute(
+            "SELECT COUNT(*) FROM canonical_trading_calendar"
+        ).fetchone()[0]
+
+        self.assertEqual(first["status"], RunStatus.SUCCESS.value)
+        self.assertEqual(second["status"], RunStatus.SUCCESS.value)
+        self.assertEqual(second["windows_processed"], 0)
+        self.assertEqual(second["windows_skipped"], 1)
+        self.assertEqual(count_after_first, 4)
+        self.assertEqual(count_after_second, count_after_first)
+        self.assertEqual(watermark_after_first, (date(2026, 3, 31), 99))
 
 
 if __name__ == "__main__":
