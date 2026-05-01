@@ -130,6 +130,30 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
             "first_common_open_day_on_or_after_20th",
         )
 
+    def test_rebalance_calendar_uses_first_common_open_day(self) -> None:
+        self._insert_calendar_window(date(2024, 5, 20), date(2024, 5, 31))
+        self.conn.execute("""
+            UPDATE canonical_trading_calendar
+            SET is_open = FALSE
+            WHERE exchange = 'SZ'
+              AND trade_date = DATE '2024-05-20'
+        """)
+
+        result = self.service.run_bootstrap(
+            "reference.rebalance_calendar.monthly_post_20",
+            start=date(2024, 5, 1),
+            end=date(2024, 5, 31),
+        )
+
+        self.assertEqual(result["status"], RunStatus.SUCCESS.value)
+        self.assertEqual(result["records_written"], 1)
+        row = self.conn.execute("""
+            SELECT rebalance_date, effective_date
+            FROM canonical_rebalance_calendar
+            WHERE calendar_month = '2024-05'
+            """).fetchone()
+        self.assertEqual(row, (date(2024, 5, 21), date(2024, 5, 21)))
+
     def test_rebalance_calendar_requires_complete_sh_sz_calendar(self) -> None:
         self._insert_calendar_window(
             date(2024, 1, 20),

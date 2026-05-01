@@ -1001,22 +1001,16 @@ class ETLService:
         final_coverage_ok = self._calendar_window_covered(
             start, end, _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES
         )
-        duplicate_keys = int(
-            self.conn.execute(
-                """
-                SELECT COUNT(*) FROM (
-                    SELECT exchange, trade_date, COUNT(*) AS rows_per_key
-                    FROM canonical_trading_calendar
-                    WHERE trade_date BETWEEN ? AND ?
-                      AND exchange IN ('SH', 'SZ')
-                    GROUP BY exchange, trade_date
-                    HAVING COUNT(*) > 1
-                )
-                """,
-                [start, end],
-            ).fetchone()[0]
+        duplicate_keys = self._trading_calendar_duplicate_key_count(
+            start,
+            end,
+            _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES,
         )
-        final_validation_results = self._validate_trading_calendar_window(start, end)
+        final_validation_results = self._validate_trading_calendar_window(
+            start,
+            end,
+            _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES,
+        )
         final_validation_counts = validation_counts(final_validation_results)
         final_validation_passed = not has_blocking_failures(final_validation_results)
         status = (
@@ -1361,7 +1355,11 @@ class ETLService:
                     }
                 )
                 continue
-            rebalance_date = self._first_common_open_day(anchor, search_end)
+            rebalance_date = self._first_common_open_day(
+                anchor,
+                search_end,
+                _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES,
+            )
             if rebalance_date is None:
                 missing_calendar_windows.append(
                     {
@@ -1429,21 +1427,34 @@ class ETLService:
             ],
         }
 
-    def _first_common_open_day(self, start: date, end: date) -> date | None:
-        row = self.conn.execute(
-            """
-            SELECT trade_date
-            FROM canonical_trading_calendar
-            WHERE exchange IN ('SH', 'SZ')
-              AND is_open = TRUE
-              AND trade_date BETWEEN ? AND ?
-            GROUP BY trade_date
-            HAVING COUNT(DISTINCT exchange) = 2
-            ORDER BY trade_date
-            LIMIT 1
-            """,
-            [start, end],
-        ).fetchone()
+    def _first_common_open_day(
+        self, start: date, end: date, exchanges: Iterable[str]
+    ) -> date | None:
+        exchange_list = _unique_strings(exchanges)
+        if not exchange_list:
+            return None
+        self.conn.register(
+            "stage_c_common_open_exchanges",
+            _trading_calendar_exchange_frame(exchange_list),
+        )
+        try:
+            row = self.conn.execute(
+                """
+                SELECT c.trade_date
+                FROM canonical_trading_calendar c
+                JOIN stage_c_common_open_exchanges r
+                  ON c.exchange = r.exchange
+                WHERE c.is_open = TRUE
+                  AND c.trade_date BETWEEN ? AND ?
+                GROUP BY c.trade_date
+                HAVING COUNT(DISTINCT c.exchange) = ?
+                ORDER BY c.trade_date
+                LIMIT 1
+                """,
+                [start, end, len(exchange_list)],
+            ).fetchone()
+        finally:
+            self.conn.unregister("stage_c_common_open_exchanges")
         return row[0] if row else None
 
     def _write_rebalance_calendar_rows(self, rows: list[dict[str, Any]]) -> None:
@@ -1528,8 +1539,8 @@ class ETLService:
         if not exchange_list:
             return False
         self.conn.register(
-            "stage_b_required_calendar_exchanges",
-            pd.DataFrame({"exchange": exchange_list}),
+            "etl_required_calendar_exchanges",
+            _trading_calendar_exchange_frame(exchange_list),
         )
         try:
             rows = self.conn.execute(
@@ -1539,7 +1550,7 @@ class ETLService:
                        MIN(c.trade_date) AS min_date,
                        MAX(c.trade_date) AS max_date
                 FROM canonical_trading_calendar c
-                JOIN stage_b_required_calendar_exchanges r
+                JOIN etl_required_calendar_exchanges r
                   ON c.exchange = r.exchange
                 WHERE c.trade_date BETWEEN ? AND ?
                 GROUP BY c.exchange
@@ -1547,7 +1558,7 @@ class ETLService:
                 [start, end],
             ).fetchall()
         finally:
-            self.conn.unregister("stage_b_required_calendar_exchanges")
+            self.conn.unregister("etl_required_calendar_exchanges")
         expected_days = (end - start).days + 1
         if len(rows) != len(exchange_list):
             return False
@@ -1556,19 +1567,64 @@ class ETLService:
             for _, count, min_date, max_date in rows
         )
 
+    def _trading_calendar_duplicate_key_count(
+        self, start: date, end: date, exchanges: Iterable[str]
+    ) -> int:
+        start, end = _ordered_dates(start, end)
+        exchange_list = _unique_strings(exchanges)
+        if not exchange_list:
+            return 0
+        self.conn.register(
+            "stage_c_duplicate_calendar_exchanges",
+            _trading_calendar_exchange_frame(exchange_list),
+        )
+        try:
+            return int(
+                self.conn.execute(
+                    """
+                    SELECT COUNT(*) FROM (
+                        SELECT c.exchange, c.trade_date, COUNT(*) AS rows_per_key
+                        FROM canonical_trading_calendar c
+                        JOIN stage_c_duplicate_calendar_exchanges r
+                          ON c.exchange = r.exchange
+                        WHERE c.trade_date BETWEEN ? AND ?
+                        GROUP BY c.exchange, c.trade_date
+                        HAVING COUNT(*) > 1
+                    )
+                    """,
+                    [start, end],
+                ).fetchone()[0]
+            )
+        finally:
+            self.conn.unregister("stage_c_duplicate_calendar_exchanges")
+
     def _validate_trading_calendar_window(
-        self, start: date, end: date
+        self, start: date, end: date, exchanges: Iterable[str]
     ) -> list[ValidationResultRecord]:
-        frame = self.conn.execute(
-            """
-            SELECT exchange, trade_date, is_open, pretrade_date
-            FROM canonical_trading_calendar
-            WHERE trade_date BETWEEN ? AND ?
-              AND exchange IN ('SH', 'SZ')
-            ORDER BY exchange, trade_date
-            """,
-            [start, end],
-        ).fetchdf()
+        exchange_list = _unique_strings(exchanges)
+        if not exchange_list:
+            frame = pd.DataFrame(
+                columns=["exchange", "trade_date", "is_open", "pretrade_date"]
+            )
+        else:
+            self.conn.register(
+                "stage_c_validation_calendar_exchanges",
+                _trading_calendar_exchange_frame(exchange_list),
+            )
+            try:
+                frame = self.conn.execute(
+                    """
+                    SELECT c.exchange, c.trade_date, c.is_open, c.pretrade_date
+                    FROM canonical_trading_calendar c
+                    JOIN stage_c_validation_calendar_exchanges r
+                      ON c.exchange = r.exchange
+                    WHERE c.trade_date BETWEEN ? AND ?
+                    ORDER BY c.exchange, c.trade_date
+                    """,
+                    [start, end],
+                ).fetchdf()
+            finally:
+                self.conn.unregister("stage_c_validation_calendar_exchanges")
         validator = get_validator("reference.trading_calendar")
         return validator.validate(
             frame,
@@ -1726,6 +1782,12 @@ def _etf_aw_sleeve_codes_frame() -> pd.DataFrame:
     """Return the frozen ETF all-weather sleeve universe as a query frame."""
 
     return pd.DataFrame({"sleeve_code": _ETF_AW_SLEEVE_CODES})
+
+
+def _trading_calendar_exchange_frame(exchanges: Iterable[str]) -> pd.DataFrame:
+    """Return normalized trading calendar exchanges as a query frame."""
+
+    return pd.DataFrame({"exchange": _unique_strings(exchanges)})
 
 
 def _validate_sleeve_daily_frame(frame: pd.DataFrame) -> dict[str, bool]:
