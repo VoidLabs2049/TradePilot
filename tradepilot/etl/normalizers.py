@@ -223,6 +223,8 @@ class EtfAdjFactorNormalizer(BaseNormalizer):
                 lambda value: normalize_instrument_id(value, "etf")
             )
         frame["trade_date"] = _to_date_series(frame.get("trade_date"))
+        if "adj_factor" not in frame.columns:
+            frame["adj_factor"] = pd.NA
         frame["adj_factor"] = pd.to_numeric(frame.get("adj_factor"), errors="coerce")
         frame["source_name"] = source_name
         frame["raw_batch_id"] = raw_batch_id

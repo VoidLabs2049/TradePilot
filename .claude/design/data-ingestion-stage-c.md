@@ -23,6 +23,27 @@ Stage C 的正确起点是：
 
 这一步完成后，后续 `reference.rebalance_calendar`、frozen sleeves、adjustment-aware ETF panel 才有稳定基础。
 
+## Divide-And-Conquer Closure Rule
+
+Stage C 后续设计采用分治法收口，不再用一份宽泛设计同时覆盖 reference、market、macro、rates、derived snapshot、scheduler/DAG 等多类问题。
+
+每次推进只能选择一个可执行切片，并明确回答四个问题：
+
+1. 这个切片的 canonical 业务键是什么。
+2. 它走 `run_dataset_sync()` 主路径，还是临时窄范围 `run_bootstrap()` materialization profile。
+3. 它依赖哪些已存在 canonical/normalized 数据。
+4. 它的幂等覆盖规则和最小测试是什么。
+
+当前 Stage C 收口后的分治边界如下：
+
+- Source-backed dataset：继续走 registry / normalizer / validator / writer 主路径，例如 `market.etf_daily`、`market.etf_adj_factor`。
+- Static or derived reference：暂时走窄范围 bootstrap profile，例如 frozen sleeves 和 monthly rebalance calendar；这类 profile 只负责 materialization，不演化成通用 DAG runner。
+- Derived market panel：只读取已落盘 normalized inputs 并写 derived output，例如 `derived.etf_aw_sleeve_daily`；不在 derived builder 内发起 source fetch。
+- Shared storage mechanics：只抽业务无关的 year/month partition upsert writer；业务规则仍留在对应 dataset/profile 内。
+- Business constants：ETF all-weather v1 sleeves、rebalance anchor day、profile name 必须集中定义，查询和校验复用同一入口。
+
+后续新增设计必须优先写成一个小切片，而不是“完整 ETF all-weather 数据平台”式的大范围方案。除非当前切片已经通过测试并稳定，否则不同时推进 macro、rates、curve、rebalance snapshot、generic profile runner 或 scheduler。
+
 ## Why Stage C Must Start Here
 
 当前 Stage B 的 `reference.trading_calendar` 已经具备以下能力：

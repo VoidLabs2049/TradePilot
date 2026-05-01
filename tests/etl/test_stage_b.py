@@ -24,6 +24,7 @@ from tradepilot.etl.models import (
     ValidationStatus,
 )
 from tradepilot.etl.normalizers import (
+    EtfAdjFactorNormalizer,
     InstrumentNormalizer,
     MarketDailyNormalizer,
     TradingCalendarNormalizer,
@@ -287,6 +288,29 @@ class StageBSourceNormalizerValidatorTests(unittest.TestCase):
         )
         self.assertIn("quality_status", daily.columns)
         self.assertEqual(daily.iloc[0]["raw_batch_id"], 7)
+
+        adj = (
+            EtfAdjFactorNormalizer()
+            .normalize(
+                pd.DataFrame({"date": ["2026-04-24"], "etf_code": ["510300.SH"]}),
+                {"source_name": "tushare", "raw_batch_id": 8},
+            )
+            .canonical_payload
+        )
+        self.assertEqual(
+            list(adj.columns),
+            [
+                "instrument_id",
+                "trade_date",
+                "adj_factor",
+                "source_name",
+                "raw_batch_id",
+                "ingested_at",
+                "quality_status",
+            ],
+        )
+        self.assertEqual(adj.iloc[0]["instrument_id"], "510300.SH")
+        self.assertTrue(pd.isna(adj.iloc[0]["adj_factor"]))
 
     def test_validators_block_bad_data(self) -> None:
         calendar = pd.DataFrame(

@@ -249,6 +249,11 @@ def build_derived_etf_aw_sleeve_daily_dataset() -> DatasetDefinition:
         storage_zone=StorageZone.DERIVED,
         partition_strategy="year_month",
         canonical_schema_name="etf_aw_sleeve_daily_v1",
+        timing_semantics=(
+            "adj_pct_chg is the return between adjacent available observations "
+            "after joining ETF daily bars with adjustment factors; it is not a "
+            "strict calendar-day continuity assertion."
+        ),
         validation_rule_names=[
             "sleeve_daily.duplicate_business_key",
             "sleeve_daily.adjustment_factor_present",

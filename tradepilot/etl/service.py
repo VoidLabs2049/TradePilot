@@ -32,10 +32,8 @@ from tradepilot.etl.registry import DatasetRegistry, register_stage_b_datasets
 from tradepilot.etl.sources import BaseSourceAdapter, TushareSourceAdapter
 from tradepilot.etl.storage import (
     build_dataset_file_path,
-    build_normalized_file_path,
     cleanup_temp_files,
     write_dataset_parquet,
-    write_normalized_parquet,
     write_raw_parquet,
 )
 from tradepilot.etl.validators import (
@@ -299,7 +297,11 @@ class ETLService:
         start: date | None = None,
         end: date | None = None,
     ) -> dict:
-        """Run a narrow bootstrap profile."""
+        """Run a narrow Stage C materialization profile.
+
+        Source-backed datasets keep using run_dataset_sync. These profiles cover
+        static or derived datasets until they have first-class source adapters.
+        """
 
         if profile_name == _TRADING_CALENDAR_FULL_HISTORY_PROFILE:
             return self._bootstrap_trading_calendar_full_history(
@@ -638,61 +640,33 @@ class ETLService:
     def _write_market_daily(
         self, definition: DatasetDefinition, canonical: pd.DataFrame
     ) -> CanonicalWriteResult:
-        if canonical.empty:
-            return CanonicalWriteResult()
-        frame = canonical.copy()
-        frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce")
-        frame["year"] = frame["trade_date"].dt.year
-        frame["month"] = frame["trade_date"].dt.month
-        storage_paths: list[str] = []
-        partitions_written = 0
-        records_inserted = 0
-        records_updated = 0
-        for (year, month), partition in frame.groupby(["year", "month"], dropna=True):
-            parts = [("year", int(year)), ("month", f"{int(month):02d}")]
-            final_path = build_normalized_file_path(
-                definition.dataset_name, parts, lakehouse_root=self.lakehouse_root
-            )
-            partition_frame = partition.drop(columns=["year", "month"]).copy()
-            if final_path.exists():
-                existing = pd.read_parquet(final_path)
-                existing["trade_date"] = pd.to_datetime(
-                    existing["trade_date"], errors="coerce"
-                )
-                merged = pd.concat([existing, partition_frame], ignore_index=True)
-                existing_keys = _market_daily_keys(existing)
-            else:
-                merged = partition_frame
-                existing_keys = set()
-            partition_keys = _market_daily_keys(partition_frame)
-            merged = (
-                merged.sort_values(["instrument_id", "trade_date", "ingested_at"])
-                .drop_duplicates(["instrument_id", "trade_date"], keep="last")
-                .reset_index(drop=True)
-            )
-            merged["trade_date"] = pd.to_datetime(
-                merged["trade_date"], errors="coerce"
-            ).dt.date
-            write_result = write_normalized_parquet(
-                merged,
-                definition.dataset_name,
-                parts,
-                lakehouse_root=self.lakehouse_root,
-            )
-            storage_paths.append(write_result.relative_path)
-            partitions_written += 1
-            records_inserted += len(partition_keys - existing_keys)
-            records_updated += len(partition_keys & existing_keys)
-        return CanonicalWriteResult(
-            records_written=len(canonical),
-            records_inserted=records_inserted,
-            records_updated=records_updated,
-            partitions_written=partitions_written,
-            storage_paths=storage_paths,
+        return self._write_year_month_partition_upsert(
+            dataset_name=definition.dataset_name,
+            zone=StorageZone.NORMALIZED,
+            canonical=canonical,
+            key_columns=("instrument_id", "trade_date"),
+            sort_columns=("instrument_id", "trade_date", "ingested_at"),
         )
 
     def _write_etf_adj_factor(
         self, definition: DatasetDefinition, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=definition.dataset_name,
+            zone=StorageZone.NORMALIZED,
+            canonical=canonical,
+            key_columns=("instrument_id", "trade_date"),
+            sort_columns=("instrument_id", "trade_date", "ingested_at"),
+        )
+
+    def _write_year_month_partition_upsert(
+        self,
+        *,
+        dataset_name: str,
+        zone: StorageZone,
+        canonical: pd.DataFrame,
+        key_columns: tuple[str, ...],
+        sort_columns: tuple[str, ...],
     ) -> CanonicalWriteResult:
         if canonical.empty:
             return CanonicalWriteResult()
@@ -706,32 +680,38 @@ class ETLService:
         records_updated = 0
         for (year, month), partition in frame.groupby(["year", "month"], dropna=True):
             parts = [("year", int(year)), ("month", f"{int(month):02d}")]
-            final_path = build_normalized_file_path(
-                definition.dataset_name, parts, lakehouse_root=self.lakehouse_root
+            final_path = build_dataset_file_path(
+                dataset_name, zone, parts, lakehouse_root=self.lakehouse_root
             )
             partition_frame = partition.drop(columns=["year", "month"]).copy()
             if final_path.exists():
                 existing = pd.read_parquet(final_path)
-                existing["trade_date"] = pd.to_datetime(
-                    existing["trade_date"], errors="coerce"
-                )
                 merged = pd.concat([existing, partition_frame], ignore_index=True)
-                existing_keys = _instrument_date_keys(existing)
+                existing_keys = _business_keys(existing, key_columns)
             else:
                 merged = partition_frame
                 existing_keys = set()
-            partition_keys = _instrument_date_keys(partition_frame)
+            partition_keys = _business_keys(partition_frame, key_columns)
+            if "trade_date" in merged.columns:
+                merged["trade_date"] = pd.to_datetime(
+                    merged["trade_date"], errors="coerce"
+                )
+            for column in sort_columns:
+                if isinstance(merged[column].dtype, pd.CategoricalDtype):
+                    merged[column] = merged[column].astype(str)
             merged = (
-                merged.sort_values(["instrument_id", "trade_date", "ingested_at"])
-                .drop_duplicates(["instrument_id", "trade_date"], keep="last")
+                merged.sort_values(list(sort_columns))
+                .drop_duplicates(list(key_columns), keep="last")
                 .reset_index(drop=True)
             )
-            merged["trade_date"] = pd.to_datetime(
-                merged["trade_date"], errors="coerce"
-            ).dt.date
-            write_result = write_normalized_parquet(
+            if "trade_date" in merged.columns:
+                merged["trade_date"] = pd.to_datetime(
+                    merged["trade_date"], errors="coerce"
+                ).dt.date
+            write_result = write_dataset_parquet(
                 merged,
-                definition.dataset_name,
+                dataset_name,
+                zone,
                 parts,
                 lakehouse_root=self.lakehouse_root,
             )
@@ -1146,25 +1126,29 @@ class ETLService:
             self.conn.unregister("stage_c_etf_aw_instruments")
 
     def _validate_etf_aw_sleeves(self) -> dict[str, bool]:
-        rows = self.conn.execute("""
-            SELECT sleeve_code, sleeve_role, listing_exchange, exposure_note,
-                   is_active
-            FROM canonical_sleeves
-            WHERE sleeve_code IN ('510300.SH', '159845.SZ', '511010.SH',
-                                  '518850.SH', '159001.SZ')
-            ORDER BY sleeve_code
-            """).fetchall()
+        self.conn.register("stage_c_etf_aw_codes", _etf_aw_sleeve_codes_frame())
+        try:
+            rows = self.conn.execute("""
+                SELECT s.sleeve_code, s.sleeve_role, s.listing_exchange,
+                       s.exposure_note, s.is_active
+                FROM canonical_sleeves s
+                JOIN stage_c_etf_aw_codes c
+                  ON s.sleeve_code = c.sleeve_code
+                ORDER BY s.sleeve_code
+                """).fetchall()
+            instrument_count = int(self.conn.execute("""
+                    SELECT COUNT(*)
+                    FROM canonical_instruments i
+                    JOIN stage_c_etf_aw_codes c
+                      ON i.instrument_id = c.sleeve_code
+                    WHERE i.instrument_type = 'etf'
+                    """).fetchone()[0])
+        finally:
+            self.conn.unregister("stage_c_etf_aw_codes")
         active_codes = [row[0] for row in rows if row[4] is True]
         roles = {row[1] for row in rows}
         exchanges = {row[0]: row[2] for row in rows}
         notes_present = all(bool(str(row[3] or "").strip()) for row in rows)
-        instrument_count = int(self.conn.execute("""
-                SELECT COUNT(*)
-                FROM canonical_instruments
-                WHERE instrument_id IN ('510300.SH', '159845.SZ', '511010.SH',
-                                        '518850.SH', '159001.SZ')
-                  AND instrument_type = 'etf'
-                """).fetchone()[0])
         return {
             "exact_frozen_codes": active_codes == sorted(_ETF_AW_SLEEVE_CODES),
             "roles_supported": roles == _ETF_AW_SLEEVE_ROLES,
@@ -1234,6 +1218,7 @@ class ETLService:
             "records_updated": write_result.records_updated,
             "partitions_written": write_result.partitions_written,
             "storage_paths": write_result.storage_paths,
+            "return_semantics": "adj_pct_chg is adjacent available observation return",
             "validation": validation,
         }
 
@@ -1276,13 +1261,17 @@ class ETLService:
         start: date,
         end: date,
     ) -> pd.DataFrame:
-        sleeves = self.conn.execute("""
-            SELECT sleeve_code, sleeve_role
-            FROM canonical_sleeves
-            WHERE sleeve_code IN ('510300.SH', '159845.SZ', '511010.SH',
-                                  '518850.SH', '159001.SZ')
-              AND is_active = TRUE
-            """).fetchdf()
+        self.conn.register("stage_c_etf_aw_codes", _etf_aw_sleeve_codes_frame())
+        try:
+            sleeves = self.conn.execute("""
+                SELECT s.sleeve_code, s.sleeve_role
+                FROM canonical_sleeves s
+                JOIN stage_c_etf_aw_codes c
+                  ON s.sleeve_code = c.sleeve_code
+                WHERE s.is_active = TRUE
+                """).fetchdf()
+        finally:
+            self.conn.unregister("stage_c_etf_aw_codes")
         daily = daily.copy()
         adj = adj.copy()
         daily["trade_date"] = pd.to_datetime(
@@ -1306,6 +1295,7 @@ class ETLService:
             drop=True
         )
         merged["adj_close"] = merged["close"] * merged["adj_factor"]
+        # Return between adjacent available observations after the input merge.
         merged["adj_pct_chg"] = (
             merged.groupby("instrument_id")["adj_close"].pct_change() * 100
         )
@@ -1337,61 +1327,12 @@ class ETLService:
     def _write_etf_aw_sleeve_daily(
         self, canonical: pd.DataFrame
     ) -> CanonicalWriteResult:
-        if canonical.empty:
-            return CanonicalWriteResult()
-        frame = canonical.copy()
-        frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce")
-        frame["year"] = frame["trade_date"].dt.year
-        frame["month"] = frame["trade_date"].dt.month
-        storage_paths: list[str] = []
-        partitions_written = 0
-        records_inserted = 0
-        records_updated = 0
-        for (year, month), partition in frame.groupby(["year", "month"], dropna=True):
-            parts = [("year", int(year)), ("month", f"{int(month):02d}")]
-            final_path = build_dataset_file_path(
-                "derived.etf_aw_sleeve_daily",
-                StorageZone.DERIVED,
-                parts,
-                lakehouse_root=self.lakehouse_root,
-            )
-            partition_frame = partition.drop(columns=["year", "month"]).copy()
-            if final_path.exists():
-                existing = pd.read_parquet(final_path)
-                existing["trade_date"] = pd.to_datetime(
-                    existing["trade_date"], errors="coerce"
-                )
-                merged = pd.concat([existing, partition_frame], ignore_index=True)
-                existing_keys = _sleeve_daily_keys(existing)
-            else:
-                merged = partition_frame
-                existing_keys = set()
-            partition_keys = _sleeve_daily_keys(partition_frame)
-            merged = (
-                merged.sort_values(["sleeve_code", "trade_date", "ingested_at"])
-                .drop_duplicates(["sleeve_code", "trade_date"], keep="last")
-                .reset_index(drop=True)
-            )
-            merged["trade_date"] = pd.to_datetime(
-                merged["trade_date"], errors="coerce"
-            ).dt.date
-            write_result = write_dataset_parquet(
-                merged,
-                "derived.etf_aw_sleeve_daily",
-                StorageZone.DERIVED,
-                parts,
-                lakehouse_root=self.lakehouse_root,
-            )
-            storage_paths.append(write_result.relative_path)
-            partitions_written += 1
-            records_inserted += len(partition_keys - existing_keys)
-            records_updated += len(partition_keys & existing_keys)
-        return CanonicalWriteResult(
-            records_written=len(canonical),
-            records_inserted=records_inserted,
-            records_updated=records_updated,
-            partitions_written=partitions_written,
-            storage_paths=storage_paths,
+        return self._write_year_month_partition_upsert(
+            dataset_name="derived.etf_aw_sleeve_daily",
+            zone=StorageZone.DERIVED,
+            canonical=canonical,
+            key_columns=("sleeve_code", "trade_date"),
+            sort_columns=("sleeve_code", "trade_date", "ingested_at"),
         )
 
     def _bootstrap_rebalance_calendar_monthly_post_20(
@@ -1517,17 +1458,27 @@ class ETLService:
                 """
                 DELETE FROM canonical_rebalance_calendar
                 WHERE calendar_name = ?
-                  AND rebalance_date IN (
-                      SELECT rebalance_date FROM stage_c_rebalance_calendar
+                  AND (
+                      calendar_month IN (
+                          SELECT calendar_month FROM stage_c_rebalance_calendar
+                      )
+                      OR (
+                          calendar_month IS NULL
+                          AND json_extract_string(notes, '$.calendar_month') IN (
+                              SELECT calendar_month FROM stage_c_rebalance_calendar
+                          )
+                      )
                   )
                 """,
                 [_REBALANCE_CALENDAR_NAME],
             )
             self.conn.execute("""
                 INSERT INTO canonical_rebalance_calendar (
-                    calendar_name, rebalance_date, effective_date, notes, updated_at
+                    calendar_name, calendar_month, rebalance_date, effective_date,
+                    notes, updated_at
                 )
-                SELECT calendar_name, rebalance_date, effective_date, notes, updated_at
+                SELECT calendar_name, calendar_month, rebalance_date, effective_date,
+                       notes, updated_at
                 FROM stage_c_rebalance_calendar
                 """)
         finally:
@@ -1547,16 +1498,19 @@ class ETLService:
                 self.conn.execute(
                     """
                     SELECT COUNT(*) FROM (
-                        SELECT
-                               json_extract_string(notes, '$.calendar_month')
-                                   AS calendar_month,
-                               COUNT(*) AS rows_per_month
-                        FROM canonical_rebalance_calendar
-                        WHERE calendar_name = ?
-                          AND json_extract_string(notes, '$.calendar_month') IN (
+                        SELECT derived_calendar_month, COUNT(*) AS rows_per_month
+                        FROM (
+                            SELECT COALESCE(
+                                       calendar_month,
+                                       json_extract_string(notes, '$.calendar_month')
+                                   ) AS derived_calendar_month
+                            FROM canonical_rebalance_calendar
+                            WHERE calendar_name = ?
+                        )
+                        WHERE derived_calendar_month IN (
                               SELECT calendar_month FROM stage_c_rebalance_months
-                          )
-                        GROUP BY calendar_month
+                        )
+                        GROUP BY derived_calendar_month
                         HAVING COUNT(*) > 1
                     )
                     """,
@@ -1751,42 +1705,27 @@ def _calendar_month(month_start: date) -> str:
     return f"{month_start.year:04d}-{month_start.month:02d}"
 
 
-def _market_daily_keys(frame: pd.DataFrame) -> set[tuple[str, date]]:
-    """Return business keys from a market daily frame."""
-
-    return _instrument_date_keys(frame)
-
-
-def _instrument_date_keys(frame: pd.DataFrame) -> set[tuple[str, date]]:
-    """Return instrument/date business keys from a canonical frame."""
+def _business_keys(frame: pd.DataFrame, key_columns: tuple[str, ...]) -> set[tuple]:
+    """Return business keys from a canonical frame."""
 
     if frame.empty:
         return set()
-    key_frame = frame.loc[:, ["instrument_id", "trade_date"]].copy()
-    key_frame["trade_date"] = pd.to_datetime(
-        key_frame["trade_date"], errors="coerce"
-    ).dt.date
+    key_frame = frame.loc[:, list(key_columns)].copy()
+    if "trade_date" in key_frame.columns:
+        key_frame["trade_date"] = pd.to_datetime(
+            key_frame["trade_date"], errors="coerce"
+        ).dt.date
     return {
-        (str(row.instrument_id), row.trade_date)
+        tuple(str(value) if isinstance(value, str) else value for value in row)
         for row in key_frame.itertuples(index=False)
-        if pd.notna(row.instrument_id) and pd.notna(row.trade_date)
+        if all(pd.notna(value) for value in row)
     }
 
 
-def _sleeve_daily_keys(frame: pd.DataFrame) -> set[tuple[str, date]]:
-    """Return sleeve/date business keys from the derived sleeve panel."""
+def _etf_aw_sleeve_codes_frame() -> pd.DataFrame:
+    """Return the frozen ETF all-weather sleeve universe as a query frame."""
 
-    if frame.empty:
-        return set()
-    key_frame = frame.loc[:, ["sleeve_code", "trade_date"]].copy()
-    key_frame["trade_date"] = pd.to_datetime(
-        key_frame["trade_date"], errors="coerce"
-    ).dt.date
-    return {
-        (str(row.sleeve_code), row.trade_date)
-        for row in key_frame.itertuples(index=False)
-        if pd.notna(row.sleeve_code) and pd.notna(row.trade_date)
-    }
+    return pd.DataFrame({"sleeve_code": _ETF_AW_SLEEVE_CODES})
 
 
 def _validate_sleeve_daily_frame(frame: pd.DataFrame) -> dict[str, bool]:

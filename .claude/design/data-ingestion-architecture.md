@@ -1349,6 +1349,10 @@ Stage B 是这套架构第一条真实可执行的纵切链路。完成 Stage B 
 
 这意味着后续阶段应该建立在这条已验证路径之上继续扩展，而不是重新设计执行引擎。
 
+### Design guardrail：divide before expanding
+
+后续数据摄取设计必须先分治再扩展。每个新增切片需要先写清楚 dataset grain、业务键、执行路径、依赖数据、幂等覆盖规则和最小测试；没有这些边界时，不应把 macro、rates、curve、snapshot、scheduler 或通用 DAG runner 放进同一个设计批次。
+
 ### Stage C：calendar foundation completion
 
 Stage C 不应该一开始就扩张为完整的 ETF all-weather serious panel。当前最实际的 Stage C 目标，是先完成后续所有数据集所依赖的时间基座。

@@ -103,28 +103,30 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
         self.assertEqual(result["months_total"], 2)
         self.assertEqual(result["records_written"], 2)
         rows = self.conn.execute("""
-            SELECT calendar_name, rebalance_date, effective_date, notes
+            SELECT calendar_name, calendar_month, rebalance_date, effective_date, notes
             FROM canonical_rebalance_calendar
             ORDER BY rebalance_date
             """).fetchall()
         self.assertEqual(
-            [(row[0], row[1], row[2]) for row in rows],
+            [(row[0], row[1], row[2], row[3]) for row in rows],
             [
                 (
                     "etf_aw_v1_monthly_post_20",
+                    "2024-01",
                     date(2024, 1, 22),
                     date(2024, 1, 22),
                 ),
                 (
                     "etf_aw_v1_monthly_post_20",
+                    "2024-02",
                     date(2024, 2, 20),
                     date(2024, 2, 20),
                 ),
             ],
         )
-        self.assertEqual(json.loads(rows[0][3])["calendar_month"], "2024-01")
+        self.assertEqual(json.loads(rows[0][4])["calendar_month"], "2024-01")
         self.assertEqual(
-            json.loads(rows[0][3])["rule_name"],
+            json.loads(rows[0][4])["rule_name"],
             "first_common_open_day_on_or_after_20th",
         )
 
@@ -181,6 +183,35 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
             FROM canonical_rebalance_calendar
             """).fetchone()
         self.assertEqual(rows, (1, 1))
+
+    def test_rebalance_calendar_replaces_changed_date_for_same_month(self) -> None:
+        self._insert_calendar_window(date(2024, 1, 20), date(2024, 1, 31))
+
+        first = self.service.run_bootstrap(
+            "reference.rebalance_calendar.monthly_post_20",
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        self.conn.execute("""
+            UPDATE canonical_trading_calendar
+            SET is_open = FALSE
+            WHERE trade_date = DATE '2024-01-22'
+        """)
+        second = self.service.run_bootstrap(
+            "reference.rebalance_calendar.monthly_post_20",
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+
+        self.assertEqual(first["status"], RunStatus.SUCCESS.value)
+        self.assertEqual(second["status"], RunStatus.SUCCESS.value)
+        self.assertEqual(second["duplicate_calendar_months"], 0)
+        rows = self.conn.execute("""
+            SELECT calendar_month, rebalance_date
+            FROM canonical_rebalance_calendar
+            ORDER BY calendar_month, rebalance_date
+            """).fetchall()
+        self.assertEqual(rows, [("2024-01", date(2024, 1, 23))])
 
     def test_frozen_etf_aw_sleeves_are_materialized(self) -> None:
         result = self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v1")
