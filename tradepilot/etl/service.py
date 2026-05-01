@@ -1275,7 +1275,7 @@ class ETLService:
         merged = daily.merge(
             adj.loc[:, ["instrument_id", "trade_date", "adj_factor"]],
             on=["instrument_id", "trade_date"],
-            how="left",
+            how="inner",
         )
         merged = merged.merge(
             sleeves.rename(columns={"sleeve_code": "instrument_id"}),

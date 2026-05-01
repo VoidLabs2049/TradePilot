@@ -476,6 +476,42 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
         self.assertTrue(pd.isna(frame["adj_pct_chg"].iloc[0]))
         self.assertAlmostEqual(frame["adj_pct_chg"].iloc[1], 11.1, places=6)
 
+    def test_derived_etf_aw_sleeve_daily_uses_adjustment_available_rows(
+        self,
+    ) -> None:
+        self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v1")
+        daily = pd.DataFrame(
+            {
+                "instrument_id": ["510300.SH", "510300.SH"],
+                "trade_date": [date(2024, 1, 22), date(2024, 1, 23)],
+                "open": [10.0, 10.5],
+                "high": [10.5, 11.0],
+                "low": [9.9, 10.4],
+                "close": [10.0, 11.0],
+                "pct_chg": [1.0, 10.0],
+                "volume": [1000.0, 1200.0],
+                "amount": [10000.0, 13200.0],
+            }
+        )
+        adj = pd.DataFrame(
+            {
+                "instrument_id": ["510300.SH"],
+                "trade_date": [date(2024, 1, 23)],
+                "adj_factor": [1.01],
+            }
+        )
+
+        frame = self.service._make_etf_aw_sleeve_daily_frame(
+            daily,
+            adj,
+            date(2024, 1, 22),
+            date(2024, 1, 23),
+        )
+
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(frame["trade_date"].tolist(), [date(2024, 1, 23)])
+        self.assertEqual(frame["adj_factor"].tolist(), [1.01])
+
     def test_derived_etf_aw_sleeve_daily_requires_market_inputs(self) -> None:
         service = ETLService(
             conn=self.conn,
