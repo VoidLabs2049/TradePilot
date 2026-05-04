@@ -266,6 +266,20 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
         self.assertTrue(all(row[4] for row in rows))
         self.assertTrue(all(row[5] for row in rows))
 
+        list_dates = dict(self.conn.execute("""
+                SELECT sleeve_code, list_date
+                FROM canonical_sleeves
+                WHERE sleeve_code IN ('510300.SH', '159845.SZ', '518850.SH')
+                """).fetchall())
+        self.assertEqual(
+            list_dates,
+            {
+                "510300.SH": date(2012, 5, 28),
+                "159845.SZ": date(2021, 3, 31),
+                "518850.SH": date(2020, 6, 5),
+            },
+        )
+
         instrument_count = self.conn.execute("""
             SELECT COUNT(*)
             FROM canonical_instruments

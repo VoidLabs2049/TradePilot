@@ -133,6 +133,13 @@ Read the relevant `.claude/rules/*.md` file before changing files covered by its
 - `DataProvider` defines the structured data interface; new providers must implement the full interface.
 - Each sync path should record an ingestion run.
 
+### Market Data Unit Conventions
+
+- ETF daily `volume` / source `vol` follows Tushare `fund_daily` units: hands.
+- ETF daily `amount` follows Tushare `fund_daily` units: thousand CNY.
+- `derived.etf_aw_sleeve_daily` inherits those units without conversion.
+- Future schema, API, dashboard, or strategy design must explicitly label units for market data fields and document any unit conversion at the transformation boundary.
+
 ### Analysis Notes
 
 - Analysis modules receive DataFrame inputs and return signal lists or score dictionaries.

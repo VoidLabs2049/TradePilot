@@ -45,6 +45,8 @@ Stage C ETF 全天候 v1 数据基座已完成本地回补。
 
 `derived.etf_aw_sleeve_daily` 是 adjustment-aware 日频面板，只包含日线数据和复权因子同时可用的观测行。
 
+单位口径沿用 Tushare `fund_daily` 源字段：`volume` 为手，`amount` 为千元人民币；Stage C derived parquet 未做单位换算。
+
 ## 数据结果
 
 | 数据集 | 范围 | 行数 | 说明 |

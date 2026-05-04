@@ -66,7 +66,7 @@ _ETF_AW_SLEEVES: list[dict[str, Any]] = [
         "sleeve_name": "沪深300ETF华泰柏瑞",
         "listing_exchange": "SH",
         "benchmark_name": "沪深300指数",
-        "list_date": None,
+        "list_date": date(2012, 5, 28),
         "exposure_note": "Large-cap China equity beta proxy.",
     },
     {
@@ -75,7 +75,7 @@ _ETF_AW_SLEEVES: list[dict[str, Any]] = [
         "sleeve_name": "中证1000ETF华夏",
         "listing_exchange": "SZ",
         "benchmark_name": "中证1000指数收益率",
-        "list_date": None,
+        "list_date": date(2021, 3, 31),
         "exposure_note": "Small-cap and higher-beta China equity proxy.",
     },
     {
@@ -96,7 +96,7 @@ _ETF_AW_SLEEVES: list[dict[str, Any]] = [
         "sleeve_name": "黄金ETF华夏",
         "listing_exchange": "SH",
         "benchmark_name": "上海黄金交易所黄金现货实盘合约Au99.99价格收益率",
-        "list_date": None,
+        "list_date": date(2020, 6, 5),
         "exposure_note": "Gold hedge sleeve for inflation and stress diversification.",
     },
     {
