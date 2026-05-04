@@ -90,6 +90,13 @@ These are mandatory.
 | `gold_vol` | `validation_only` | Tushare | tradability audit |
 | `cash_vol` | `validation_only` | Tushare | tradability audit |
 
+Unit convention:
+
+- ETF daily `volume` / source `vol` uses Tushare `fund_daily` units: hands.
+- ETF daily `amount` uses Tushare `fund_daily` units: thousand CNY.
+- `derived.etf_aw_sleeve_daily` inherits these units without conversion.
+- Any future design that changes these fields to shares or CNY must use a new explicit field name or document the conversion at the transformation boundary.
+
 ---
 
 ## Section C — Canonical Macro Slow Fields

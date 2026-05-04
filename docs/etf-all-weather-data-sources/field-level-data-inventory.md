@@ -59,6 +59,12 @@ Recommended v1 sleeves:
 | `equity_large_amount` | Tushare | AKShare | daily | same-day only | turnover/liquidity check |
 | `equity_small_amount` | Tushare | AKShare | daily | same-day only | turnover/liquidity check |
 
+Unit convention for ETF daily fields:
+
+- Tushare `fund_daily.vol`, normalized as `volume`, is measured in hands.
+- Tushare `fund_daily.amount`, normalized as `amount`, is measured in thousand CNY.
+- Derived ETF sleeve panels preserve these source units unless a transformation explicitly renames or documents a converted field.
+
 ### 1.2 Bond Sleeve
 
 | Field | Primary Source | Fallback | Cadence | Timing Rule | Why We Need It |

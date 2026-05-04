@@ -26,6 +26,7 @@ _MARKET_DAILY_STATS_COLUMNS = (
     "pe",
     "turnover_rate",
 )
+_ETF_ADJ_FACTOR_COLUMNS = ("date", "etf_code", "adj_factor")
 
 
 def _empty_frame(columns: tuple[str, ...]) -> pd.DataFrame:
@@ -449,6 +450,40 @@ class TushareClient:
                 "amount",
             ],
         ]
+
+    def get_etf_adj_factor(
+        self, etf_code: str, start_date: str, end_date: str
+    ) -> pd.DataFrame:
+        pro = self._pro
+        if pro is None:
+            return _empty_frame(_ETF_ADJ_FACTOR_COLUMNS)
+        frame = pro.fund_adj(
+            ts_code=_with_exchange_suffix(etf_code, kind="fund"),
+            start_date=_to_tushare_date(start_date),
+            end_date=_to_tushare_date(end_date),
+            fields="ts_code,trade_date,adj_factor",
+        )
+        if frame.empty:
+            return _empty_frame(_ETF_ADJ_FACTOR_COLUMNS)
+        normalized = frame.rename(
+            columns={
+                "trade_date": "date",
+                "ts_code": "etf_code",
+            }
+        ).copy()
+        normalized["date"] = pd.to_datetime(
+            normalized["date"], format="%Y%m%d", errors="coerce"
+        )
+        normalized["etf_code"] = etf_code
+        normalized["adj_factor"] = pd.to_numeric(
+            normalized["adj_factor"], errors="coerce"
+        )
+        return cast(
+            pd.DataFrame,
+            normalized.loc[:, list(_ETF_ADJ_FACTOR_COLUMNS)]
+            .sort_values("date")
+            .reset_index(drop=True),
+        )
 
     def get_margin_data(self, start_date: str, end_date: str) -> pd.DataFrame:
         pro = self._pro

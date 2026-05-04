@@ -47,9 +47,27 @@ class DuckDBInitTests(unittest.TestCase):
         self.assertIn("etl_validation_results", table_names)
         self.assertIn("etl_source_watermarks", table_names)
         self.assertIn("canonical_trading_calendar", table_names)
+        self.assertIn("canonical_sleeves", table_names)
         self.assertIn("source_registry", table_names)
         self.assertIn("ingestion_runs", table_names)
         self.assertIn("trading_calendar", table_names)
+
+        sleeve_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info('canonical_sleeves')").fetchall()
+        }
+        self.assertTrue(
+            {
+                "sleeve_code",
+                "sleeve_name",
+                "sleeve_type",
+                "sleeve_role",
+                "listing_exchange",
+                "benchmark_name",
+                "list_date",
+                "exposure_note",
+            }.issubset(sleeve_columns)
+        )
 
         sequence_names = {
             row[0]

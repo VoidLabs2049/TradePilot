@@ -408,6 +408,97 @@ class MarketDailyValidator(BaseValidator):
         return results
 
 
+class EtfAdjFactorValidator(BaseValidator):
+    """Validate canonical ETF adjustment factor rows."""
+
+    def validate(
+        self,
+        payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> list[ValidationResultRecord]:
+        """Validate ETF adjustment factors."""
+
+        ctx = context or {}
+        results: list[ValidationResultRecord] = []
+        _required_columns(
+            payload, ["instrument_id", "trade_date", "adj_factor"], ctx, results
+        )
+        if results:
+            return results
+
+        duplicate_count = int(payload.duplicated(["instrument_id", "trade_date"]).sum())
+        results.append(
+            _record(
+                ctx,
+                "etf_adj_factor.duplicate_business_key",
+                "dataset",
+                ValidationStatus.FAIL if duplicate_count else ValidationStatus.PASS,
+                metric_value=duplicate_count,
+                threshold_value=0,
+                details={
+                    "sample": _sample_keys(
+                        payload[
+                            payload.duplicated(
+                                ["instrument_id", "trade_date"], keep=False
+                            )
+                        ],
+                        ["instrument_id", "trade_date"],
+                    )
+                },
+            )
+        )
+        _row_records(
+            results,
+            ctx,
+            payload[
+                payload["instrument_id"].isna()
+                | (payload["instrument_id"].astype(str).str.strip() == "")
+            ],
+            "etf_adj_factor.instrument_id_required",
+            ["instrument_id", "trade_date"],
+            "instrument_id is required",
+        )
+        _row_records(
+            results,
+            ctx,
+            payload[payload["trade_date"].isna()],
+            "etf_adj_factor.trade_date_required",
+            ["instrument_id", "trade_date"],
+            "trade_date is required",
+        )
+        _row_records(
+            results,
+            ctx,
+            payload[payload["adj_factor"].isna()],
+            "etf_adj_factor.adj_factor_required",
+            ["instrument_id", "trade_date"],
+            "adj_factor is required",
+        )
+        _row_records(
+            results,
+            ctx,
+            payload[payload["adj_factor"].notna() & (payload["adj_factor"] <= 0)],
+            "etf_adj_factor.adj_factor_positive",
+            ["instrument_id", "trade_date"],
+            "adj_factor must be positive",
+        )
+        instruments = _instrument_lookup(ctx)
+        if instruments is not None:
+            etfs = instruments.loc[
+                instruments["instrument_type"].eq("etf"), "instrument_id"
+            ]
+            missing = payload[~payload["instrument_id"].isin(etfs)]
+            _row_records(
+                results,
+                ctx,
+                missing,
+                "etf_adj_factor.instrument_exists",
+                ["instrument_id", "trade_date"],
+                "instrument must exist as an ETF in canonical_instruments",
+            )
+        return results
+
+
 def get_validator(dataset_name: str) -> BaseValidator:
     """Return the validator for one Stage B dataset."""
 
@@ -415,6 +506,8 @@ def get_validator(dataset_name: str) -> BaseValidator:
         return TradingCalendarValidator()
     if dataset_name == "reference.instruments":
         return InstrumentValidator()
+    if dataset_name == "market.etf_adj_factor":
+        return EtfAdjFactorValidator()
     if dataset_name in {"market.etf_daily", "market.index_daily"}:
         return MarketDailyValidator()
     raise KeyError(f"no validator registered for dataset: {dataset_name}")
