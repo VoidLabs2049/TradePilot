@@ -6,6 +6,7 @@ from calendar import monthrange
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,17 @@ _REBALANCE_CALENDAR_NAME = "etf_aw_v1_monthly_post_20"
 _REBALANCE_ANCHOR_DAY = 20
 _ETF_AW_SLEEVES_PROFILE = "reference.etf_aw_sleeves.frozen_v1"
 _ETF_AW_SLEEVE_DAILY_PROFILE = "derived.etf_aw_sleeve_daily.build"
+_ETF_AW_REBALANCE_SNAPSHOT_PROFILE = "derived.etf_aw_rebalance_snapshot.build"
+_ETF_AW_REBALANCE_SNAPSHOT_DATASET = "derived.etf_aw_rebalance_snapshot"
+_ETF_AW_SNAPSHOT_LOOKBACK_DAYS = 420
+_ETF_AW_SNAPSHOT_WINDOWS = {
+    "return_1m": (21, 15),
+    "return_3m": (63, 45),
+    "return_6m": (126, 90),
+    "volatility_3m": (63, 45),
+    "max_drawdown_6m": (126, 90),
+}
+_ETF_AW_SNAPSHOT_STATUSES = {"complete", "partial", "missing", "stale"}
 _ETF_AW_SLEEVES: list[dict[str, Any]] = [
     {
         "sleeve_code": "510300.SH",
@@ -317,6 +329,11 @@ class ETLService:
             return self._bootstrap_etf_aw_sleeves()
         if profile_name == _ETF_AW_SLEEVE_DAILY_PROFILE:
             return self._build_etf_aw_sleeve_daily(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        if profile_name == _ETF_AW_REBALANCE_SNAPSHOT_PROFILE:
+            return self._build_etf_aw_rebalance_snapshot(
                 start or _TRADING_CALENDAR_HISTORY_START,
                 end or date.today(),
             )
@@ -667,13 +684,16 @@ class ETLService:
         canonical: pd.DataFrame,
         key_columns: tuple[str, ...],
         sort_columns: tuple[str, ...],
+        partition_date_column: str = "trade_date",
     ) -> CanonicalWriteResult:
         if canonical.empty:
             return CanonicalWriteResult()
         frame = canonical.copy()
-        frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce")
-        frame["year"] = frame["trade_date"].dt.year
-        frame["month"] = frame["trade_date"].dt.month
+        frame[partition_date_column] = pd.to_datetime(
+            frame[partition_date_column], errors="coerce"
+        )
+        frame["year"] = frame[partition_date_column].dt.year
+        frame["month"] = frame[partition_date_column].dt.month
         storage_paths: list[str] = []
         partitions_written = 0
         records_inserted = 0
@@ -696,6 +716,10 @@ class ETLService:
                 merged["trade_date"] = pd.to_datetime(
                     merged["trade_date"], errors="coerce"
                 )
+            if "rebalance_date" in merged.columns:
+                merged["rebalance_date"] = pd.to_datetime(
+                    merged["rebalance_date"], errors="coerce"
+                )
             for column in sort_columns:
                 if isinstance(merged[column].dtype, pd.CategoricalDtype):
                     merged[column] = merged[column].astype(str)
@@ -707,6 +731,10 @@ class ETLService:
             if "trade_date" in merged.columns:
                 merged["trade_date"] = pd.to_datetime(
                     merged["trade_date"], errors="coerce"
+                ).dt.date
+            if "rebalance_date" in merged.columns:
+                merged["rebalance_date"] = pd.to_datetime(
+                    merged["rebalance_date"], errors="coerce"
                 ).dt.date
             write_result = write_dataset_parquet(
                 merged,
@@ -1329,6 +1357,290 @@ class ETLService:
             sort_columns=("sleeve_code", "trade_date", "ingested_at"),
         )
 
+    def _build_etf_aw_rebalance_snapshot(self, start: date, end: date) -> dict:
+        start, end = _ordered_dates(start, end)
+        rebalance = self._read_rebalance_calendar(start, end)
+        if rebalance.empty:
+            return {
+                "profile_name": _ETF_AW_REBALANCE_SNAPSHOT_PROFILE,
+                "dataset_name": _ETF_AW_REBALANCE_SNAPSHOT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "canonical rebalance calendar is missing",
+            }
+        daily_start = start - timedelta(days=_ETF_AW_SNAPSHOT_LOOKBACK_DAYS)
+        panel = self._read_partitioned_dataset(
+            "derived.etf_aw_sleeve_daily",
+            daily_start,
+            end,
+            StorageZone.DERIVED,
+        )
+        if panel.empty:
+            return {
+                "profile_name": _ETF_AW_REBALANCE_SNAPSHOT_PROFILE,
+                "dataset_name": _ETF_AW_REBALANCE_SNAPSHOT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "derived sleeve daily panel is missing",
+            }
+        snapshot = self._make_etf_aw_rebalance_snapshot_frame(
+            rebalance=rebalance,
+            panel=panel,
+            watermarks=self._latest_market_watermarks(),
+        )
+        validation = _validate_rebalance_snapshot_frame(
+            snapshot, set(rebalance["rebalance_date"].tolist())
+        )
+        if not all(validation.values()):
+            return {
+                "profile_name": _ETF_AW_REBALANCE_SNAPSHOT_PROFILE,
+                "dataset_name": _ETF_AW_REBALANCE_SNAPSHOT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "validation": validation,
+                "error_message": "rebalance snapshot validation failed",
+            }
+        write_result = self._write_etf_aw_rebalance_snapshot(snapshot)
+        return {
+            "profile_name": _ETF_AW_REBALANCE_SNAPSHOT_PROFILE,
+            "dataset_name": _ETF_AW_REBALANCE_SNAPSHOT_DATASET,
+            "status": RunStatus.SUCCESS.value,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "records_written": write_result.records_written,
+            "records_inserted": write_result.records_inserted,
+            "records_updated": write_result.records_updated,
+            "partitions_written": write_result.partitions_written,
+            "storage_paths": write_result.storage_paths,
+            "validation": validation,
+            "data_status_counts": snapshot["data_status"].value_counts().to_dict(),
+        }
+
+    def _read_rebalance_calendar(self, start: date, end: date) -> pd.DataFrame:
+        frame = self.conn.execute(
+            """
+            SELECT calendar_name, calendar_month, rebalance_date, effective_date
+            FROM canonical_rebalance_calendar
+            WHERE calendar_name = ?
+              AND rebalance_date BETWEEN ? AND ?
+            ORDER BY rebalance_date
+            """,
+            [_REBALANCE_CALENDAR_NAME, start, end],
+        ).fetchdf()
+        if frame.empty:
+            return frame
+        frame["rebalance_date"] = pd.to_datetime(
+            frame["rebalance_date"], errors="coerce"
+        ).dt.date
+        frame["effective_date"] = pd.to_datetime(
+            frame["effective_date"], errors="coerce"
+        ).dt.date
+        return frame
+
+    def _latest_market_watermarks(self) -> dict[str, date | None]:
+        rows = self.conn.execute("""
+            SELECT dataset_name, latest_fetched_date
+            FROM etl_source_watermarks
+            WHERE dataset_name IN (
+                'market.etf_daily',
+                'market.etf_adj_factor',
+                'reference.trading_calendar'
+            )
+            """).fetchall()
+        return {str(row[0]): row[1] for row in rows}
+
+    def _make_etf_aw_rebalance_snapshot_frame(
+        self,
+        *,
+        rebalance: pd.DataFrame,
+        panel: pd.DataFrame,
+        watermarks: dict[str, date | None],
+    ) -> pd.DataFrame:
+        sleeves = self._active_etf_aw_sleeves_frame()
+        panel = panel.copy()
+        panel["trade_date"] = pd.to_datetime(
+            panel["trade_date"], errors="coerce"
+        ).dt.date
+        panel = panel.sort_values(["sleeve_code", "trade_date"]).reset_index(drop=True)
+        panel_max_trade_date = (
+            max(panel["trade_date"].dropna().tolist()) if not panel.empty else None
+        )
+        rows: list[dict[str, Any]] = []
+        ingested_at = _utc_now()
+        for _, rebalance_row in rebalance.iterrows():
+            rebalance_date = rebalance_row["rebalance_date"]
+            for _, sleeve in sleeves.iterrows():
+                rows.append(
+                    self._make_snapshot_row(
+                        rebalance_row=rebalance_row,
+                        sleeve_code=str(sleeve["sleeve_code"]),
+                        sleeve_role=str(sleeve["sleeve_role"]),
+                        sleeve_panel=panel[
+                            panel["sleeve_code"].astype(str)
+                            == str(sleeve["sleeve_code"])
+                        ],
+                        rebalance_date=rebalance_date,
+                        panel_max_trade_date=panel_max_trade_date,
+                        watermarks=watermarks,
+                        ingested_at=ingested_at,
+                    )
+                )
+        return pd.DataFrame(rows)
+
+    def _active_etf_aw_sleeves_frame(self) -> pd.DataFrame:
+        self.conn.register("stage_d_etf_aw_codes", _etf_aw_sleeve_codes_frame())
+        try:
+            frame = self.conn.execute("""
+                SELECT s.sleeve_code, s.sleeve_role
+                FROM canonical_sleeves s
+                JOIN stage_d_etf_aw_codes c
+                  ON s.sleeve_code = c.sleeve_code
+                WHERE s.is_active = TRUE
+                ORDER BY s.sleeve_code
+                """).fetchdf()
+        finally:
+            self.conn.unregister("stage_d_etf_aw_codes")
+        if frame.empty:
+            return pd.DataFrame(_ETF_AW_SLEEVES).loc[:, ["sleeve_code", "sleeve_role"]]
+        return frame
+
+    def _make_snapshot_row(
+        self,
+        *,
+        rebalance_row: pd.Series,
+        sleeve_code: str,
+        sleeve_role: str,
+        sleeve_panel: pd.DataFrame,
+        rebalance_date: date,
+        panel_max_trade_date: date | None,
+        watermarks: dict[str, date | None],
+        ingested_at: datetime,
+    ) -> dict[str, Any]:
+        available = sleeve_panel[sleeve_panel["trade_date"] <= rebalance_date].copy()
+        source_max_trade_date = (
+            max(sleeve_panel["trade_date"].tolist()) if not sleeve_panel.empty else None
+        )
+        target = available[available["trade_date"] == rebalance_date]
+        row = {
+            "calendar_name": str(rebalance_row["calendar_name"]),
+            "calendar_month": str(rebalance_row["calendar_month"]),
+            "rebalance_date": rebalance_date,
+            "effective_date": rebalance_row["effective_date"],
+            "sleeve_code": sleeve_code,
+            "sleeve_role": sleeve_role,
+            "close": None,
+            "adj_factor": None,
+            "adj_close": None,
+            "return_1m": None,
+            "return_3m": None,
+            "return_6m": None,
+            "volatility_3m": None,
+            "max_drawdown_6m": None,
+            "data_status": "missing",
+            "quality_notes": "",
+            "source_max_trade_date": source_max_trade_date,
+            "ingested_at": ingested_at,
+        }
+        notes: dict[str, Any] = {
+            "window_observations": {},
+            "minimum_observations": {
+                key: minimum for key, (_, minimum) in _ETF_AW_SNAPSHOT_WINDOWS.items()
+            },
+            "calculation": "trailing available observations ending at rebalance_date",
+        }
+        core_missing = target.empty
+        if not core_missing:
+            target_row = target.sort_values("trade_date").iloc[-1]
+            row["close"] = _nullable_float(target_row.get("close"))
+            row["adj_factor"] = _nullable_float(target_row.get("adj_factor"))
+            row["adj_close"] = _nullable_float(target_row.get("adj_close"))
+            core_missing = (
+                row["close"] is None
+                or row["adj_factor"] is None
+                or row["adj_factor"] <= 0
+                or row["adj_close"] is None
+                or row["adj_close"] <= 0
+            )
+        stale_sources = [
+            dataset
+            for dataset in (
+                "market.etf_daily",
+                "market.etf_adj_factor",
+                "reference.trading_calendar",
+            )
+            if watermarks.get(dataset) is None or watermarks[dataset] < rebalance_date
+        ]
+        source_lagged = (
+            panel_max_trade_date is None or panel_max_trade_date < rebalance_date
+        )
+        if source_lagged:
+            notes["source_lag"] = {
+                "panel_max_trade_date": (
+                    panel_max_trade_date.isoformat()
+                    if panel_max_trade_date is not None
+                    else None
+                ),
+                "rebalance_date": rebalance_date.isoformat(),
+            }
+        if stale_sources:
+            notes["stale_sources"] = stale_sources
+
+        if stale_sources or source_lagged:
+            row["data_status"] = "stale"
+            if not core_missing:
+                features, partial_reasons = _snapshot_features(available)
+                row.update(features)
+                notes["window_observations"] = {
+                    key: value["observations"] for key, value in partial_reasons.items()
+                }
+                if any(value["partial"] for value in partial_reasons.values()):
+                    notes["partial_features"] = [
+                        key
+                        for key, value in partial_reasons.items()
+                        if value["partial"]
+                    ]
+        elif core_missing:
+            notes["missing_reason"] = "rebalance_date row or core price fields missing"
+            row["data_status"] = "missing"
+        else:
+            features, partial_reasons = _snapshot_features(available)
+            row.update(features)
+            notes["window_observations"] = {
+                key: value["observations"] for key, value in partial_reasons.items()
+            }
+            if any(value["partial"] for value in partial_reasons.values()):
+                row["data_status"] = "partial"
+                notes["partial_features"] = [
+                    key for key, value in partial_reasons.items() if value["partial"]
+                ]
+            else:
+                row["data_status"] = "complete"
+        row["quality_notes"] = json.dumps(notes, sort_keys=True)
+        return row
+
+    def _write_etf_aw_rebalance_snapshot(
+        self, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=_ETF_AW_REBALANCE_SNAPSHOT_DATASET,
+            zone=StorageZone.DERIVED,
+            canonical=canonical,
+            key_columns=("calendar_name", "rebalance_date", "sleeve_code"),
+            sort_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "sleeve_code",
+                "ingested_at",
+            ),
+            partition_date_column="rebalance_date",
+        )
+
     def _bootstrap_rebalance_calendar_monthly_post_20(
         self, start: date, end: date
     ) -> dict:
@@ -1771,6 +2083,10 @@ def _business_keys(frame: pd.DataFrame, key_columns: tuple[str, ...]) -> set[tup
         key_frame["trade_date"] = pd.to_datetime(
             key_frame["trade_date"], errors="coerce"
         ).dt.date
+    if "rebalance_date" in key_frame.columns:
+        key_frame["rebalance_date"] = pd.to_datetime(
+            key_frame["rebalance_date"], errors="coerce"
+        ).dt.date
     return {
         tuple(str(value) if isinstance(value, str) else value for value in row)
         for row in key_frame.itertuples(index=False)
@@ -1810,6 +2126,122 @@ def _validate_sleeve_daily_frame(frame: pd.DataFrame) -> dict[str, bool]:
         "adj_close_positive": bool((frame["adj_close"] > 0).all()),
         "known_frozen_sleeves_only": known_codes.issubset(set(_ETF_AW_SLEEVE_CODES)),
     }
+
+
+def _snapshot_features(
+    available: pd.DataFrame,
+) -> tuple[dict[str, float | None], dict[str, dict[str, int | bool]]]:
+    available = available.sort_values("trade_date").copy()
+    features: dict[str, float | None] = {}
+    checks: dict[str, dict[str, int | bool]] = {}
+    for key in ("return_1m", "return_3m", "return_6m"):
+        window, minimum = _ETF_AW_SNAPSHOT_WINDOWS[key]
+        values = available["adj_close"].dropna().astype(float).tail(window + 1)
+        observations = max(len(values) - 1, 0)
+        checks[key] = {
+            "observations": observations,
+            "partial": observations < minimum,
+        }
+        features[key] = (
+            float(values.iloc[-1] / values.iloc[0] - 1)
+            if observations >= minimum and values.iloc[0] > 0
+            else None
+        )
+    window, minimum = _ETF_AW_SNAPSHOT_WINDOWS["volatility_3m"]
+    returns = available["adj_pct_chg"].dropna().astype(float).tail(window) / 100
+    checks["volatility_3m"] = {
+        "observations": len(returns),
+        "partial": len(returns) < minimum,
+    }
+    features["volatility_3m"] = (
+        float(returns.std(ddof=1) * math.sqrt(252)) if len(returns) >= minimum else None
+    )
+    window, minimum = _ETF_AW_SNAPSHOT_WINDOWS["max_drawdown_6m"]
+    values = available["adj_close"].dropna().astype(float).tail(window)
+    checks["max_drawdown_6m"] = {
+        "observations": len(values),
+        "partial": len(values) < minimum,
+    }
+    if len(values) >= minimum:
+        running_max = values.cummax()
+        drawdown = values / running_max - 1
+        features["max_drawdown_6m"] = float(drawdown.min())
+    else:
+        features["max_drawdown_6m"] = None
+    return features, checks
+
+
+def _validate_rebalance_snapshot_frame(
+    frame: pd.DataFrame, valid_rebalance_dates: set[date]
+) -> dict[str, bool]:
+    """Validate the minimum contract for ETF all-weather rebalance snapshots."""
+
+    if frame.empty:
+        return {
+            "non_empty": False,
+            "five_rows_per_rebalance_date": False,
+            "no_duplicate_business_keys": False,
+            "rebalance_dates_from_calendar": False,
+            "known_frozen_sleeves_only": False,
+            "data_status_allowed": False,
+            "quality_notes_json": False,
+            "complete_rows_have_features": False,
+        }
+    duplicate_count = int(
+        frame.duplicated(["calendar_name", "rebalance_date", "sleeve_code"]).sum()
+    )
+    rows_per_date = frame.groupby("rebalance_date")["sleeve_code"].nunique()
+    known_codes = set(frame["sleeve_code"].dropna().astype(str).tolist())
+    statuses = set(frame["data_status"].dropna().astype(str).tolist())
+    complete = frame[frame["data_status"] == "complete"]
+    feature_columns = [
+        "close",
+        "adj_factor",
+        "adj_close",
+        "return_1m",
+        "return_3m",
+        "return_6m",
+        "volatility_3m",
+        "max_drawdown_6m",
+    ]
+    complete_has_features = (
+        True
+        if complete.empty
+        else bool(complete.loc[:, feature_columns].notna().all().all())
+    )
+    return {
+        "non_empty": True,
+        "five_rows_per_rebalance_date": bool((rows_per_date == 5).all()),
+        "no_duplicate_business_keys": duplicate_count == 0,
+        "rebalance_dates_from_calendar": set(
+            frame["rebalance_date"].dropna().tolist()
+        ).issubset(valid_rebalance_dates),
+        "known_frozen_sleeves_only": known_codes.issubset(set(_ETF_AW_SLEEVE_CODES)),
+        "data_status_allowed": statuses.issubset(_ETF_AW_SNAPSHOT_STATUSES),
+        "quality_notes_json": all(
+            _is_json_text(value) for value in frame["quality_notes"]
+        ),
+        "complete_rows_have_features": complete_has_features,
+    }
+
+
+def _nullable_float(value: object) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _is_json_text(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        json.loads(value)
+    except json.JSONDecodeError:
+        return False
+    return True
 
 
 def _instrument_type_for_dataset(dataset_name: str) -> str | None:

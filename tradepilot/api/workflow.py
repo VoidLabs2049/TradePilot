@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Query
 
 from tradepilot.workflow.models import (
@@ -69,6 +71,16 @@ def get_latest_workflow_context(
 ) -> WorkflowContextPayload | None:
     """Return the latest structured context for one workflow phase."""
     return _service.get_latest_context(phase)
+
+
+@router.get("/etf-aw/latest")
+def get_latest_etf_aw_context(
+    as_of_date: date | None = Query(
+        None, description="Latest rebalance snapshot date upper bound"
+    ),
+) -> dict | None:
+    """Return the latest ETF all-weather snapshot context."""
+    return _service.get_latest_etf_aw_context(as_of_date=as_of_date)
 
 
 @router.get("/insight/latest", response_model=WorkflowInsightResponse)

@@ -81,6 +81,47 @@ export interface WorkflowContextPayload {
   metadata: Record<string, any>;
 }
 
+// ETF all-weather sleeve metrics are adjustment-aware and measured at the
+// monthly rebalance snapshot boundary. Return, volatility, and drawdown values
+// are decimal ratios, e.g. 0.05 means 5%.
+export interface EtfAwSleeveSnapshot {
+  // Frozen v1 sleeve instrument code, such as 510300.SH or 511010.SH.
+  sleeve_code: string;
+  // Canonical role in the all-weather sleeve set: equity_large, bond, gold, etc.
+  sleeve_role: string;
+  // Raw close is kept for inspection; adjusted close is the canonical return base.
+  close?: number | null;
+  adj_factor?: number | null;
+  adj_close?: number | null;
+  // Trailing returns over the named windows, ending at the rebalance date.
+  return_1m?: number | null;
+  return_3m?: number | null;
+  return_6m?: number | null;
+  // Trailing risk measures over the named windows, ending at the rebalance date.
+  volatility_3m?: number | null;
+  max_drawdown_6m?: number | null;
+  // complete, partial, stale, or missing. stale takes precedence when inputs
+  // have not reached the rebalance date; missing means inputs covered the date
+  // but the target row or core fields are unavailable.
+  data_status: string;
+  // Backend-provided diagnostics such as observation counts and stale source flags.
+  quality_notes?: Record<string, any>;
+  // Latest source trade date available for this sleeve when the snapshot was built.
+  source_max_trade_date?: string | null;
+}
+
+// Latest ETF all-weather monthly rebalance context exposed to workflow insight.
+export interface EtfAwSnapshotContext {
+  schema_version: string;
+  contract_version?: string;
+  calendar_name: string;
+  calendar_month: string;
+  rebalance_date: string;
+  effective_date?: string | null;
+  data_status: string;
+  sleeves: EtfAwSleeveSnapshot[];
+}
+
 export interface InsightMetric {
   label: string;
   value: string | number | null;
@@ -167,6 +208,8 @@ export const getLatestWorkflow = (phase: WorkflowPhase) =>
   fetchJson<WorkflowRunResponse | null>(`/workflow/latest?phase=${phase}`);
 export const getLatestWorkflowContext = (phase: WorkflowPhase) =>
   fetchJson<WorkflowContextPayload | null>(`/workflow/context/latest?phase=${phase}`);
+export const getLatestEtfAwContext = (asOfDate?: string) =>
+  fetchJson<EtfAwSnapshotContext | null>(`/workflow/etf-aw/latest${asOfDate ? `?as_of_date=${encodeURIComponent(asOfDate)}` : ""}`);
 export const getLatestWorkflowInsight = (phase: WorkflowPhase, producer = "the_one") =>
   fetchJson<WorkflowInsightResponse>(`/workflow/insight/latest?phase=${phase}&producer=${encodeURIComponent(producer)}`);
 export const upsertWorkflowInsight = (data: WorkflowInsightUpsertRequest) =>

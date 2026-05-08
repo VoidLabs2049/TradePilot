@@ -16,6 +16,7 @@ from loguru import logger
 
 from tradepilot.config import RESEARCH_REPORT_ROOT
 from tradepilot.db import get_conn
+from tradepilot.etl.read_models import get_latest_etf_aw_snapshot
 from tradepilot.ingestion.models import NewsSyncRequest, SyncRequest
 from tradepilot.ingestion.service import IngestionService
 from tradepilot.scanner.daily import DailyScanner, normalize_scan_date
@@ -506,9 +507,22 @@ class DailyWorkflowService:
             return None
         return self.build_context_payload(run)
 
+    def get_latest_etf_aw_context(self, as_of_date: date | None = None) -> dict | None:
+        """Return the latest ETF all-weather snapshot context."""
+
+        return get_latest_etf_aw_snapshot(as_of_date=as_of_date)
+
     def build_context_payload(self, run: WorkflowRunRecord) -> WorkflowContextPayload:
-        """Convert one workflow run into the stage-1 context contract."""
+        """Convert one workflow run into the stage-1 context contract.
+
+        ETF all-weather context is selected by workflow date, not by workflow
+        run id. It returns the latest rebalance snapshot at or before the run's
+        workflow_date.
+        """
         summary = run.summary
+        etf_aw_context = get_latest_etf_aw_snapshot(
+            as_of_date=date.fromisoformat(run.workflow_date)
+        )
         if run.phase == WorkflowPhase.POST_MARKET:
             context = {
                 "market_overview": summary.market_overview,
@@ -517,6 +531,7 @@ class DailyWorkflowService:
                 "next_day_prep": summary.next_day_prep,
                 "watch_context": summary.watch_context,
                 "alerts": summary.alerts,
+                "etf_aw_context": etf_aw_context,
             }
         else:
             context = {
@@ -527,6 +542,7 @@ class DailyWorkflowService:
                 "watch_context": summary.watch_context,
                 "alerts": summary.alerts,
                 "carry_over": summary.carry_over,
+                "etf_aw_context": etf_aw_context,
             }
         metadata = {
             **summary.metadata,

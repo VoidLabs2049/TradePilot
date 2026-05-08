@@ -267,6 +267,37 @@ def build_derived_etf_aw_sleeve_daily_dataset() -> DatasetDefinition:
     )
 
 
+def build_derived_etf_aw_rebalance_snapshot_dataset() -> DatasetDefinition:
+    """Return the ETF all-weather monthly rebalance snapshot definition."""
+
+    return DatasetDefinition(
+        dataset_name="derived.etf_aw_rebalance_snapshot",
+        category=DatasetCategory.DERIVED,
+        grain="calendar_rebalance_sleeve",
+        primary_source="derived",
+        storage_zone=StorageZone.DERIVED,
+        partition_strategy="year_month",
+        canonical_schema_name="etf_aw_rebalance_snapshot_v1",
+        timing_semantics=(
+            "Monthly post-20 rebalance read model built from adjustment-aware "
+            "ETF all-weather sleeve daily observations."
+        ),
+        validation_rule_names=[
+            "rebalance_snapshot.duplicate_business_key",
+            "rebalance_snapshot.five_frozen_sleeves_per_rebalance_date",
+            "rebalance_snapshot.rebalance_dates_from_calendar",
+            "rebalance_snapshot.data_status_allowed",
+            "rebalance_snapshot.quality_notes_json",
+            "rebalance_snapshot.complete_rows_have_features",
+        ],
+        dependencies=[
+            "reference.rebalance_calendar",
+            "reference.etf_aw_sleeves",
+            "derived.etf_aw_sleeve_daily",
+        ],
+    )
+
+
 def build_market_index_daily_dataset() -> DatasetDefinition:
     """Return the Stage B index daily dataset definition."""
 
@@ -315,4 +346,5 @@ def build_stage_b_datasets() -> list[DatasetDefinition]:
         build_market_etf_daily_dataset(),
         build_market_index_daily_dataset(),
         build_derived_etf_aw_sleeve_daily_dataset(),
+        build_derived_etf_aw_rebalance_snapshot_dataset(),
     ]
