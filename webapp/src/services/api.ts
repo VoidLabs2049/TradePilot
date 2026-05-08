@@ -113,6 +113,7 @@ export interface EtfAwSleeveSnapshot {
 // Latest ETF all-weather monthly rebalance context exposed to workflow insight.
 export interface EtfAwSnapshotContext {
   schema_version: string;
+  contract_version?: string;
   calendar_name: string;
   calendar_month: string;
   rebalance_date: string;

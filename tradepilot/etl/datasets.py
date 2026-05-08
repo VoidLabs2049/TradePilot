@@ -284,8 +284,11 @@ def build_derived_etf_aw_rebalance_snapshot_dataset() -> DatasetDefinition:
         ),
         validation_rule_names=[
             "rebalance_snapshot.duplicate_business_key",
-            "rebalance_snapshot.frozen_sleeve_rows",
-            "rebalance_snapshot.data_status_explicit",
+            "rebalance_snapshot.five_frozen_sleeves_per_rebalance_date",
+            "rebalance_snapshot.rebalance_dates_from_calendar",
+            "rebalance_snapshot.data_status_allowed",
+            "rebalance_snapshot.quality_notes_json",
+            "rebalance_snapshot.complete_rows_have_features",
         ],
         dependencies=[
             "reference.rebalance_calendar",

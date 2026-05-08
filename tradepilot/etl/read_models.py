@@ -14,6 +14,18 @@ from tradepilot.etl.storage import build_dataset_file_path
 
 _ETF_AW_SNAPSHOT_DATASET = "derived.etf_aw_rebalance_snapshot"
 _ETF_AW_SNAPSHOT_SCHEMA_VERSION = "etf_aw_snapshot_v1"
+_ETF_AW_SNAPSHOT_CONTRACT_VERSION = "etf_aw_snapshot_contract_v1"
+_ETF_AW_SNAPSHOT_REQUIRED_COLUMNS = {
+    "calendar_name",
+    "calendar_month",
+    "rebalance_date",
+    "effective_date",
+    "sleeve_code",
+    "sleeve_role",
+    "data_status",
+}
+_ETF_AW_SNAPSHOT_STATUS_ORDER = ["stale", "missing", "partial", "complete"]
+_ETF_AW_SNAPSHOT_STATUSES = set(_ETF_AW_SNAPSHOT_STATUS_ORDER)
 
 
 def get_latest_etf_aw_snapshot(
@@ -23,19 +35,21 @@ def get_latest_etf_aw_snapshot(
 ) -> dict[str, Any] | None:
     """Return the latest ETF all-weather snapshot at or before a date."""
 
-    frame = _read_etf_aw_snapshot_partitions(lakehouse_root=lakehouse_root)
+    frame = _read_latest_etf_aw_snapshot_partition(
+        as_of_date=as_of_date,
+        lakehouse_root=lakehouse_root,
+    )
     if frame.empty:
         return None
-    frame["rebalance_date"] = pd.to_datetime(
-        frame["rebalance_date"], errors="coerce"
-    ).dt.date
-    if as_of_date is not None:
-        frame = frame[frame["rebalance_date"] <= as_of_date].copy()
-    if frame.empty:
+    dates = frame["rebalance_date"].dropna().tolist()
+    if not dates:
         return None
-    latest_date = max(frame["rebalance_date"].dropna().tolist())
+    latest_date = max(dates)
     latest = frame[frame["rebalance_date"] == latest_date].copy()
-    return _snapshot_contract(latest)
+    latest = latest.sort_values("calendar_name")
+    for _, group in latest.groupby("calendar_name", sort=True):
+        return _snapshot_contract(group)
+    return None
 
 
 def list_etf_aw_snapshots(
@@ -55,13 +69,13 @@ def list_etf_aw_snapshots(
     )
     if frame.empty:
         return []
-    frame["rebalance_date"] = pd.to_datetime(
-        frame["rebalance_date"], errors="coerce"
-    ).dt.date
+    frame = _normalize_snapshot_frame(frame)
+    if frame.empty:
+        return []
     frame = frame[frame["rebalance_date"].between(start, end, inclusive="both")]
     return [
         _snapshot_contract(group)
-        for _, group in frame.groupby("rebalance_date", sort=True)
+        for _, group in frame.groupby(["calendar_name", "rebalance_date"], sort=True)
     ]
 
 
@@ -86,6 +100,41 @@ def _read_etf_aw_snapshot_partitions(
     return pd.concat(frames, ignore_index=True)
 
 
+def _read_latest_etf_aw_snapshot_partition(
+    *,
+    as_of_date: date | None,
+    lakehouse_root: Path | None,
+) -> pd.DataFrame:
+    months = _snapshot_months(None, as_of_date, lakehouse_root=lakehouse_root)
+    for year, month in reversed(months):
+        path = build_dataset_file_path(
+            _ETF_AW_SNAPSHOT_DATASET,
+            StorageZone.DERIVED,
+            [("year", year), ("month", f"{month:02d}")],
+            lakehouse_root=lakehouse_root,
+        )
+        if not path.exists():
+            continue
+        frame = _normalize_snapshot_frame(pd.read_parquet(path))
+        if as_of_date is not None and not frame.empty:
+            frame = frame[frame["rebalance_date"] <= as_of_date].copy()
+        if not frame.empty:
+            return frame
+    return pd.DataFrame()
+
+
+def _normalize_snapshot_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if not _ETF_AW_SNAPSHOT_REQUIRED_COLUMNS.issubset(frame.columns):
+        return pd.DataFrame()
+    normalized = frame.copy()
+    normalized["rebalance_date"] = pd.to_datetime(
+        normalized["rebalance_date"], errors="coerce"
+    ).dt.date
+    normalized = normalized.dropna(subset=["rebalance_date"])
+    normalized["data_status"] = normalized["data_status"].astype(str)
+    return normalized[normalized["data_status"].isin(_ETF_AW_SNAPSHOT_STATUSES)]
+
+
 def _snapshot_months(
     start: date | None,
     end: date | None,
@@ -105,6 +154,7 @@ def _snapshot_months(
                 cursor = date(cursor.year, cursor.month + 1, 1)
         return months
 
+    upper_month = (end.year, end.month) if end is not None else None
     dataset_root = (
         (lakehouse_root / StorageZone.DERIVED.value)
         if lakehouse_root is not None
@@ -120,9 +170,11 @@ def _snapshot_months(
     months = []
     for path in root.glob("*/*/part-00000.parquet"):
         try:
-            months.append((int(path.parent.parent.name), int(path.parent.name)))
+            month = (int(path.parent.parent.name), int(path.parent.name))
         except ValueError:
             continue
+        if upper_month is None or month <= upper_month:
+            months.append(month)
     return sorted(set(months))
 
 
@@ -140,6 +192,7 @@ def _snapshot_contract(frame: pd.DataFrame) -> dict[str, Any]:
     first = ordered.iloc[0]
     return {
         "schema_version": _ETF_AW_SNAPSHOT_SCHEMA_VERSION,
+        "contract_version": _ETF_AW_SNAPSHOT_CONTRACT_VERSION,
         "calendar_name": str(first["calendar_name"]),
         "calendar_month": str(first["calendar_month"]),
         "rebalance_date": _date_text(first["rebalance_date"]),

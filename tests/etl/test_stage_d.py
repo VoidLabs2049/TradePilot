@@ -12,7 +12,10 @@ import pandas as pd
 
 from tradepilot import db
 from tradepilot.etl.models import RunStatus
-from tradepilot.etl.read_models import get_latest_etf_aw_snapshot
+from tradepilot.etl.read_models import (
+    get_latest_etf_aw_snapshot,
+    list_etf_aw_snapshots,
+)
 from tradepilot.etl.service import ETLService
 
 
@@ -184,8 +187,67 @@ class StageDRebalanceSnapshotTests(unittest.TestCase):
         self.assertIsNotNone(snapshot)
         assert snapshot is not None
         self.assertEqual(snapshot["schema_version"], "etf_aw_snapshot_v1")
+        self.assertEqual(snapshot["contract_version"], "etf_aw_snapshot_contract_v1")
         self.assertEqual(snapshot["rebalance_date"], "2024-07-22")
         self.assertEqual(len(snapshot["sleeves"]), 5)
+
+    def test_read_service_skips_future_partitions_for_as_of_date(self) -> None:
+        self._insert_rebalance(date(2024, 7, 22))
+        self._insert_rebalance(date(2024, 8, 22))
+        self._write_sleeve_daily(date(2024, 1, 1), date(2024, 8, 22))
+        self._insert_watermarks(date(2024, 8, 22))
+        self.service.run_bootstrap(
+            "derived.etf_aw_rebalance_snapshot.build",
+            start=date(2024, 7, 1),
+            end=date(2024, 8, 31),
+        )
+
+        snapshot = get_latest_etf_aw_snapshot(
+            as_of_date=date(2024, 8, 1),
+            lakehouse_root=self.lakehouse_root,
+        )
+
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot["rebalance_date"], "2024-07-22")
+
+    def test_read_service_defends_against_invalid_snapshot_partition(self) -> None:
+        path = self._snapshot_file_path(2024, 7)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({"calendar_name": ["broken"]}).to_parquet(path, index=False)
+
+        snapshot = get_latest_etf_aw_snapshot(
+            as_of_date=date(2024, 7, 31),
+            lakehouse_root=self.lakehouse_root,
+        )
+
+        self.assertIsNone(snapshot)
+
+    def test_read_service_groups_history_by_calendar_name(self) -> None:
+        self._insert_rebalance(date(2024, 7, 22))
+        self._write_sleeve_daily(date(2024, 1, 1), date(2024, 7, 22))
+        self._insert_watermarks(date(2024, 7, 22))
+        self.service.run_bootstrap(
+            "derived.etf_aw_rebalance_snapshot.build",
+            start=date(2024, 7, 1),
+            end=date(2024, 7, 31),
+        )
+        frame = self._read_snapshot_file(2024, 7)
+        alternate = frame.copy()
+        alternate["calendar_name"] = "alternate_calendar"
+        self._write_snapshot_file(2024, 7, pd.concat([frame, alternate]))
+
+        snapshots = list_etf_aw_snapshots(
+            date(2024, 7, 1),
+            date(2024, 7, 31),
+            lakehouse_root=self.lakehouse_root,
+        )
+
+        self.assertEqual(len(snapshots), 2)
+        self.assertEqual(
+            {snapshot["calendar_name"] for snapshot in snapshots},
+            {"alternate_calendar", "etf_aw_v1_monthly_post_20"},
+        )
 
     def _insert_rebalance(self, rebalance_date: date) -> None:
         self.conn.execute(
@@ -275,7 +337,16 @@ class StageDRebalanceSnapshotTests(unittest.TestCase):
         self.service._write_etf_aw_sleeve_daily(pd.DataFrame(rows))
 
     def _read_snapshot_file(self, year: int, month: int) -> pd.DataFrame:
-        path = (
+        path = self._snapshot_file_path(year, month)
+        return pd.read_parquet(path)
+
+    def _write_snapshot_file(self, year: int, month: int, frame: pd.DataFrame) -> None:
+        path = self._snapshot_file_path(year, month)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_parquet(path, index=False)
+
+    def _snapshot_file_path(self, year: int, month: int) -> Path:
+        return (
             self.lakehouse_root
             / "derived"
             / "derived.etf_aw_rebalance_snapshot"
@@ -283,7 +354,6 @@ class StageDRebalanceSnapshotTests(unittest.TestCase):
             / f"{month:02d}"
             / "part-00000.parquet"
         )
-        return pd.read_parquet(path)
 
 
 if __name__ == "__main__":
