@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import date
 import re
 from typing import Any
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
+
+from tradepilot.etl.timing import (
+    monthly_day,
+    next_common_open_date,
+    next_common_open_date_from_conn,
+)
 
 
 class NormalizationResult(BaseModel):
@@ -245,6 +252,155 @@ class EtfAdjFactorNormalizer(BaseNormalizer):
         return _result(canonical, context=ctx)
 
 
+class DailyRatesNormalizer(BaseNormalizer):
+    """Normalize daily rates into long canonical facts."""
+
+    _FIELD_COLUMNS = {
+        "shibor_1w": ("shibor_1w", "1w", "1_week"),
+        "shibor_overnight": ("shibor_overnight", "overnight", "on"),
+    }
+    _FIELD_ROLES = {
+        "shibor_1w": "primary",
+        "shibor_overnight": "confirmatory",
+    }
+
+    def normalize(
+        self,
+        raw_payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> NormalizationResult:
+        """Normalize Shibor daily rate payloads."""
+
+        ctx = context or {}
+        rows: list[dict[str, Any]] = []
+        for _, raw_row in raw_payload.iterrows():
+            if "field_name" in raw_payload.columns and "value" in raw_payload.columns:
+                field_name = _normalize_rate_field_name(raw_row.get("field_name"))
+                if field_name in self._FIELD_ROLES:
+                    rows.append(
+                        self._row(ctx, raw_row, field_name, raw_row.get("value"))
+                    )
+                continue
+            for field_name, candidates in self._FIELD_COLUMNS.items():
+                column = _first_existing(raw_payload, list(candidates))
+                if column is None:
+                    continue
+                rows.append(self._row(ctx, raw_row, field_name, raw_row.get(column)))
+        canonical = pd.DataFrame(rows, columns=_DAILY_RATES_COLUMNS)
+        return _result(canonical, context=ctx)
+
+    def _row(
+        self,
+        ctx: dict[str, Any],
+        raw_row: pd.Series,
+        field_name: str,
+        value: object,
+    ) -> dict[str, Any]:
+        trade_date = _coerce_date(
+            _first_row_value(raw_row, ["trade_date", "date", "quote_date"])
+        )
+        return {
+            "field_name": field_name,
+            "trade_date": trade_date,
+            "value": _coerce_number(value),
+            "unit": "percent",
+            "field_role": self._FIELD_ROLES[field_name],
+            "release_date": trade_date,
+            "effective_date": trade_date,
+            "source_name": str(ctx.get("source_name", "")),
+            "raw_batch_id": ctx.get("raw_batch_id"),
+            "ingested_at": pd.Timestamp.utcnow().tz_localize(None),
+            "revision_note": str(ctx.get("revision_note", "low_revision_risk")),
+            "source_caveat": str(
+                ctx.get(
+                    "source_caveat",
+                    "tushare_wrapper_same_day_availability_caveat",
+                )
+            ),
+            "quality_status": str(ctx.get("quality_status", "pass")),
+        }
+
+
+class LprNormalizer(BaseNormalizer):
+    """Normalize loan prime rate rows into long canonical facts."""
+
+    _FIELD_COLUMNS = {
+        "lpr_1y": ("lpr_1y", "1y", "one_year"),
+        "lpr_5y": ("lpr_5y", "5y", "five_year"),
+    }
+    _FIELD_ROLES = {
+        "lpr_1y": "primary",
+        "lpr_5y": "confirmatory",
+    }
+
+    def normalize(
+        self,
+        raw_payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> NormalizationResult:
+        """Normalize LPR payloads with conservative effective dates."""
+
+        ctx = context or {}
+        rows: list[dict[str, Any]] = []
+        for _, raw_row in raw_payload.iterrows():
+            if "field_name" in raw_payload.columns and "value" in raw_payload.columns:
+                field_name = _normalize_lpr_field_name(raw_row.get("field_name"))
+                if field_name in self._FIELD_ROLES:
+                    rows.append(
+                        self._row(ctx, raw_row, field_name, raw_row.get("value"))
+                    )
+                continue
+            for field_name, candidates in self._FIELD_COLUMNS.items():
+                column = _first_existing(raw_payload, list(candidates))
+                if column is None:
+                    continue
+                rows.append(self._row(ctx, raw_row, field_name, raw_row.get(column)))
+        canonical = pd.DataFrame(rows, columns=_LPR_COLUMNS)
+        return _result(canonical, context=ctx)
+
+    def _row(
+        self,
+        ctx: dict[str, Any],
+        raw_row: pd.Series,
+        field_name: str,
+        value: object,
+    ) -> dict[str, Any]:
+        quote_date = _coerce_date(
+            _first_row_value(raw_row, ["quote_date", "date", "trade_date"])
+        )
+        inferred_date = False
+        if quote_date is None:
+            period_label = _period_label(raw_row)
+            quote_date = monthly_day(period_label, 20) if period_label else None
+            inferred_date = quote_date is not None
+        effective_date = _next_common_open_from_context(ctx, quote_date)
+        source_caveat = (
+            "tushare_wrapper_source_date_inferred_month_20"
+            if inferred_date
+            else "tushare_wrapper_source_date_used"
+        )
+        return {
+            "field_name": field_name,
+            "quote_date": quote_date,
+            "value": _coerce_number(value),
+            "unit": "percent",
+            "field_role": self._FIELD_ROLES[field_name],
+            "release_date": quote_date,
+            "effective_date": effective_date,
+            "source_name": str(ctx.get("source_name", "")),
+            "raw_batch_id": ctx.get("raw_batch_id"),
+            "ingested_at": pd.Timestamp.utcnow().tz_localize(None),
+            "revision_note": str(
+                ctx.get(
+                    "revision_note",
+                    "low_revision_risk_relative_to_other_slow_fields",
+                )
+            ),
+            "source_caveat": str(ctx.get("source_caveat", source_caveat)),
+            "quality_status": str(ctx.get("quality_status", "pass")),
+        }
+
+
 def get_normalizer(dataset_name: str) -> BaseNormalizer:
     """Return the normalizer for one Stage B dataset."""
 
@@ -256,7 +412,137 @@ def get_normalizer(dataset_name: str) -> BaseNormalizer:
         return EtfAdjFactorNormalizer()
     if dataset_name in {"market.etf_daily", "market.index_daily"}:
         return MarketDailyNormalizer()
+    if dataset_name == "rates.daily_rates":
+        return DailyRatesNormalizer()
+    if dataset_name == "rates.lpr":
+        return LprNormalizer()
     raise KeyError(f"no normalizer registered for dataset: {dataset_name}")
+
+
+_DAILY_RATES_COLUMNS = [
+    "field_name",
+    "trade_date",
+    "value",
+    "unit",
+    "field_role",
+    "release_date",
+    "effective_date",
+    "source_name",
+    "raw_batch_id",
+    "ingested_at",
+    "revision_note",
+    "source_caveat",
+    "quality_status",
+]
+_LPR_COLUMNS = [
+    "field_name",
+    "quote_date",
+    "value",
+    "unit",
+    "field_role",
+    "release_date",
+    "effective_date",
+    "source_name",
+    "raw_batch_id",
+    "ingested_at",
+    "revision_note",
+    "source_caveat",
+    "quality_status",
+]
+
+
+def _first_row_value(row: pd.Series, columns: list[str]) -> object:
+    """Return the first non-null value from a row."""
+
+    for column in columns:
+        if column not in row.index:
+            continue
+        value = row.get(column)
+        if value is not None and not pd.isna(value):
+            return value
+    return None
+
+
+def _coerce_date(value: object) -> date | None:
+    """Convert a scalar source date to a Python date."""
+
+    if value is None or pd.isna(value):
+        return None
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
+
+
+def _coerce_number(value: object) -> float | None:
+    """Convert source numeric values to finite floats."""
+
+    if value is None or pd.isna(value):
+        return None
+    number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(number):
+        return None
+    return float(number)
+
+
+def _normalize_rate_field_name(value: object) -> str:
+    """Normalize source daily-rate field names to canonical keys."""
+
+    text = str(value or "").strip().lower()
+    mapping = {
+        "1w": "shibor_1w",
+        "1_week": "shibor_1w",
+        "shibor_1w": "shibor_1w",
+        "on": "shibor_overnight",
+        "overnight": "shibor_overnight",
+        "shibor_overnight": "shibor_overnight",
+    }
+    return mapping.get(text, text)
+
+
+def _normalize_lpr_field_name(value: object) -> str:
+    """Normalize source LPR field names to canonical keys."""
+
+    text = str(value or "").strip().lower()
+    mapping = {
+        "1y": "lpr_1y",
+        "one_year": "lpr_1y",
+        "lpr_1y": "lpr_1y",
+        "5y": "lpr_5y",
+        "five_year": "lpr_5y",
+        "lpr_5y": "lpr_5y",
+    }
+    return mapping.get(text, text)
+
+
+def _period_label(row: pd.Series) -> str | None:
+    """Return a YYYY-MM period label from common source columns."""
+
+    value = _first_row_value(row, ["period_label", "period", "month"])
+    if value is None:
+        return None
+    text = str(value).strip()
+    if re.fullmatch(r"\d{6}", text):
+        return f"{text[:4]}-{text[4:]}"
+    if re.fullmatch(r"\d{4}-\d{2}", text):
+        return text
+    return None
+
+
+def _next_common_open_from_context(
+    context: dict[str, Any], target_date: date | None
+) -> date | None:
+    """Return the next SH/SZ common open date using normalizer context."""
+
+    if target_date is None:
+        return None
+    calendar = context.get("canonical_trading_calendar")
+    if isinstance(calendar, pd.DataFrame):
+        return next_common_open_date(calendar, target_date) or target_date
+    conn = context.get("conn")
+    if conn is not None:
+        return next_common_open_date_from_conn(conn, target_date) or target_date
+    return target_date
 
 
 def normalize_instrument_id(

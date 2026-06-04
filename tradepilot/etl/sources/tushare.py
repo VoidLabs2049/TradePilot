@@ -28,6 +28,8 @@ class TushareSourceAdapter(BaseSourceAdapter):
         "market.etf_adj_factor",
         "market.etf_daily",
         "market.index_daily",
+        "rates.daily_rates",
+        "rates.lpr",
     }
 
     def __init__(self, client: TushareClient | Any | None = None) -> None:
@@ -56,9 +58,15 @@ class TushareSourceAdapter(BaseSourceAdapter):
         elif dataset_name == "market.etf_daily":
             payload = self._fetch_market_daily(request, instrument_type="etf")
             endpoint = "fund_daily"
-        else:
+        elif dataset_name == "market.index_daily":
             payload = self._fetch_market_daily(request, instrument_type="index")
             endpoint = "index_daily"
+        elif dataset_name == "rates.daily_rates":
+            payload = self._fetch_daily_rates(request)
+            endpoint = "shibor"
+        else:
+            payload = self._fetch_lpr(request)
+            endpoint = "shibor_lpr"
         return SourceFetchResult(
             dataset_name=dataset_name,
             source_name=self.source_name,
@@ -150,6 +158,14 @@ class TushareSourceAdapter(BaseSourceAdapter):
             if not frame.empty:
                 frames.append(frame)
         return _concat_or_empty(frames, list(_empty_etf_adj_factor().columns))
+
+    def _fetch_daily_rates(self, request: IngestionRequest) -> pd.DataFrame:
+        start_date, end_date = _date_window(request)
+        return self._client.get_shibor(start_date.isoformat(), end_date.isoformat())
+
+    def _fetch_lpr(self, request: IngestionRequest) -> pd.DataFrame:
+        start_date, end_date = _date_window(request)
+        return self._client.get_lpr(start_date.isoformat(), end_date.isoformat())
 
 
 def _date_window(request: IngestionRequest) -> tuple[date, date]:

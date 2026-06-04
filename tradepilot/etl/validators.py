@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import UTC, date, datetime, timedelta
 import json
+import math
 import re
 from typing import Any
 
@@ -499,6 +500,152 @@ class EtfAdjFactorValidator(BaseValidator):
         return results
 
 
+class DailyRatesValidator(BaseValidator):
+    """Validate canonical daily rates rows."""
+
+    _FIELD_ROLES = {
+        "shibor_1w": "primary",
+        "shibor_overnight": "confirmatory",
+    }
+
+    def validate(
+        self,
+        payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> list[ValidationResultRecord]:
+        """Validate daily rate facts."""
+
+        ctx = context or {}
+        results: list[ValidationResultRecord] = []
+        _required_columns(
+            payload,
+            [
+                "field_name",
+                "trade_date",
+                "value",
+                "unit",
+                "field_role",
+                "effective_date",
+                "revision_note",
+                "source_caveat",
+            ],
+            ctx,
+            results,
+        )
+        if results:
+            return results
+
+        _duplicate_key_result(
+            results, ctx, payload, ["field_name", "trade_date"], "daily_rates"
+        )
+        _allowed_field_result(results, ctx, payload, self._FIELD_ROLES, "daily_rates")
+        _value_plausibility_result(results, ctx, payload, "daily_rates", 0.0, 20.0)
+        _unit_allowed_result(results, ctx, payload, "daily_rates")
+        _row_records(
+            results,
+            ctx,
+            payload[payload["trade_date"].isna()],
+            "daily_rates.trade_date_required",
+            ["field_name", "trade_date"],
+            "trade_date is required",
+        )
+        _row_records(
+            results,
+            ctx,
+            payload[payload["effective_date"].isna()],
+            "daily_rates.effective_date_required",
+            ["field_name", "trade_date"],
+            "effective_date is required",
+        )
+        _field_role_result(results, ctx, payload, self._FIELD_ROLES, "daily_rates")
+        _source_caveat_result(results, ctx, payload, "daily_rates")
+        return results
+
+
+class LprValidator(BaseValidator):
+    """Validate canonical loan prime rate rows."""
+
+    _FIELD_ROLES = {
+        "lpr_1y": "primary",
+        "lpr_5y": "confirmatory",
+    }
+
+    def validate(
+        self,
+        payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> list[ValidationResultRecord]:
+        """Validate LPR facts."""
+
+        ctx = context or {}
+        results: list[ValidationResultRecord] = []
+        _required_columns(
+            payload,
+            [
+                "field_name",
+                "quote_date",
+                "value",
+                "unit",
+                "field_role",
+                "release_date",
+                "effective_date",
+                "revision_note",
+                "source_caveat",
+            ],
+            ctx,
+            results,
+        )
+        if results:
+            return results
+
+        _duplicate_key_result(
+            results, ctx, payload, ["field_name", "quote_date"], "lpr"
+        )
+        _allowed_field_result(results, ctx, payload, self._FIELD_ROLES, "lpr")
+        _value_plausibility_result(results, ctx, payload, "lpr", 0.0, 20.0)
+        _unit_allowed_result(results, ctx, payload, "lpr")
+        _row_records(
+            results,
+            ctx,
+            payload[payload["quote_date"].isna()],
+            "lpr.quote_date_required",
+            ["field_name", "quote_date"],
+            "quote_date is required",
+        )
+        _row_records(
+            results,
+            ctx,
+            payload[payload["release_date"].isna()],
+            "lpr.release_date_required",
+            ["field_name", "quote_date"],
+            "release_date is required",
+        )
+        _row_records(
+            results,
+            ctx,
+            payload[payload["effective_date"].isna()],
+            "lpr.effective_date_required",
+            ["field_name", "quote_date"],
+            "effective_date is required",
+        )
+        bad_order = payload[
+            payload["release_date"].notna()
+            & payload["effective_date"].notna()
+            & (payload["effective_date"] < payload["release_date"])
+        ]
+        _row_records(
+            results,
+            ctx,
+            bad_order,
+            "lpr.effective_date_after_release",
+            ["field_name", "quote_date"],
+            "effective_date must not precede release_date",
+        )
+        _field_role_result(results, ctx, payload, self._FIELD_ROLES, "lpr")
+        _source_caveat_result(results, ctx, payload, "lpr")
+        return results
+
+
 def get_validator(dataset_name: str) -> BaseValidator:
     """Return the validator for one Stage B dataset."""
 
@@ -510,6 +657,10 @@ def get_validator(dataset_name: str) -> BaseValidator:
         return EtfAdjFactorValidator()
     if dataset_name in {"market.etf_daily", "market.index_daily"}:
         return MarketDailyValidator()
+    if dataset_name == "rates.daily_rates":
+        return DailyRatesValidator()
+    if dataset_name == "rates.lpr":
+        return LprValidator()
     raise KeyError(f"no validator registered for dataset: {dataset_name}")
 
 
@@ -592,6 +743,158 @@ def _row_records(
                 metric_value=float(len(frame)),
                 threshold_value=threshold_value,
                 details={"message": message, "truncated": True},
+            )
+        )
+
+
+def _duplicate_key_result(
+    results: list[ValidationResultRecord],
+    context: dict[str, Any],
+    payload: pd.DataFrame,
+    key_columns: list[str],
+    prefix: str,
+) -> None:
+    """Append a duplicate business-key validation result."""
+
+    duplicate_count = int(payload.duplicated(key_columns).sum())
+    results.append(
+        _record(
+            context,
+            f"{prefix}.duplicate_business_key",
+            "dataset",
+            ValidationStatus.FAIL if duplicate_count else ValidationStatus.PASS,
+            metric_value=duplicate_count,
+            threshold_value=0,
+            details={
+                "sample": _sample_keys(
+                    payload[payload.duplicated(key_columns, keep=False)], key_columns
+                )
+            },
+        )
+    )
+
+
+def _allowed_field_result(
+    results: list[ValidationResultRecord],
+    context: dict[str, Any],
+    payload: pd.DataFrame,
+    field_roles: dict[str, str],
+    prefix: str,
+) -> None:
+    """Validate field_name membership."""
+
+    invalid = payload[~payload["field_name"].isin(field_roles.keys())]
+    _row_records(
+        results,
+        context,
+        invalid,
+        f"{prefix}.field_allowed",
+        ["field_name"],
+        "field_name is not allowed for this dataset",
+    )
+
+
+def _value_plausibility_result(
+    results: list[ValidationResultRecord],
+    context: dict[str, Any],
+    payload: pd.DataFrame,
+    prefix: str,
+    minimum: float,
+    maximum: float,
+) -> None:
+    """Validate numeric values are finite and within a broad plausible range."""
+
+    def invalid(value: object) -> bool:
+        if value is None or pd.isna(value):
+            return True
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return True
+        return not math.isfinite(number) or number < minimum or number > maximum
+
+    bad = payload[payload["value"].map(invalid)]
+    _row_records(
+        results,
+        context,
+        bad,
+        f"{prefix}.value_plausible",
+        ["field_name"],
+        "value must be finite and within the broad plausible rate range",
+        threshold_value=maximum,
+    )
+
+
+def _unit_allowed_result(
+    results: list[ValidationResultRecord],
+    context: dict[str, Any],
+    payload: pd.DataFrame,
+    prefix: str,
+) -> None:
+    """Validate rate unit conventions."""
+
+    allowed = {"percent", "bp", "basis_point"}
+    bad = payload[~payload["unit"].isin(allowed)]
+    _row_records(
+        results,
+        context,
+        bad,
+        f"{prefix}.unit_allowed",
+        ["field_name"],
+        "unit must be percent or basis-point convention",
+    )
+
+
+def _field_role_result(
+    results: list[ValidationResultRecord],
+    context: dict[str, Any],
+    payload: pd.DataFrame,
+    field_roles: dict[str, str],
+    prefix: str,
+) -> None:
+    """Validate canonical field_role values."""
+
+    expected = payload["field_name"].map(field_roles)
+    bad = payload[expected.notna() & (payload["field_role"] != expected)]
+    _row_records(
+        results,
+        context,
+        bad,
+        f"{prefix}.field_role_matches",
+        ["field_name"],
+        "field_role must match the v1 role map",
+    )
+
+
+def _source_caveat_result(
+    results: list[ValidationResultRecord],
+    context: dict[str, Any],
+    payload: pd.DataFrame,
+    prefix: str,
+) -> None:
+    """Require source caveats and mark wrapper-backed rows with caveat status."""
+
+    missing = payload[
+        payload["source_caveat"].isna()
+        | (payload["source_caveat"].astype(str).str.strip() == "")
+    ]
+    _row_records(
+        results,
+        context,
+        missing,
+        f"{prefix}.source_caveat_present",
+        ["field_name"],
+        "source_caveat is required",
+    )
+    if missing.empty:
+        results.append(
+            _record(
+                context,
+                f"{prefix}.source_caveat_present",
+                "dataset",
+                ValidationStatus.PASS_WITH_CAVEAT,
+                metric_value=float(len(payload)),
+                details={"message": "wrapper source caveat recorded"},
             )
         )
 

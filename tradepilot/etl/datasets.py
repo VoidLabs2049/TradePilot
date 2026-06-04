@@ -322,6 +322,67 @@ def build_derived_etf_aw_regime_score_dataset() -> DatasetDefinition:
     )
 
 
+def build_rates_daily_rates_dataset() -> DatasetDefinition:
+    """Return the Stage F daily interbank rates dataset definition."""
+
+    return DatasetDefinition(
+        dataset_name="rates.daily_rates",
+        category=DatasetCategory.RATES,
+        grain="field_trade_date",
+        primary_source="tushare",
+        storage_zone=StorageZone.NORMALIZED,
+        partition_strategy="year_month",
+        canonical_schema_name="daily_rates_v1",
+        validation_rule_names=[
+            "daily_rates.duplicate_business_key",
+            "daily_rates.field_allowed",
+            "daily_rates.value_plausible",
+            "daily_rates.unit_allowed",
+            "daily_rates.trade_date_required",
+            "daily_rates.effective_date_required",
+            "daily_rates.field_role_matches",
+            "daily_rates.source_caveat_present",
+        ],
+        supports_incremental=True,
+        watermark_key="trade_date",
+        dependencies=["reference.trading_calendar"],
+        dependency_types={
+            "reference.trading_calendar": DependencyType.WINDOW,
+        },
+    )
+
+
+def build_rates_lpr_dataset() -> DatasetDefinition:
+    """Return the Stage F loan prime rate dataset definition."""
+
+    return DatasetDefinition(
+        dataset_name="rates.lpr",
+        category=DatasetCategory.RATES,
+        grain="field_quote_date",
+        primary_source="tushare",
+        storage_zone=StorageZone.NORMALIZED,
+        partition_strategy="year_month",
+        canonical_schema_name="lpr_v1",
+        validation_rule_names=[
+            "lpr.duplicate_business_key",
+            "lpr.field_allowed",
+            "lpr.value_plausible",
+            "lpr.unit_allowed",
+            "lpr.quote_date_required",
+            "lpr.release_date_required",
+            "lpr.effective_date_required",
+            "lpr.field_role_matches",
+            "lpr.source_caveat_present",
+        ],
+        supports_incremental=True,
+        watermark_key="quote_date",
+        dependencies=["reference.trading_calendar"],
+        dependency_types={
+            "reference.trading_calendar": DependencyType.WINDOW,
+        },
+    )
+
+
 def build_market_index_daily_dataset() -> DatasetDefinition:
     """Return the Stage B index daily dataset definition."""
 
@@ -372,4 +433,6 @@ def build_stage_b_datasets() -> list[DatasetDefinition]:
         build_derived_etf_aw_sleeve_daily_dataset(),
         build_derived_etf_aw_rebalance_snapshot_dataset(),
         build_derived_etf_aw_regime_score_dataset(),
+        build_rates_daily_rates_dataset(),
+        build_rates_lpr_dataset(),
     ]

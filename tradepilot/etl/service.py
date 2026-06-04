@@ -615,6 +615,10 @@ class ETLService:
             return self._write_instruments(canonical)
         if definition.dataset_name == "market.etf_adj_factor":
             return self._write_etf_adj_factor(definition, canonical)
+        if definition.dataset_name == "rates.daily_rates":
+            return self._write_daily_rates(definition, canonical)
+        if definition.dataset_name == "rates.lpr":
+            return self._write_lpr(definition, canonical)
         return self._write_market_daily(definition, canonical)
 
     def _write_trading_calendar(self, canonical: pd.DataFrame) -> CanonicalWriteResult:
@@ -701,6 +705,29 @@ class ETLService:
             sort_columns=("instrument_id", "trade_date", "ingested_at"),
         )
 
+    def _write_daily_rates(
+        self, definition: DatasetDefinition, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=definition.dataset_name,
+            zone=StorageZone.NORMALIZED,
+            canonical=canonical,
+            key_columns=("field_name", "trade_date"),
+            sort_columns=("field_name", "trade_date", "ingested_at"),
+        )
+
+    def _write_lpr(
+        self, definition: DatasetDefinition, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=definition.dataset_name,
+            zone=StorageZone.NORMALIZED,
+            canonical=canonical,
+            key_columns=("field_name", "quote_date"),
+            sort_columns=("field_name", "quote_date", "ingested_at"),
+            partition_date_column="effective_date",
+        )
+
     def _write_year_month_partition_upsert(
         self,
         *,
@@ -745,6 +772,18 @@ class ETLService:
                 merged["rebalance_date"] = pd.to_datetime(
                     merged["rebalance_date"], errors="coerce"
                 )
+            if "quote_date" in merged.columns:
+                merged["quote_date"] = pd.to_datetime(
+                    merged["quote_date"], errors="coerce"
+                )
+            if "release_date" in merged.columns:
+                merged["release_date"] = pd.to_datetime(
+                    merged["release_date"], errors="coerce"
+                )
+            if "effective_date" in merged.columns:
+                merged["effective_date"] = pd.to_datetime(
+                    merged["effective_date"], errors="coerce"
+                )
             for column in sort_columns:
                 if isinstance(merged[column].dtype, pd.CategoricalDtype):
                     merged[column] = merged[column].astype(str)
@@ -760,6 +799,18 @@ class ETLService:
             if "rebalance_date" in merged.columns:
                 merged["rebalance_date"] = pd.to_datetime(
                     merged["rebalance_date"], errors="coerce"
+                ).dt.date
+            if "quote_date" in merged.columns:
+                merged["quote_date"] = pd.to_datetime(
+                    merged["quote_date"], errors="coerce"
+                ).dt.date
+            if "release_date" in merged.columns:
+                merged["release_date"] = pd.to_datetime(
+                    merged["release_date"], errors="coerce"
+                ).dt.date
+            if "effective_date" in merged.columns:
+                merged["effective_date"] = pd.to_datetime(
+                    merged["effective_date"], errors="coerce"
                 ).dt.date
             write_result = write_dataset_parquet(
                 merged,
@@ -962,7 +1013,15 @@ class ETLService:
         run_id: int,
         canonical: pd.DataFrame,
     ) -> None:
-        if "trade_date" in canonical.columns and not canonical.empty:
+        watermark_key = definition.watermark_key
+        if (
+            watermark_key is not None
+            and watermark_key in canonical.columns
+            and not canonical.empty
+        ):
+            latest = pd.to_datetime(canonical[watermark_key], errors="coerce").max()
+            latest_date = latest.date() if pd.notna(latest) else None
+        elif "trade_date" in canonical.columns and not canonical.empty:
             latest = pd.to_datetime(canonical["trade_date"], errors="coerce").max()
             latest_date = latest.date() if pd.notna(latest) else None
         elif definition.dataset_name == "reference.instruments":

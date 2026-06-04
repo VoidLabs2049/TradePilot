@@ -27,6 +27,8 @@ _MARKET_DAILY_STATS_COLUMNS = (
     "turnover_rate",
 )
 _ETF_ADJ_FACTOR_COLUMNS = ("date", "etf_code", "adj_factor")
+_SHIBOR_COLUMNS = ("date", "on", "1w", "2w", "1m", "3m", "6m", "9m", "1y")
+_LPR_COLUMNS = ("date", "1y", "5y")
 
 
 def _empty_frame(columns: tuple[str, ...]) -> pd.DataFrame:
@@ -481,6 +483,54 @@ class TushareClient:
         return cast(
             pd.DataFrame,
             normalized.loc[:, list(_ETF_ADJ_FACTOR_COLUMNS)]
+            .sort_values("date")
+            .reset_index(drop=True),
+        )
+
+    def get_shibor(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """Return Shibor daily rates from Tushare."""
+
+        pro = self._pro
+        if pro is None:
+            return _empty_frame(_SHIBOR_COLUMNS)
+        frame = pro.shibor(
+            start_date=_to_tushare_date(start_date),
+            end_date=_to_tushare_date(end_date),
+            fields="date,on,1w,2w,1m,3m,6m,9m,1y",
+        )
+        if frame.empty:
+            return _empty_frame(_SHIBOR_COLUMNS)
+        normalized = frame.copy()
+        normalized["date"] = pd.to_datetime(
+            normalized["date"], format="%Y%m%d", errors="coerce"
+        )
+        return cast(
+            pd.DataFrame,
+            normalized.loc[:, list(_SHIBOR_COLUMNS)]
+            .sort_values("date")
+            .reset_index(drop=True),
+        )
+
+    def get_lpr(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """Return loan prime rates from Tushare."""
+
+        pro = self._pro
+        if pro is None:
+            return _empty_frame(_LPR_COLUMNS)
+        frame = pro.shibor_lpr(
+            start_date=_to_tushare_date(start_date),
+            end_date=_to_tushare_date(end_date),
+            fields="date,1y,5y",
+        )
+        if frame.empty:
+            return _empty_frame(_LPR_COLUMNS)
+        normalized = frame.copy()
+        normalized["date"] = pd.to_datetime(
+            normalized["date"], format="%Y%m%d", errors="coerce"
+        )
+        return cast(
+            pd.DataFrame,
+            normalized.loc[:, list(_LPR_COLUMNS)]
             .sort_values("date")
             .reset_index(drop=True),
         )
