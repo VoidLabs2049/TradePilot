@@ -516,50 +516,26 @@ class DailyRatesValidator(BaseValidator):
         """Validate daily rate facts."""
 
         ctx = context or {}
-        results: list[ValidationResultRecord] = []
-        _required_columns(
+        return _validate_rate_dataset(
             payload,
-            [
+            ctx,
+            required_columns=[
                 "field_name",
                 "trade_date",
                 "value",
                 "unit",
                 "field_role",
+                "release_date",
                 "effective_date",
                 "revision_note",
                 "source_caveat",
             ],
-            ctx,
-            results,
+            key_columns=["field_name", "trade_date"],
+            required_date_columns=["trade_date", "release_date", "effective_date"],
+            required_text_columns=["revision_note"],
+            field_roles=self._FIELD_ROLES,
+            prefix="daily_rates",
         )
-        if results:
-            return results
-
-        _duplicate_key_result(
-            results, ctx, payload, ["field_name", "trade_date"], "daily_rates"
-        )
-        _allowed_field_result(results, ctx, payload, self._FIELD_ROLES, "daily_rates")
-        _value_plausibility_result(results, ctx, payload, "daily_rates", 0.0, 20.0)
-        _unit_allowed_result(results, ctx, payload, "daily_rates")
-        _row_records(
-            results,
-            ctx,
-            payload[payload["trade_date"].isna()],
-            "daily_rates.trade_date_required",
-            ["field_name", "trade_date"],
-            "trade_date is required",
-        )
-        _row_records(
-            results,
-            ctx,
-            payload[payload["effective_date"].isna()],
-            "daily_rates.effective_date_required",
-            ["field_name", "trade_date"],
-            "effective_date is required",
-        )
-        _field_role_result(results, ctx, payload, self._FIELD_ROLES, "daily_rates")
-        _source_caveat_result(results, ctx, payload, "daily_rates")
-        return results
 
 
 class LprValidator(BaseValidator):
@@ -578,10 +554,10 @@ class LprValidator(BaseValidator):
         """Validate LPR facts."""
 
         ctx = context or {}
-        results: list[ValidationResultRecord] = []
-        _required_columns(
+        results = _validate_rate_dataset(
             payload,
-            [
+            ctx,
+            required_columns=[
                 "field_name",
                 "quote_date",
                 "value",
@@ -592,57 +568,14 @@ class LprValidator(BaseValidator):
                 "revision_note",
                 "source_caveat",
             ],
-            ctx,
-            results,
+            key_columns=["field_name", "quote_date"],
+            required_date_columns=["quote_date", "release_date", "effective_date"],
+            required_text_columns=["revision_note"],
+            field_roles=self._FIELD_ROLES,
+            prefix="lpr",
         )
-        if results:
-            return results
-
-        _duplicate_key_result(
-            results, ctx, payload, ["field_name", "quote_date"], "lpr"
-        )
-        _allowed_field_result(results, ctx, payload, self._FIELD_ROLES, "lpr")
-        _value_plausibility_result(results, ctx, payload, "lpr", 0.0, 20.0)
-        _unit_allowed_result(results, ctx, payload, "lpr")
-        _row_records(
-            results,
-            ctx,
-            payload[payload["quote_date"].isna()],
-            "lpr.quote_date_required",
-            ["field_name", "quote_date"],
-            "quote_date is required",
-        )
-        _row_records(
-            results,
-            ctx,
-            payload[payload["release_date"].isna()],
-            "lpr.release_date_required",
-            ["field_name", "quote_date"],
-            "release_date is required",
-        )
-        _row_records(
-            results,
-            ctx,
-            payload[payload["effective_date"].isna()],
-            "lpr.effective_date_required",
-            ["field_name", "quote_date"],
-            "effective_date is required",
-        )
-        bad_order = payload[
-            payload["release_date"].notna()
-            & payload["effective_date"].notna()
-            & (payload["effective_date"] < payload["release_date"])
-        ]
-        _row_records(
-            results,
-            ctx,
-            bad_order,
-            "lpr.effective_date_after_release",
-            ["field_name", "quote_date"],
-            "effective_date must not precede release_date",
-        )
-        _field_role_result(results, ctx, payload, self._FIELD_ROLES, "lpr")
-        _source_caveat_result(results, ctx, payload, "lpr")
+        if not _has_required_column_failure(results):
+            _lpr_effective_date_order_result(results, ctx, payload)
         return results
 
 
@@ -745,6 +678,97 @@ def _row_records(
                 details={"message": message, "truncated": True},
             )
         )
+
+
+def _validate_rate_dataset(
+    payload: pd.DataFrame,
+    context: dict[str, Any],
+    required_columns: list[str],
+    key_columns: list[str],
+    required_date_columns: list[str],
+    required_text_columns: list[str],
+    field_roles: dict[str, str],
+    prefix: str,
+) -> list[ValidationResultRecord]:
+    """Validate shared canonical rate fact rules."""
+
+    results: list[ValidationResultRecord] = []
+    _required_columns(payload, required_columns, context, results)
+    if results:
+        return results
+
+    _duplicate_key_result(results, context, payload, key_columns, prefix)
+    _allowed_field_result(results, context, payload, field_roles, prefix)
+    _value_plausibility_result(results, context, payload, prefix, 0.0, 20.0)
+    _unit_allowed_result(results, context, payload, prefix)
+    for column in required_date_columns:
+        invalid_dates = _missing_or_unparseable_dates(payload, column)
+        _row_records(
+            results,
+            context,
+            invalid_dates,
+            f"{prefix}.{column}_required",
+            key_columns,
+            f"{column} is required and must be date-like",
+        )
+    for column in required_text_columns:
+        missing_text = payload[
+            payload[column].isna() | (payload[column].astype(str).str.strip() == "")
+        ]
+        _row_records(
+            results,
+            context,
+            missing_text,
+            f"{prefix}.{column}_required",
+            key_columns,
+            f"{column} is required",
+        )
+    _field_role_result(results, context, payload, field_roles, prefix)
+    _source_caveat_result(results, context, payload, prefix)
+    return results
+
+
+def _has_required_column_failure(results: list[ValidationResultRecord]) -> bool:
+    """Return whether required-column contract validation failed."""
+
+    return any(
+        result.check_name == "normalization_contract.required_columns"
+        and result.status == ValidationStatus.FAIL
+        for result in results
+    )
+
+
+def _lpr_effective_date_order_result(
+    results: list[ValidationResultRecord],
+    context: dict[str, Any],
+    payload: pd.DataFrame,
+) -> None:
+    """Validate LPR effective dates after parsing date-like values."""
+
+    release_dates = pd.to_datetime(payload["release_date"], errors="coerce")
+    effective_dates = pd.to_datetime(payload["effective_date"], errors="coerce")
+    bad_order = payload[
+        payload["release_date"].notna()
+        & payload["effective_date"].notna()
+        & release_dates.notna()
+        & effective_dates.notna()
+        & (effective_dates < release_dates)
+    ]
+    _row_records(
+        results,
+        context,
+        bad_order,
+        "lpr.effective_date_after_release",
+        ["field_name", "quote_date"],
+        "effective_date must not precede release_date and dates must be parseable",
+    )
+
+
+def _missing_or_unparseable_dates(payload: pd.DataFrame, column: str) -> pd.DataFrame:
+    """Return rows where a required date column is missing or unparseable."""
+
+    parsed = pd.to_datetime(payload[column], errors="coerce")
+    return payload[payload[column].isna() | parsed.isna()]
 
 
 def _duplicate_key_result(

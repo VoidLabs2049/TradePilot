@@ -11,12 +11,21 @@ import unittest
 import pandas as pd
 
 from tradepilot import db
-from tradepilot.etl.models import IngestionRequest, RunStatus, StorageZone
+from tradepilot.etl.models import (
+    IngestionRequest,
+    RunStatus,
+    StorageZone,
+    ValidationStatus,
+)
 from tradepilot.etl.normalizers import LprNormalizer
 from tradepilot.etl.service import ETLService
 from tradepilot.etl.sources.tushare import TushareSourceAdapter
 from tradepilot.etl.storage import build_dataset_file_path
-from tradepilot.etl.validators import DailyRatesValidator, has_blocking_failures
+from tradepilot.etl.validators import (
+    DailyRatesValidator,
+    LprValidator,
+    has_blocking_failures,
+)
 
 
 class StageFRatesMockTushareClient:
@@ -212,6 +221,64 @@ class StageFRatesTests(unittest.TestCase):
             {"dataset_name": "rates.daily_rates", "run_id": 1},
         )
 
+        self.assertTrue(has_blocking_failures(results))
+
+    def test_daily_rates_validator_requires_release_and_revision_metadata(self) -> None:
+        payload = pd.DataFrame(
+            {
+                "field_name": ["shibor_1w"],
+                "trade_date": [date(2026, 4, 20)],
+                "value": [1.8],
+                "unit": ["percent"],
+                "field_role": ["primary"],
+                "release_date": ["not-a-date"],
+                "effective_date": [date(2026, 4, 20)],
+                "revision_note": [""],
+                "source_caveat": ["wrapper"],
+            }
+        )
+
+        results = DailyRatesValidator().validate(
+            payload,
+            {"dataset_name": "rates.daily_rates", "run_id": 1},
+        )
+        failed_checks = {
+            result.check_name
+            for result in results
+            if result.status == ValidationStatus.FAIL
+        }
+
+        self.assertIn("daily_rates.release_date_required", failed_checks)
+        self.assertIn("daily_rates.revision_note_required", failed_checks)
+        self.assertTrue(has_blocking_failures(results))
+
+    def test_lpr_validator_compares_string_dates_as_dates(self) -> None:
+        payload = pd.DataFrame(
+            {
+                "field_name": ["lpr_1y"],
+                "quote_date": ["2026-10-02"],
+                "value": [3.1],
+                "unit": ["percent"],
+                "field_role": ["primary"],
+                "release_date": ["2026-10-02"],
+                "effective_date": ["2026-02-01"],
+                "revision_note": ["low_revision_risk_relative_to_other_slow_fields"],
+                "source_caveat": ["wrapper"],
+            }
+        )
+
+        results = LprValidator().validate(
+            payload,
+            {"dataset_name": "rates.lpr", "run_id": 1},
+        )
+        failures = [
+            result
+            for result in results
+            if result.check_name == "lpr.effective_date_after_release"
+            and result.status == ValidationStatus.FAIL
+        ]
+
+        self.assertEqual(len(failures), 1)
         self.assertTrue(has_blocking_failures(results))
 
     def _insert_calendar_window(self, start: date, end: date) -> None:
