@@ -48,6 +48,12 @@ Current product direction is workflow-first:
 - Backend main path: daily workflow data platform, pre/post workflow, context/insight contract, watch config, news sync, and dashboard support.
 - Frontend main path: Dashboard as The-One insight-first / TradePilot context-fallback, with Portfolio retained as the position input UI.
 
+### ETF All-Weather Task Boundary
+
+- ETF all-weather is a repository-local engineering and research implementation task.
+- It does not follow the C-Demo style where work needs to be taken to a teacher for external acceptance.
+- Judge completion by repo-visible artifacts and verification: focused design docs, implemented code when requested, relevant tests/builds, data-quality checks, and explicit caveat notes.
+
 ## Environment Rules
 
 - Manage the development environment with `flake.nix` only.

@@ -29,6 +29,12 @@ The initial design goal is to introduce this capability as an additive slice rat
 - Keep the first phase tightly scoped
 - Reuse current workflow and dashboard patterns where they are a good fit
 
+## Task Collaboration Boundary
+
+ETF all-weather is a repository-local engineering and research implementation task. It does not follow the C-Demo style where work needs to be taken to a teacher for external acceptance.
+
+Completion should be judged by the agreed repo artifacts and verification signals: focused design docs, implemented code where requested, relevant tests/builds, data-quality checks, and clear caveat notes. Human review can still happen as normal project review, but it is not a required teacher-signoff gate for the ETF task.
+
 ## Scope
 
 ### Modules Involved
