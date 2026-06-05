@@ -39,7 +39,7 @@ class StageFRatesMockTushareClient:
         self.shibor_windows.append((start_date, end_date))
         return pd.DataFrame(
             {
-                "date": [pd.Timestamp("2026-04-20")],
+                "date": [pd.Timestamp(start_date)],
                 "1w": [1.85],
                 "on": [1.72],
             }
@@ -49,7 +49,7 @@ class StageFRatesMockTushareClient:
         self.lpr_windows.append((start_date, end_date))
         return pd.DataFrame(
             {
-                "date": [pd.Timestamp("2026-04-20")],
+                "date": [pd.Timestamp(start_date)],
                 "1y": [3.10],
                 "5y": [3.60],
             }
@@ -201,6 +201,61 @@ class StageFRatesTests(unittest.TestCase):
             "tushare_wrapper_source_date_inferred_month_20",
         )
 
+    def test_lpr_normalizer_requires_next_open_day_from_calendar(self) -> None:
+        calendar = pd.DataFrame(
+            {
+                "exchange": ["SH", "SZ"],
+                "trade_date": [date(2026, 5, 20), date(2026, 5, 20)],
+                "is_open": [False, False],
+            }
+        )
+
+        canonical = (
+            LprNormalizer()
+            .normalize(
+                pd.DataFrame({"date": [pd.Timestamp("2026-05-20")], "1y": [3.0]}),
+                {
+                    "source_name": "tushare",
+                    "raw_batch_id": 9,
+                    "canonical_trading_calendar": calendar,
+                },
+            )
+            .canonical_payload
+        )
+
+        self.assertEqual(canonical.iloc[0]["quote_date"], date(2026, 5, 20))
+        self.assertIsNone(canonical.iloc[0]["effective_date"])
+
+    def test_lpr_run_fails_when_calendar_lacks_next_open_day(self) -> None:
+        self._insert_calendar_window(
+            date(2026, 5, 20), date(2026, 5, 20), is_open=False
+        )
+
+        result = self.service.run_dataset_sync(
+            "rates.lpr",
+            IngestionRequest(
+                request_start=date(2026, 5, 20),
+                request_end=date(2026, 5, 20),
+            ),
+        )
+
+        self.assertEqual(result.status, RunStatus.FAILED)
+        self.assertEqual(result.records_written, 0)
+        self.assertFalse(result.watermark_updated)
+        failed_checks = {
+            check_name
+            for check_name, status in self.conn.execute(
+                """
+                SELECT check_name, status
+                FROM etl_validation_results
+                WHERE run_id = ?
+                """,
+                [result.run_id],
+            ).fetchall()
+            if status == ValidationStatus.FAIL.value
+        }
+        self.assertIn("lpr.effective_date_required", failed_checks)
+
     def test_daily_rates_validator_blocks_duplicate_keys(self) -> None:
         payload = pd.DataFrame(
             {
@@ -281,7 +336,9 @@ class StageFRatesTests(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertTrue(has_blocking_failures(results))
 
-    def _insert_calendar_window(self, start: date, end: date) -> None:
+    def _insert_calendar_window(
+        self, start: date, end: date, is_open: bool = True
+    ) -> None:
         dates = pd.date_range(start, end, freq="D")
         rows = []
         for value in dates:
@@ -290,7 +347,7 @@ class StageFRatesTests(unittest.TestCase):
                     {
                         "exchange": exchange,
                         "trade_date": value.date(),
-                        "is_open": True,
+                        "is_open": is_open,
                         "pretrade_date": None,
                         "updated_at": pd.Timestamp("2026-01-01"),
                     }

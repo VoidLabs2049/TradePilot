@@ -538,10 +538,10 @@ def _next_common_open_from_context(
         return None
     calendar = context.get("canonical_trading_calendar")
     if isinstance(calendar, pd.DataFrame):
-        return next_common_open_date(calendar, target_date) or target_date
+        return next_common_open_date(calendar, target_date)
     conn = context.get("conn")
     if conn is not None:
-        return next_common_open_date_from_conn(conn, target_date) or target_date
+        return next_common_open_date_from_conn(conn, target_date)
     return target_date
 
 
