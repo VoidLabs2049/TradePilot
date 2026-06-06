@@ -585,6 +585,35 @@ class TushareClient:
         if frame.empty:
             return _empty_frame(_GOV_CURVE_POINTS_COLUMNS)
         normalized = frame.copy()
+        if {"trade_date", "curve_term", "yield"}.issubset(normalized.columns):
+            if "ts_code" in normalized.columns:
+                normalized = normalized[normalized["ts_code"].astype(str) == "1001.CB"]
+            if "curve_type" in normalized.columns:
+                normalized = normalized[
+                    normalized["curve_type"].astype(str).isin({"0", "0.0"})
+                ]
+            normalized = normalized[
+                pd.to_numeric(normalized["curve_term"], errors="coerce").isin(
+                    [1.0, 10.0]
+                )
+            ].copy()
+            if normalized.empty:
+                return _empty_frame(_GOV_CURVE_POINTS_COLUMNS)
+            normalized["tenor_column"] = (
+                pd.to_numeric(normalized["curve_term"], errors="coerce")
+                .astype(int)
+                .astype(str)
+                + "y"
+            )
+            normalized = normalized.pivot_table(
+                index=["trade_date", "ts_code"],
+                columns="tenor_column",
+                values="yield",
+                aggfunc="last",
+            ).reset_index()
+            normalized = normalized.rename(
+                columns={"trade_date": "curve_date", "ts_code": "curve_code"}
+            )
         if (
             "trade_date" in normalized.columns
             and "curve_date" not in normalized.columns
