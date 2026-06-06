@@ -31,7 +31,7 @@ The initial design goal is to introduce this capability as an additive slice rat
 
 ## Task Collaboration Boundary
 
-ETF all-weather is a repository-local engineering and research implementation task. It does not follow the C-Demo style where work needs to be taken to a teacher for external acceptance.
+TradePilot and C-Demo are separate projects. ETF all-weather is a TradePilot repository-local engineering and research implementation task, and it must not inherit C-Demo milestones, approval workflow, branch state, files, or teacher-signoff expectations.
 
 Completion should be judged by the agreed repo artifacts and verification signals: focused design docs, implemented code where requested, relevant tests/builds, data-quality checks, and clear caveat notes. Human review can still happen as normal project review, but it is not a required teacher-signoff gate for the ETF task.
 
