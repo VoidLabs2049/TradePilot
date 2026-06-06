@@ -55,6 +55,12 @@ Current product direction is workflow-first:
 - Do not require C-Demo teacher sign-off, external acceptance, or cross-project approval for TradePilot work.
 - If C-Demo is mentioned while working in this repository, treat it only as external context unless the user explicitly asks to inspect or modify that project.
 
+### Pull Request Language
+
+- Write TradePilot PR titles and descriptions in Chinese by default.
+- Keep code identifiers, dataset names, commands, file paths, API fields, and external proper nouns in their original language.
+- Use English in PR text only when an upstream template or external collaboration requirement explicitly requires it.
+
 ### ETF All-Weather Task Boundary
 
 - ETF all-weather is a TradePilot repository-local engineering and research implementation task.
