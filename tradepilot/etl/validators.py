@@ -538,6 +538,73 @@ class DailyRatesValidator(BaseValidator):
         )
 
 
+class MacroSlowFieldsValidator(BaseValidator):
+    """Validate canonical slow macro field rows."""
+
+    _FIELD_ROLES = {
+        "official_pmi": "primary",
+    }
+
+    def validate(
+        self,
+        payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> list[ValidationResultRecord]:
+        """Validate slow macro facts."""
+
+        ctx = context or {}
+        results: list[ValidationResultRecord] = []
+        required_columns = [
+            "field_name",
+            "period_label",
+            "period_type",
+            "value",
+            "unit",
+            "field_role",
+            "release_date",
+            "effective_date",
+            "revision_note",
+            "source_caveat",
+        ]
+        _required_columns(payload, required_columns, ctx, results)
+        if results:
+            return results
+        _duplicate_key_result(
+            results, ctx, payload, ["field_name", "period_label"], "slow_fields"
+        )
+        _allowed_field_result(results, ctx, payload, self._FIELD_ROLES, "slow_fields")
+        _value_plausibility_result(results, ctx, payload, "slow_fields", 0.0, 100.0)
+        bad_unit = payload[~payload["unit"].isin({"index_point", "percent"})]
+        _row_records(
+            results,
+            ctx,
+            bad_unit,
+            "slow_fields.unit_allowed",
+            ["field_name", "period_label"],
+            "unit must be index_point or percent",
+        )
+        for column in ("release_date", "effective_date"):
+            invalid_dates = _missing_or_unparseable_dates(payload, column)
+            _row_records(
+                results,
+                ctx,
+                invalid_dates,
+                f"slow_fields.{column}_required",
+                ["field_name", "period_label"],
+                f"{column} is required and must be date-like",
+            )
+        _effective_after_release_result(
+            results,
+            ctx,
+            payload,
+            "slow_fields",
+            ["field_name", "period_label"],
+        )
+        _field_role_result(results, ctx, payload, self._FIELD_ROLES, "slow_fields")
+        _source_caveat_result(results, ctx, payload, "slow_fields")
+        return results
+
+
 class LprValidator(BaseValidator):
     """Validate canonical loan prime rate rows."""
 
@@ -579,6 +646,60 @@ class LprValidator(BaseValidator):
         return results
 
 
+class GovCurvePointsValidator(BaseValidator):
+    """Validate canonical government curve point rows."""
+
+    _FIELD_ROLES = {
+        "cn_gov_1y_yield": "confirmatory",
+        "cn_gov_10y_yield": "primary",
+    }
+
+    def validate(
+        self,
+        payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> list[ValidationResultRecord]:
+        """Validate government curve points."""
+
+        ctx = context or {}
+        results = _validate_rate_dataset(
+            payload,
+            ctx,
+            required_columns=[
+                "curve_code",
+                "curve_date",
+                "tenor_years",
+                "field_name",
+                "value",
+                "unit",
+                "field_role",
+                "release_date",
+                "effective_date",
+                "revision_note",
+                "source_caveat",
+            ],
+            key_columns=["curve_code", "curve_date", "tenor_years"],
+            required_date_columns=["curve_date", "release_date", "effective_date"],
+            required_text_columns=["revision_note"],
+            field_roles=self._FIELD_ROLES,
+            prefix="gov_curve_points",
+        )
+        if not _has_required_column_failure(results):
+            bad_tenor = payload[
+                payload["tenor_years"].isna()
+                | (pd.to_numeric(payload["tenor_years"], errors="coerce") <= 0)
+            ]
+            _row_records(
+                results,
+                ctx,
+                bad_tenor,
+                "gov_curve_points.tenor_positive",
+                ["curve_code", "curve_date", "tenor_years"],
+                "tenor_years must be positive",
+            )
+        return results
+
+
 def get_validator(dataset_name: str) -> BaseValidator:
     """Return the validator for one Stage B dataset."""
 
@@ -590,10 +711,14 @@ def get_validator(dataset_name: str) -> BaseValidator:
         return EtfAdjFactorValidator()
     if dataset_name in {"market.etf_daily", "market.index_daily"}:
         return MarketDailyValidator()
+    if dataset_name == "macro.slow_fields":
+        return MacroSlowFieldsValidator()
     if dataset_name == "rates.daily_rates":
         return DailyRatesValidator()
     if dataset_name == "rates.lpr":
         return LprValidator()
+    if dataset_name == "rates.gov_curve_points":
+        return GovCurvePointsValidator()
     raise KeyError(f"no validator registered for dataset: {dataset_name}")
 
 
@@ -760,6 +885,34 @@ def _lpr_effective_date_order_result(
         bad_order,
         "lpr.effective_date_after_release",
         ["field_name", "quote_date"],
+        "effective_date must not precede release_date and dates must be parseable",
+    )
+
+
+def _effective_after_release_result(
+    results: list[ValidationResultRecord],
+    context: dict[str, Any],
+    payload: pd.DataFrame,
+    prefix: str,
+    key_columns: list[str],
+) -> None:
+    """Validate effective dates after parsing date-like values."""
+
+    release_dates = pd.to_datetime(payload["release_date"], errors="coerce")
+    effective_dates = pd.to_datetime(payload["effective_date"], errors="coerce")
+    bad_order = payload[
+        payload["release_date"].notna()
+        & payload["effective_date"].notna()
+        & release_dates.notna()
+        & effective_dates.notna()
+        & (effective_dates < release_dates)
+    ]
+    _row_records(
+        results,
+        context,
+        bad_order,
+        f"{prefix}.effective_date_after_release",
+        key_columns,
         "effective_date must not precede release_date and dates must be parseable",
     )
 

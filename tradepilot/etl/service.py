@@ -67,6 +67,15 @@ _ETF_AW_REGIME_SCORE_DATASET = "derived.etf_aw_regime_score"
 _ETF_AW_REGIME_SCHEMA_VERSION = "etf_aw_regime_score_v1"
 _ETF_AW_REGIME_SCORER_NAME = "etf_aw_market_only_regime"
 _ETF_AW_REGIME_SCORER_VERSION = "v1"
+_ETF_AW_MARKET_FEATURES_PROFILE = "derived.etf_aw_market_features.build"
+_ETF_AW_MARKET_FEATURES_DATASET = "derived.etf_aw_market_features"
+_ETF_AW_MARKET_FEATURES_SCHEMA_VERSION = "etf_aw_market_features_v1"
+_ETF_AW_STRATEGY_CONTEXT_PROFILE = "derived.etf_aw_strategy_context.build"
+_ETF_AW_STRATEGY_CONTEXT_DATASET = "derived.etf_aw_strategy_context"
+_ETF_AW_STRATEGY_CONTEXT_SCHEMA_VERSION = "etf_aw_strategy_context_v1"
+_ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION = "etf_aw_strategy_context_contract_v1"
+_ETF_AW_STRATEGY_NAME = "etf_aw_v1"
+_ETF_AW_STRATEGY_VERSION = "stage_g_v1"
 _ETF_AW_SNAPSHOT_LOOKBACK_DAYS = 420
 _ETF_AW_SNAPSHOT_WINDOWS = {
     "return_1m": (21, 15),
@@ -83,6 +92,77 @@ _ETF_AW_REGIME_LABELS = {
     "hedge_bid",
     "mixed",
     "insufficient_data",
+}
+_ETF_AW_MARKET_FEATURE_STATUSES = {"complete", "partial", "missing", "stale"}
+_ETF_AW_MARKET_FEATURE_SCOPE_NAMES = {
+    "sleeve": {
+        "direction_score",
+        "return_1m",
+        "return_3m",
+        "return_6m",
+        "volatility_3m",
+        "max_drawdown_6m",
+    },
+    "group": {"equity_score", "bond_score", "gold_score", "cash_score"},
+    "regime": {
+        "market_score",
+        "market_confidence_score",
+        "market_confidence_cap",
+    },
+}
+_ETF_AW_MARKET_FEATURE_UNITS = {
+    "direction_score": "score",
+    "return_1m": "decimal_return",
+    "return_3m": "decimal_return",
+    "return_6m": "decimal_return",
+    "volatility_3m": "ratio",
+    "max_drawdown_6m": "decimal_return",
+    "equity_score": "score",
+    "bond_score": "score",
+    "gold_score": "score",
+    "cash_score": "score",
+    "market_score": "score",
+    "market_confidence_score": "ratio",
+    "market_confidence_cap": "ratio",
+}
+_ETF_AW_STRATEGY_CONTEXT_STATUSES = {
+    "complete",
+    "partial",
+    "stale",
+    "unavailable",
+}
+_ETF_AW_READINESS_LEVELS = {
+    "research_ready",
+    "degraded_research",
+    "not_ready",
+}
+_ETF_AW_CONTEXT_BASES = {
+    "market_only",
+    "market_plus_rates",
+    "market_plus_macro_rates",
+}
+_ETF_AW_MACRO_RATES_CONTEXT_STATUSES = {
+    "complete",
+    "partial",
+    "stale",
+    "unavailable",
+    "deferred",
+}
+_ETF_AW_STAGE_G_DEFERRED_PRIMARY_FIELDS = [
+    "official_pmi",
+    "cn_gov_10y_yield",
+]
+_ETF_AW_STAGE_G_DEFERRED_CONFIRMATORY_FIELDS = [
+    "cn_yield_curve_slope_10y_1y",
+]
+_ETF_AW_FORBIDDEN_STRATEGY_FIELD_TOKENS = {
+    "target_weight",
+    "target_weights",
+    "risk_budget",
+    "trade_action",
+    "order_instruction",
+    "buy_list",
+    "sell_list",
 }
 _ETF_AW_REQUIRED_ROLES = {"equity_large", "equity_small", "bond", "gold", "cash"}
 _ETF_AW_DIRECTION_RULES = {
@@ -362,6 +442,16 @@ class ETLService:
                 start or _TRADING_CALENDAR_HISTORY_START,
                 end or date.today(),
             )
+        if profile_name == _ETF_AW_MARKET_FEATURES_PROFILE:
+            return self._build_etf_aw_market_features(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        if profile_name == _ETF_AW_STRATEGY_CONTEXT_PROFILE:
+            return self._build_etf_aw_strategy_context(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
         raise KeyError(f"unsupported bootstrap profile: {profile_name}")
 
     def list_runs(self, dataset_name: str | None = None) -> list[dict]:
@@ -615,10 +705,14 @@ class ETLService:
             return self._write_instruments(canonical)
         if definition.dataset_name == "market.etf_adj_factor":
             return self._write_etf_adj_factor(definition, canonical)
+        if definition.dataset_name == "macro.slow_fields":
+            return self._write_macro_slow_fields(definition, canonical)
         if definition.dataset_name == "rates.daily_rates":
             return self._write_daily_rates(definition, canonical)
         if definition.dataset_name == "rates.lpr":
             return self._write_lpr(definition, canonical)
+        if definition.dataset_name == "rates.gov_curve_points":
+            return self._write_gov_curve_points(definition, canonical)
         return self._write_market_daily(definition, canonical)
 
     def _write_trading_calendar(self, canonical: pd.DataFrame) -> CanonicalWriteResult:
@@ -716,6 +810,18 @@ class ETLService:
             sort_columns=("field_name", "trade_date", "ingested_at"),
         )
 
+    def _write_macro_slow_fields(
+        self, definition: DatasetDefinition, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=definition.dataset_name,
+            zone=StorageZone.NORMALIZED,
+            canonical=canonical,
+            key_columns=("field_name", "period_label"),
+            sort_columns=("field_name", "period_label", "ingested_at"),
+            partition_date_column="effective_date",
+        )
+
     def _write_lpr(
         self, definition: DatasetDefinition, canonical: pd.DataFrame
     ) -> CanonicalWriteResult:
@@ -726,6 +832,18 @@ class ETLService:
             key_columns=("field_name", "quote_date"),
             sort_columns=("field_name", "quote_date", "ingested_at"),
             partition_date_column="effective_date",
+        )
+
+    def _write_gov_curve_points(
+        self, definition: DatasetDefinition, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=definition.dataset_name,
+            zone=StorageZone.NORMALIZED,
+            canonical=canonical,
+            key_columns=("curve_code", "curve_date", "tenor_years"),
+            sort_columns=("curve_code", "curve_date", "tenor_years", "ingested_at"),
+            partition_date_column="curve_date",
         )
 
     def _write_year_month_partition_upsert(
@@ -1826,6 +1944,232 @@ class ETLService:
             partition_date_column="rebalance_date",
         )
 
+    def _build_etf_aw_market_features(self, start: date, end: date) -> dict:
+        start, end = _ordered_dates(start, end)
+        snapshot = self._read_partitioned_dataset(
+            _ETF_AW_REBALANCE_SNAPSHOT_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        if snapshot.empty:
+            return {
+                "profile_name": _ETF_AW_MARKET_FEATURES_PROFILE,
+                "dataset_name": _ETF_AW_MARKET_FEATURES_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather rebalance snapshot is missing",
+            }
+        regime = self._read_partitioned_dataset(
+            _ETF_AW_REGIME_SCORE_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        features = self._make_etf_aw_market_features_frame(snapshot, regime)
+        if features.empty:
+            return {
+                "profile_name": _ETF_AW_MARKET_FEATURES_PROFILE,
+                "dataset_name": _ETF_AW_MARKET_FEATURES_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather market features have no valid rebalance keys",
+            }
+        validation = _validate_market_features_frame(features)
+        if not all(validation.values()):
+            return {
+                "profile_name": _ETF_AW_MARKET_FEATURES_PROFILE,
+                "dataset_name": _ETF_AW_MARKET_FEATURES_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "validation": validation,
+                "error_message": "ETF all-weather market features validation failed",
+            }
+        write_result = self._write_etf_aw_market_features(features)
+        return {
+            "profile_name": _ETF_AW_MARKET_FEATURES_PROFILE,
+            "dataset_name": _ETF_AW_MARKET_FEATURES_DATASET,
+            "status": RunStatus.SUCCESS.value,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "records_written": write_result.records_written,
+            "records_inserted": write_result.records_inserted,
+            "records_updated": write_result.records_updated,
+            "partitions_written": write_result.partitions_written,
+            "storage_paths": write_result.storage_paths,
+            "validation": validation,
+            "feature_status_counts": _value_counts_dict(features["feature_status"]),
+        }
+
+    def _make_etf_aw_market_features_frame(
+        self, snapshot: pd.DataFrame, regime: pd.DataFrame
+    ) -> pd.DataFrame:
+        snapshot = _normalize_rebalance_date_frame(snapshot)
+        snapshot = snapshot.dropna(subset=["calendar_name", "rebalance_date"])
+        if snapshot.empty:
+            return pd.DataFrame()
+        regime_by_key = _latest_regime_by_key(regime)
+        rows: list[dict[str, Any]] = []
+        ingested_at = _utc_now()
+        for key, group in snapshot.groupby(
+            ["calendar_name", "rebalance_date"], sort=True
+        ):
+            regime_row = regime_by_key.get(key)
+            rows.extend(
+                _market_feature_rows(
+                    group=group,
+                    regime_row=regime_row,
+                    ingested_at=ingested_at,
+                )
+            )
+        return pd.DataFrame(rows)
+
+    def _write_etf_aw_market_features(
+        self, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=_ETF_AW_MARKET_FEATURES_DATASET,
+            zone=StorageZone.DERIVED,
+            canonical=canonical,
+            key_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "feature_name",
+                "feature_scope",
+                "feature_subject",
+            ),
+            sort_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "feature_name",
+                "feature_scope",
+                "feature_subject",
+                "ingested_at",
+            ),
+            partition_date_column="rebalance_date",
+        )
+
+    def _build_etf_aw_strategy_context(self, start: date, end: date) -> dict:
+        start, end = _ordered_dates(start, end)
+        features = self._read_partitioned_dataset(
+            _ETF_AW_MARKET_FEATURES_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        if features.empty:
+            return {
+                "profile_name": _ETF_AW_STRATEGY_CONTEXT_PROFILE,
+                "dataset_name": _ETF_AW_STRATEGY_CONTEXT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather market features are missing",
+            }
+        regime = self._read_partitioned_dataset(
+            _ETF_AW_REGIME_SCORE_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        context = self._make_etf_aw_strategy_context_frame(features, regime)
+        if context.empty:
+            return {
+                "profile_name": _ETF_AW_STRATEGY_CONTEXT_PROFILE,
+                "dataset_name": _ETF_AW_STRATEGY_CONTEXT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather strategy context has no valid rebalance keys",
+            }
+        validation = _validate_strategy_context_frame(context)
+        if not all(validation.values()):
+            return {
+                "profile_name": _ETF_AW_STRATEGY_CONTEXT_PROFILE,
+                "dataset_name": _ETF_AW_STRATEGY_CONTEXT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "validation": validation,
+                "error_message": "ETF all-weather strategy context validation failed",
+            }
+        write_result = self._write_etf_aw_strategy_context(context)
+        return {
+            "profile_name": _ETF_AW_STRATEGY_CONTEXT_PROFILE,
+            "dataset_name": _ETF_AW_STRATEGY_CONTEXT_DATASET,
+            "status": RunStatus.SUCCESS.value,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "records_written": write_result.records_written,
+            "records_inserted": write_result.records_inserted,
+            "records_updated": write_result.records_updated,
+            "partitions_written": write_result.partitions_written,
+            "storage_paths": write_result.storage_paths,
+            "validation": validation,
+            "context_status_counts": _value_counts_dict(context["context_status"]),
+        }
+
+    def _make_etf_aw_strategy_context_frame(
+        self, features: pd.DataFrame, regime: pd.DataFrame
+    ) -> pd.DataFrame:
+        from tradepilot.etl.read_models import get_latest_etf_aw_macro_rates_context
+
+        features = _normalize_rebalance_date_frame(features)
+        features = features.dropna(subset=["calendar_name", "rebalance_date"])
+        if features.empty:
+            return pd.DataFrame()
+        regime_by_key = _latest_regime_by_key(regime)
+        rows: list[dict[str, Any]] = []
+        ingested_at = _utc_now()
+        for key, group in features.groupby(
+            ["calendar_name", "rebalance_date"], sort=True
+        ):
+            macro_rates_context = get_latest_etf_aw_macro_rates_context(
+                as_of_date=key[1],
+                lakehouse_root=self.lakehouse_root,
+            )
+            rows.append(
+                _strategy_context_row(
+                    group=group,
+                    regime_row=regime_by_key.get(key),
+                    macro_rates_context=macro_rates_context,
+                    ingested_at=ingested_at,
+                )
+            )
+        return pd.DataFrame(rows)
+
+    def _write_etf_aw_strategy_context(
+        self, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=_ETF_AW_STRATEGY_CONTEXT_DATASET,
+            zone=StorageZone.DERIVED,
+            canonical=canonical,
+            key_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+            ),
+            sort_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+                "ingested_at",
+            ),
+            partition_date_column="rebalance_date",
+        )
+
     def _bootstrap_rebalance_calendar_monthly_post_20(
         self, start: date, end: date
     ) -> dict:
@@ -2745,6 +3089,932 @@ def _validate_regime_score_frame(frame: pd.DataFrame) -> dict[str, bool]:
     }
 
 
+def _normalize_rebalance_date_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with rebalance_date normalized to Python dates."""
+
+    if frame.empty or "rebalance_date" not in frame.columns:
+        return pd.DataFrame()
+    normalized = frame.copy()
+    normalized["rebalance_date"] = pd.to_datetime(
+        normalized["rebalance_date"], errors="coerce"
+    ).dt.date
+    if "effective_date" in normalized.columns:
+        normalized["effective_date"] = pd.to_datetime(
+            normalized["effective_date"], errors="coerce"
+        ).dt.date
+    if "source_rebalance_date" in normalized.columns:
+        normalized["source_rebalance_date"] = pd.to_datetime(
+            normalized["source_rebalance_date"], errors="coerce"
+        ).dt.date
+    if "source_snapshot_rebalance_date" in normalized.columns:
+        normalized["source_snapshot_rebalance_date"] = pd.to_datetime(
+            normalized["source_snapshot_rebalance_date"], errors="coerce"
+        ).dt.date
+    return normalized
+
+
+def _latest_regime_by_key(regime: pd.DataFrame) -> dict[tuple[str, date], pd.Series]:
+    """Return the latest Stage E regime score row for each rebalance key."""
+
+    if regime.empty:
+        return {}
+    frame = _normalize_rebalance_date_frame(regime)
+    required = {"calendar_name", "rebalance_date"}
+    if frame.empty or not required.issubset(frame.columns):
+        return {}
+    frame = frame.dropna(subset=["calendar_name", "rebalance_date"]).copy()
+    if frame.empty:
+        return {}
+    if "ingested_at" in frame.columns:
+        frame["ingested_at"] = pd.to_datetime(frame["ingested_at"], errors="coerce")
+        sort_columns = ["calendar_name", "rebalance_date", "ingested_at"]
+    else:
+        sort_columns = ["calendar_name", "rebalance_date"]
+    frame = frame.sort_values(sort_columns)
+    latest: dict[tuple[str, date], pd.Series] = {}
+    for _, row in frame.iterrows():
+        latest[(str(row["calendar_name"]), row["rebalance_date"])] = row
+    return latest
+
+
+def _market_feature_rows(
+    *,
+    group: pd.DataFrame,
+    regime_row: pd.Series | None,
+    ingested_at: datetime,
+) -> list[dict[str, Any]]:
+    """Build long-form Stage G market feature rows for one rebalance date."""
+
+    ordered = group.sort_values(["sleeve_role", "sleeve_code"]).copy()
+    first = ordered.iloc[0]
+    rows: list[dict[str, Any]] = []
+    signals: list[dict[str, Any]] = []
+    for _, row in ordered.iterrows():
+        signal = _sleeve_signal(row)
+        signals.append(signal)
+        rows.append(
+            _market_feature_row(
+                first=first,
+                feature_name="direction_score",
+                feature_scope="sleeve",
+                feature_subject=str(row["sleeve_role"]),
+                feature_value=signal["direction_score"],
+                source_dataset=_ETF_AW_REBALANCE_SNAPSHOT_DATASET,
+                source_status=str(row["data_status"]),
+                feature_status=_feature_status_from_source(
+                    str(row["data_status"]), signal["direction_score"]
+                ),
+                quality_notes={
+                    "computed_with_stage_e_scorer_helper": True,
+                    "metrics_used": [
+                        metric
+                        for metric, value in signal["metric_signals"].items()
+                        if value is not None
+                    ],
+                    "missing_metrics": [
+                        metric
+                        for metric, value in signal["metric_signals"].items()
+                        if value is None
+                    ],
+                    "source_quality_notes": _json_object_or_value(
+                        row.get("quality_notes")
+                    ),
+                },
+                source_rebalance_date=row.get("rebalance_date"),
+                ingested_at=ingested_at,
+            )
+        )
+        for feature_name in (
+            "return_1m",
+            "return_3m",
+            "return_6m",
+            "volatility_3m",
+            "max_drawdown_6m",
+        ):
+            value = _nullable_float(row.get(feature_name))
+            rows.append(
+                _market_feature_row(
+                    first=first,
+                    feature_name=feature_name,
+                    feature_scope="sleeve",
+                    feature_subject=str(row["sleeve_role"]),
+                    feature_value=value,
+                    source_dataset=_ETF_AW_REBALANCE_SNAPSHOT_DATASET,
+                    source_status=str(row["data_status"]),
+                    feature_status=_feature_status_from_source(
+                        str(row["data_status"]), value
+                    ),
+                    quality_notes={
+                        "source_quality_notes": _json_object_or_value(
+                            row.get("quality_notes")
+                        )
+                    },
+                    source_rebalance_date=row.get("rebalance_date"),
+                    ingested_at=ingested_at,
+                )
+            )
+    rows.extend(
+        _group_market_feature_rows(
+            first=first,
+            signals=signals,
+            ingested_at=ingested_at,
+        )
+    )
+    rows.extend(
+        _regime_market_feature_rows(
+            first=first,
+            regime_row=regime_row,
+            ingested_at=ingested_at,
+        )
+    )
+    return rows
+
+
+def _market_feature_row(
+    *,
+    first: pd.Series,
+    feature_name: str,
+    feature_scope: str,
+    feature_subject: str,
+    feature_value: float | None,
+    source_dataset: str,
+    source_status: str,
+    feature_status: str,
+    quality_notes: dict[str, Any],
+    source_rebalance_date: object,
+    ingested_at: datetime,
+) -> dict[str, Any]:
+    """Return one Stage G long-form market feature row."""
+
+    return {
+        "schema_version": _ETF_AW_MARKET_FEATURES_SCHEMA_VERSION,
+        "calendar_name": str(first["calendar_name"]),
+        "calendar_month": str(first["calendar_month"]),
+        "rebalance_date": first["rebalance_date"],
+        "feature_name": feature_name,
+        "feature_scope": feature_scope,
+        "feature_subject": feature_subject,
+        "feature_value": feature_value,
+        "unit": _ETF_AW_MARKET_FEATURE_UNITS[feature_name],
+        "source_dataset": source_dataset,
+        "source_status": source_status,
+        "feature_status": feature_status,
+        "quality_notes": json.dumps(quality_notes, sort_keys=True),
+        "source_rebalance_date": source_rebalance_date,
+        "ingested_at": ingested_at,
+    }
+
+
+def _group_market_feature_rows(
+    *,
+    first: pd.Series,
+    signals: list[dict[str, Any]],
+    ingested_at: datetime,
+) -> list[dict[str, Any]]:
+    """Return group-level score rows derived from sleeve direction scores."""
+
+    role_signals: dict[str, list[dict[str, Any]]] = {}
+    for signal in signals:
+        role_signals.setdefault(str(signal["sleeve_role"]), []).append(signal)
+    group_specs = {
+        "equity_score": ("equity", ["equity_large", "equity_small"]),
+        "bond_score": ("bond", ["bond"]),
+        "gold_score": ("gold", ["gold"]),
+        "cash_score": ("cash", ["cash"]),
+    }
+    rows: list[dict[str, Any]] = []
+    for feature_name, (subject, roles) in group_specs.items():
+        selected = [signal for role in roles for signal in role_signals.get(role, [])]
+        scores = [signal.get("direction_score") for signal in selected]
+        value = _average_scores(scores)
+        source_statuses = [str(signal.get("data_status")) for signal in selected]
+        rows.append(
+            _market_feature_row(
+                first=first,
+                feature_name=feature_name,
+                feature_scope="group",
+                feature_subject=subject,
+                feature_value=value,
+                source_dataset=_ETF_AW_REBALANCE_SNAPSHOT_DATASET,
+                source_status=_aggregate_source_status(source_statuses),
+                feature_status=_aggregate_feature_status(
+                    source_statuses,
+                    value,
+                    expected_count=len(roles),
+                    actual_count=len(selected),
+                ),
+                quality_notes={
+                    "computed_with_stage_e_scorer_helper": True,
+                    "roles": roles,
+                    "available_role_count": len(
+                        [score for score in scores if score is not None]
+                    ),
+                },
+                source_rebalance_date=first.get("rebalance_date"),
+                ingested_at=ingested_at,
+            )
+        )
+    return rows
+
+
+def _regime_market_feature_rows(
+    *,
+    first: pd.Series,
+    regime_row: pd.Series | None,
+    ingested_at: datetime,
+) -> list[dict[str, Any]]:
+    """Return regime-level feature rows from the Stage E market-only score."""
+
+    specs = {
+        "market_score": "market_score",
+        "market_confidence_score": "confidence_score",
+        "market_confidence_cap": "confidence_cap",
+    }
+    rows: list[dict[str, Any]] = []
+    for feature_name, source_column in specs.items():
+        value = (
+            _nullable_float(regime_row.get(source_column))
+            if regime_row is not None
+            else None
+        )
+        source_status = (
+            str(regime_row.get("scoring_status"))
+            if regime_row is not None
+            else "missing"
+        )
+        input_status = (
+            str(regime_row.get("input_snapshot_status"))
+            if regime_row is not None
+            else "missing"
+        )
+        rows.append(
+            _market_feature_row(
+                first=first,
+                feature_name=feature_name,
+                feature_scope="regime",
+                feature_subject="market_only",
+                feature_value=value,
+                source_dataset=_ETF_AW_REGIME_SCORE_DATASET,
+                source_status=source_status,
+                feature_status=_regime_feature_status(
+                    source_status, input_status, value
+                ),
+                quality_notes={
+                    "market_only": True,
+                    "source_quality_notes": _json_object_or_value(
+                        regime_row.get("quality_notes")
+                        if regime_row is not None
+                        else None
+                    ),
+                },
+                source_rebalance_date=(
+                    regime_row.get("rebalance_date") if regime_row is not None else None
+                ),
+                ingested_at=ingested_at,
+            )
+        )
+    return rows
+
+
+def _feature_status_from_source(source_status: str, value: float | None) -> str:
+    """Map one source status and feature value to a Stage G feature status."""
+
+    if source_status == "stale":
+        return "stale"
+    if source_status == "missing":
+        return "missing"
+    if value is None:
+        return "partial" if source_status == "partial" else "missing"
+    if source_status == "partial":
+        return "partial"
+    return "complete"
+
+
+def _aggregate_source_status(statuses: list[str]) -> str:
+    """Aggregate source statuses without upgrading weak inputs."""
+
+    if not statuses:
+        return "missing"
+    if "stale" in statuses:
+        return "stale"
+    if all(status == "missing" for status in statuses):
+        return "missing"
+    if any(status in {"partial", "missing"} for status in statuses):
+        return "partial"
+    return "complete"
+
+
+def _aggregate_feature_status(
+    statuses: list[str],
+    value: float | None,
+    *,
+    expected_count: int,
+    actual_count: int,
+) -> str:
+    """Aggregate feature status for a group-level market feature."""
+
+    if actual_count < expected_count:
+        return "missing"
+    if "stale" in statuses:
+        return "stale"
+    if value is None:
+        return "missing"
+    if any(status in {"partial", "missing"} for status in statuses):
+        return "partial"
+    return "complete"
+
+
+def _regime_feature_status(
+    source_status: str, input_snapshot_status: str, value: float | None
+) -> str:
+    """Map Stage E status to a Stage G regime feature status."""
+
+    if input_snapshot_status == "stale":
+        return "stale"
+    if source_status == "unavailable":
+        return "missing"
+    if value is None:
+        return "missing"
+    if source_status == "degraded":
+        return "partial"
+    if source_status == "complete":
+        return "complete"
+    return "missing"
+
+
+def _validate_market_features_frame(frame: pd.DataFrame) -> dict[str, bool]:
+    """Validate the Stage G market features contract."""
+
+    required_columns = {
+        "schema_version",
+        "calendar_name",
+        "calendar_month",
+        "rebalance_date",
+        "feature_name",
+        "feature_scope",
+        "feature_subject",
+        "feature_value",
+        "unit",
+        "source_dataset",
+        "source_status",
+        "feature_status",
+        "quality_notes",
+        "source_rebalance_date",
+        "ingested_at",
+    }
+    if frame.empty:
+        return {
+            "non_empty": False,
+            "required_columns_present": False,
+            "no_duplicate_business_keys": False,
+            "schema_version_supported": False,
+            "feature_scope_allowed": False,
+            "feature_name_matches_scope": False,
+            "feature_status_allowed": False,
+            "complete_values_finite": False,
+            "quality_notes_json": False,
+            "no_macro_rates_features": False,
+        }
+    missing_columns = required_columns - set(frame.columns)
+    if missing_columns:
+        return {
+            "non_empty": True,
+            "required_columns_present": False,
+            "no_duplicate_business_keys": False,
+            "schema_version_supported": False,
+            "feature_scope_allowed": False,
+            "feature_name_matches_scope": False,
+            "feature_status_allowed": False,
+            "complete_values_finite": False,
+            "quality_notes_json": False,
+            "no_macro_rates_features": False,
+        }
+    duplicate_count = int(
+        frame.duplicated(
+            [
+                "calendar_name",
+                "rebalance_date",
+                "feature_name",
+                "feature_scope",
+                "feature_subject",
+            ]
+        ).sum()
+    )
+    complete = frame[frame["feature_status"].astype(str) == "complete"]
+    complete_values = [
+        _nullable_float(value) for value in complete["feature_value"].tolist()
+    ]
+    return {
+        "non_empty": True,
+        "required_columns_present": True,
+        "no_duplicate_business_keys": duplicate_count == 0,
+        "schema_version_supported": set(frame["schema_version"].astype(str))
+        == {_ETF_AW_MARKET_FEATURES_SCHEMA_VERSION},
+        "feature_scope_allowed": set(frame["feature_scope"].astype(str)).issubset(
+            set(_ETF_AW_MARKET_FEATURE_SCOPE_NAMES)
+        ),
+        "feature_name_matches_scope": all(
+            str(row["feature_name"])
+            in _ETF_AW_MARKET_FEATURE_SCOPE_NAMES.get(str(row["feature_scope"]), set())
+            for _, row in frame.iterrows()
+        ),
+        "feature_status_allowed": set(frame["feature_status"].astype(str)).issubset(
+            _ETF_AW_MARKET_FEATURE_STATUSES
+        ),
+        "complete_values_finite": all(value is not None for value in complete_values),
+        "quality_notes_json": all(
+            _is_json_text(value) for value in frame["quality_notes"]
+        ),
+        "no_macro_rates_features": not any(
+            any(
+                token in str(name)
+                for token in ("macro", "rate", "lpr", "curve", "yield")
+            )
+            for name in frame["feature_name"]
+        ),
+    }
+
+
+def _strategy_context_row(
+    *,
+    group: pd.DataFrame,
+    regime_row: pd.Series | None,
+    macro_rates_context: dict[str, Any] | None,
+    ingested_at: datetime,
+) -> dict[str, Any]:
+    """Build one Stage G strategy context row."""
+
+    ordered = group.sort_values(["feature_scope", "feature_subject", "feature_name"])
+    first = ordered.iloc[0]
+    market_context_status = _market_context_status(ordered)
+    macro_rates_context_status = _macro_rates_context_status(macro_rates_context)
+    context_status, readiness_level = _stage_g_context_status(
+        market_context_status,
+        macro_rates_context_status,
+    )
+    context_basis = _stage_g_context_basis(market_context_status, macro_rates_context)
+    source_snapshot_rebalance_date = _source_rebalance_date_for_dataset(
+        ordered, _ETF_AW_REBALANCE_SNAPSHOT_DATASET
+    )
+    source_regime_rebalance_date = _source_rebalance_date_for_dataset(
+        ordered, _ETF_AW_REGIME_SCORE_DATASET
+    )
+    market_values = _market_feature_values(ordered)
+    point_notes = _stage_g_v0_point_in_time_notes(
+        market_context_status,
+        macro_rates_context,
+    )
+    source_caveats = _stage_g_source_caveats(macro_rates_context)
+    revision_caveats = _stage_g_revision_caveats(macro_rates_context)
+    missing_primary_fields = _stage_g_missing_fields(
+        macro_rates_context,
+        "missing_primary_fields",
+    )
+    missing_confirmatory_fields = _stage_g_missing_fields(
+        macro_rates_context,
+        "missing_confirmatory_fields",
+    )
+    available_fields = _stage_g_available_fields(macro_rates_context)
+    return {
+        "schema_version": _ETF_AW_STRATEGY_CONTEXT_SCHEMA_VERSION,
+        "contract_version": _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION,
+        "calendar_name": str(first["calendar_name"]),
+        "calendar_month": str(first["calendar_month"]),
+        "rebalance_date": first["rebalance_date"],
+        "effective_date": first["rebalance_date"],
+        "strategy_name": _ETF_AW_STRATEGY_NAME,
+        "strategy_version": _ETF_AW_STRATEGY_VERSION,
+        "context_status": context_status,
+        "readiness_level": readiness_level,
+        "context_basis": context_basis,
+        "market_context_status": market_context_status,
+        "market_regime_label": (
+            _optional_text(regime_row.get("market_regime_label"))
+            if regime_row is not None
+            else None
+        ),
+        "market_score": market_values.get("market_score"),
+        "market_confidence_score": market_values.get("market_confidence_score"),
+        "market_confidence_cap": market_values.get("market_confidence_cap"),
+        "macro_rates_context_status": macro_rates_context_status,
+        "missing_primary_fields_json": json.dumps(missing_primary_fields),
+        "missing_confirmatory_fields_json": json.dumps(missing_confirmatory_fields),
+        "available_fields_json": json.dumps(available_fields, sort_keys=True),
+        "source_caveats_json": json.dumps(source_caveats, sort_keys=True),
+        "revision_caveats_json": json.dumps(revision_caveats, sort_keys=True),
+        "point_in_time_notes_json": json.dumps(point_notes, sort_keys=True),
+        "market_features_json": json.dumps(
+            _market_features_payload(ordered), sort_keys=True
+        ),
+        "source_snapshot_rebalance_date": source_snapshot_rebalance_date,
+        "source_regime_rebalance_date": source_regime_rebalance_date,
+        "source_macro_rates_rebalance_date": _stage_g_macro_rates_rebalance_date(
+            macro_rates_context
+        ),
+        "ingested_at": ingested_at,
+    }
+
+
+def _market_context_status(group: pd.DataFrame) -> str:
+    """Aggregate Stage G market feature statuses for strategy context."""
+
+    expected = _expected_market_feature_keys()
+    actual = {
+        (
+            str(row["feature_scope"]),
+            str(row["feature_name"]),
+            str(row["feature_subject"]),
+        )
+        for _, row in group.iterrows()
+    }
+    if not expected.issubset(actual):
+        return "unavailable"
+    statuses = set(group["feature_status"].dropna().astype(str).tolist())
+    if "missing" in statuses:
+        return "unavailable"
+    if "stale" in statuses:
+        return "stale"
+    if "partial" in statuses:
+        return "partial"
+    return "complete"
+
+
+def _expected_market_feature_keys() -> set[tuple[str, str, str]]:
+    """Return the complete Stage G v0 market feature key set."""
+
+    keys: set[tuple[str, str, str]] = set()
+    for role in _ETF_AW_REQUIRED_ROLES:
+        for feature_name in _ETF_AW_MARKET_FEATURE_SCOPE_NAMES["sleeve"]:
+            keys.add(("sleeve", feature_name, role))
+    for feature_name, subject in (
+        ("equity_score", "equity"),
+        ("bond_score", "bond"),
+        ("gold_score", "gold"),
+        ("cash_score", "cash"),
+    ):
+        keys.add(("group", feature_name, subject))
+    for feature_name in _ETF_AW_MARKET_FEATURE_SCOPE_NAMES["regime"]:
+        keys.add(("regime", feature_name, "market_only"))
+    return keys
+
+
+def _stage_g_context_status(
+    market_context_status: str, macro_rates_context_status: str
+) -> tuple[str, str]:
+    """Apply Stage G status priority across market and macro/rates contexts."""
+
+    if market_context_status == "unavailable":
+        return "unavailable", "not_ready"
+    if market_context_status == "stale":
+        return "stale", "not_ready"
+    if macro_rates_context_status == "stale":
+        return "stale", "not_ready"
+    if macro_rates_context_status == "unavailable":
+        return "unavailable", "not_ready"
+    if market_context_status == "complete" and macro_rates_context_status == "complete":
+        return "complete", "research_ready"
+    return "partial", "degraded_research"
+
+
+def _macro_rates_context_status(macro_rates_context: dict[str, Any] | None) -> str:
+    """Return the Stage F macro/rates context status visible to Stage G."""
+
+    if macro_rates_context is None:
+        return "deferred"
+    status = str(macro_rates_context.get("context_status") or "unavailable")
+    if status in _ETF_AW_MACRO_RATES_CONTEXT_STATUSES:
+        return status
+    return "unavailable"
+
+
+def _stage_g_context_basis(
+    market_context_status: str, macro_rates_context: dict[str, Any] | None
+) -> str:
+    """Return the evidence basis actually available to Stage G."""
+
+    if market_context_status == "unavailable":
+        return "market_only"
+    if _macro_rates_context_status(macro_rates_context) == "complete":
+        return "market_plus_macro_rates"
+    if _stage_g_rates_primary_available(macro_rates_context):
+        return "market_plus_rates"
+    return "market_only"
+
+
+def _stage_g_rates_primary_available(
+    macro_rates_context: dict[str, Any] | None,
+) -> bool:
+    """Return whether required primary rates fields are eligible."""
+
+    if macro_rates_context is None:
+        return False
+    names = {
+        str(field.get("field_name"))
+        for field in macro_rates_context.get("available_fields", [])
+        if isinstance(field, dict)
+    }
+    return {"shibor_1w", "lpr_1y"}.issubset(names)
+
+
+def _market_feature_values(group: pd.DataFrame) -> dict[str, float | None]:
+    """Return regime feature scalar values by feature name."""
+
+    values: dict[str, float | None] = {}
+    for _, row in group[group["feature_scope"].astype(str) == "regime"].iterrows():
+        values[str(row["feature_name"])] = _nullable_float(row.get("feature_value"))
+    return values
+
+
+def _source_rebalance_date_for_dataset(
+    group: pd.DataFrame, dataset_name: str
+) -> date | None:
+    """Return the first non-null source rebalance date for one source dataset."""
+
+    if (
+        "source_dataset" not in group.columns
+        or "source_rebalance_date" not in group.columns
+    ):
+        return None
+    candidates = group[group["source_dataset"].astype(str) == dataset_name]
+    for value in candidates["source_rebalance_date"].tolist():
+        parsed = pd.to_datetime(value, errors="coerce")
+        if not pd.isna(parsed):
+            return parsed.date()
+    return None
+
+
+def _stage_g_v0_point_in_time_notes(
+    market_context_status: str, macro_rates_context: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Return repo-visible Stage F audit and Stage G v0 deferred notes."""
+
+    macro_rates_notes = (
+        macro_rates_context.get("quality_notes", {})
+        if macro_rates_context is not None
+        else {}
+    )
+    return {
+        "stage_f_audit": {
+            "rates.daily_rates_registered": True,
+            "rates.lpr_registered": True,
+            "macro.slow_fields_registered": True,
+            "rates.gov_curve_points_registered": True,
+            "macro_rates_read_service_available": macro_rates_context is not None,
+        },
+        "macro_fields_deferred": bool(
+            macro_rates_notes.get("macro_fields_deferred", macro_rates_context is None)
+        ),
+        "curve_fields_deferred": bool(
+            macro_rates_notes.get("curve_fields_deferred", macro_rates_context is None)
+        ),
+        "rates_read_service_deferred": macro_rates_context is None,
+        "rates_primary_fields_available": _stage_g_rates_primary_available(
+            macro_rates_context
+        ),
+        "market_context_status": market_context_status,
+        "macro_rates_context_status": _macro_rates_context_status(macro_rates_context),
+        "macro_rates_quality_notes": macro_rates_notes,
+        "stage_g_v0_completion": True,
+        "point_in_time_rule": (
+            "Stage G consumes Stage F observations only when effective_date is "
+            "less than or equal to rebalance_date."
+        ),
+    }
+
+
+def _stage_g_source_caveats(
+    macro_rates_context: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Return source caveats propagated into Stage G strategy context."""
+
+    caveats = (
+        list(macro_rates_context.get("source_caveats", []))
+        if macro_rates_context is not None
+        else []
+    )
+    quality_notes = (
+        macro_rates_context.get("quality_notes", {})
+        if macro_rates_context is not None
+        else {}
+    )
+    if quality_notes.get("macro_fields_deferred", macro_rates_context is None):
+        caveats.append(
+            {
+                "field_family": "macro.slow_fields",
+                "status": "deferred",
+                "reason": "required_macro_fields_missing",
+            }
+        )
+    if quality_notes.get("curve_fields_deferred", macro_rates_context is None):
+        caveats.append(
+            {
+                "field_family": "rates.gov_curve_points",
+                "status": "deferred",
+                "reason": "required_curve_fields_missing",
+            }
+        )
+    if macro_rates_context is None:
+        caveats.append(
+            {
+                "field_family": "macro_rates_read_service",
+                "status": "deferred",
+                "reason": "get_latest_etf_aw_macro_rates_context_not_available",
+            }
+        )
+    return caveats
+
+
+def _stage_g_revision_caveats(
+    macro_rates_context: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Return revision caveats propagated into Stage G strategy context."""
+
+    caveats = (
+        list(macro_rates_context.get("revision_caveats", []))
+        if macro_rates_context is not None
+        else []
+    )
+    if macro_rates_context is None:
+        caveats.append(
+            {
+                "field_family": "macro_or_curve",
+                "status": "deferred",
+                "reason": "revision_caveats_deferred_until_macro_curve_datasets_exist",
+            }
+        )
+    return caveats
+
+
+def _stage_g_missing_fields(
+    macro_rates_context: dict[str, Any] | None, key: str
+) -> list[str]:
+    """Return missing macro/rates fields for Stage G JSON fields."""
+
+    if macro_rates_context is None:
+        if key == "missing_primary_fields":
+            return sorted(_ETF_AW_STAGE_G_DEFERRED_PRIMARY_FIELDS)
+        return sorted(_ETF_AW_STAGE_G_DEFERRED_CONFIRMATORY_FIELDS)
+    values = macro_rates_context.get(key, [])
+    return sorted(str(value) for value in values)
+
+
+def _stage_g_available_fields(
+    macro_rates_context: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Return eligible macro/rates fields for Stage G JSON fields."""
+
+    if macro_rates_context is None:
+        return []
+    return [
+        field
+        for field in macro_rates_context.get("available_fields", [])
+        if isinstance(field, dict)
+    ]
+
+
+def _stage_g_macro_rates_rebalance_date(
+    macro_rates_context: dict[str, Any] | None,
+) -> date | None:
+    """Return the Stage F context rebalance date."""
+
+    if macro_rates_context is None:
+        return None
+    parsed = pd.to_datetime(macro_rates_context.get("rebalance_date"), errors="coerce")
+    return None if pd.isna(parsed) else parsed.date()
+
+
+def _market_features_payload(group: pd.DataFrame) -> dict[str, Any]:
+    """Return API-friendly selected market features."""
+
+    payload: dict[str, Any] = {"sleeve": {}, "group": {}, "regime": {}}
+    for _, row in group.iterrows():
+        scope = str(row["feature_scope"])
+        subject = str(row["feature_subject"])
+        feature_name = str(row["feature_name"])
+        scoped = payload.setdefault(scope, {})
+        subject_payload = scoped.setdefault(subject, {})
+        subject_payload[feature_name] = {
+            "value": _nullable_float(row.get("feature_value")),
+            "status": str(row["feature_status"]),
+            "unit": str(row["unit"]),
+        }
+    return payload
+
+
+def _validate_strategy_context_frame(frame: pd.DataFrame) -> dict[str, bool]:
+    """Validate the Stage G strategy context contract."""
+
+    if frame.empty:
+        return {
+            "non_empty": False,
+            "no_duplicate_business_keys": False,
+            "status_values_allowed": False,
+            "complete_has_no_missing_primary_fields": False,
+            "complete_macro_status_allowed": False,
+            "research_ready_requires_complete": False,
+            "context_basis_allowed": False,
+            "forbidden_fields_absent": False,
+            "json_fields_valid": False,
+            "deferred_context_has_point_in_time_notes": False,
+        }
+    duplicate_count = int(
+        frame.duplicated(
+            [
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+            ]
+        ).sum()
+    )
+    forbidden_fields = {
+        column
+        for column in frame.columns
+        if any(token in column for token in _ETF_AW_FORBIDDEN_STRATEGY_FIELD_TOKENS)
+    }
+    complete = frame[frame["context_status"].astype(str) == "complete"]
+    json_columns = [
+        "missing_primary_fields_json",
+        "missing_confirmatory_fields_json",
+        "available_fields_json",
+        "source_caveats_json",
+        "revision_caveats_json",
+        "point_in_time_notes_json",
+        "market_features_json",
+    ]
+    return {
+        "non_empty": True,
+        "no_duplicate_business_keys": duplicate_count == 0,
+        "status_values_allowed": (
+            set(frame["context_status"].astype(str)).issubset(
+                _ETF_AW_STRATEGY_CONTEXT_STATUSES
+            )
+            and set(frame["readiness_level"].astype(str)).issubset(
+                _ETF_AW_READINESS_LEVELS
+            )
+            and set(frame["macro_rates_context_status"].astype(str)).issubset(
+                _ETF_AW_MACRO_RATES_CONTEXT_STATUSES
+            )
+        ),
+        "complete_has_no_missing_primary_fields": all(
+            _json_list_or_empty(row["missing_primary_fields_json"]) == []
+            for _, row in complete.iterrows()
+        ),
+        "complete_macro_status_allowed": all(
+            row["macro_rates_context_status"] == "complete"
+            for _, row in complete.iterrows()
+        ),
+        "research_ready_requires_complete": all(
+            row["context_status"] == "complete"
+            for _, row in frame[
+                frame["readiness_level"].astype(str) == "research_ready"
+            ].iterrows()
+        ),
+        "context_basis_allowed": set(frame["context_basis"].astype(str)).issubset(
+            _ETF_AW_CONTEXT_BASES
+        ),
+        "forbidden_fields_absent": not forbidden_fields,
+        "json_fields_valid": all(
+            _is_json_text(row[column])
+            for _, row in frame.iterrows()
+            for column in json_columns
+        ),
+        "deferred_context_has_point_in_time_notes": all(
+            bool(_json_object_or_value(row["point_in_time_notes_json"]))
+            for _, row in frame[
+                frame["macro_rates_context_status"].astype(str) != "complete"
+            ].iterrows()
+        ),
+    }
+
+
+def _json_object_or_value(value: object) -> dict[str, Any] | list[Any] | str | None:
+    """Parse JSON text for quality/caveat propagation."""
+
+    if value is None or pd.isna(value):
+        return None
+    if not isinstance(value, str):
+        return str(value)
+    if not value.strip():
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _json_list_or_empty(value: object) -> list[Any]:
+    """Parse a JSON list, returning an empty list for invalid values."""
+
+    if not isinstance(value, str):
+        return []
+    try:
+        loaded = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return loaded if isinstance(loaded, list) else []
+
+
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
@@ -2787,6 +4057,12 @@ def _quality_status(results: list[ValidationResultRecord]) -> str:
     if ValidationStatus.PASS_WITH_CAVEAT in statuses:
         return ValidationStatus.PASS_WITH_CAVEAT.value
     return ValidationStatus.PASS.value
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    return str(value)
 
 
 def _optional_int(value: object) -> int | None:

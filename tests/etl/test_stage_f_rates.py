@@ -23,7 +23,9 @@ from tradepilot.etl.sources.tushare import TushareSourceAdapter
 from tradepilot.etl.storage import build_dataset_file_path
 from tradepilot.etl.validators import (
     DailyRatesValidator,
+    GovCurvePointsValidator,
     LprValidator,
+    MacroSlowFieldsValidator,
     has_blocking_failures,
 )
 
@@ -34,6 +36,8 @@ class StageFRatesMockTushareClient:
     def __init__(self) -> None:
         self.shibor_windows: list[tuple[str, str]] = []
         self.lpr_windows: list[tuple[str, str]] = []
+        self.macro_windows: list[tuple[str, str]] = []
+        self.curve_windows: list[tuple[str, str]] = []
 
     def get_shibor(self, start_date: str, end_date: str) -> pd.DataFrame:
         self.shibor_windows.append((start_date, end_date))
@@ -52,6 +56,26 @@ class StageFRatesMockTushareClient:
                 "date": [pd.Timestamp(start_date)],
                 "1y": [3.10],
                 "5y": [3.60],
+            }
+        )
+
+    def get_macro_slow_fields(self, start_date: str, end_date: str) -> pd.DataFrame:
+        self.macro_windows.append((start_date, end_date))
+        return pd.DataFrame(
+            {
+                "period_label": ["2026-03"],
+                "official_pmi": [50.8],
+            }
+        )
+
+    def get_gov_curve_points(self, start_date: str, end_date: str) -> pd.DataFrame:
+        self.curve_windows.append((start_date, end_date))
+        return pd.DataFrame(
+            {
+                "curve_date": [pd.Timestamp(start_date)],
+                "curve_code": ["cn_gov_bond"],
+                "1y": [1.55],
+                "10y": [2.35],
             }
         )
 
@@ -86,8 +110,68 @@ class StageFRatesTests(unittest.TestCase):
         self._temp_dir.cleanup()
 
     def test_rates_datasets_are_registered(self) -> None:
+        self.assertTrue(self.service.registry.has_dataset("macro.slow_fields"))
         self.assertTrue(self.service.registry.has_dataset("rates.daily_rates"))
         self.assertTrue(self.service.registry.has_dataset("rates.lpr"))
+        self.assertTrue(self.service.registry.has_dataset("rates.gov_curve_points"))
+
+    def test_macro_slow_fields_run_through_source_to_canonical_write(self) -> None:
+        self._insert_calendar_window(date(2026, 3, 1), date(2026, 4, 1))
+
+        result = self.service.run_dataset_sync(
+            "macro.slow_fields",
+            IngestionRequest(
+                request_start=date(2026, 3, 1),
+                request_end=date(2026, 3, 31),
+            ),
+        )
+
+        self.assertEqual(result.status, RunStatus.SUCCESS)
+        self.assertEqual(result.records_written, 1)
+        self.assertEqual(result.validation_counts["pass_with_caveat"], 1)
+        self.assertEqual(self.client.macro_windows, [("2026-03-01", "2026-03-31")])
+        path = build_dataset_file_path(
+            "macro.slow_fields",
+            StorageZone.NORMALIZED,
+            [("year", 2026), ("month", "04")],
+            lakehouse_root=self.lakehouse_root,
+        )
+        frame = pd.read_parquet(path)
+        self.assertEqual(frame.iloc[0]["field_name"], "official_pmi")
+        self.assertEqual(frame.iloc[0]["period_label"], "2026-03")
+        self.assertEqual(frame.iloc[0]["release_date"], date(2026, 4, 1))
+        self.assertEqual(frame.iloc[0]["effective_date"], date(2026, 4, 1))
+
+    def test_gov_curve_points_run_through_source_to_canonical_write(self) -> None:
+        self._insert_calendar_window(date(2026, 4, 20), date(2026, 4, 20))
+
+        result = self.service.run_dataset_sync(
+            "rates.gov_curve_points",
+            IngestionRequest(
+                request_start=date(2026, 4, 20),
+                request_end=date(2026, 4, 20),
+            ),
+        )
+
+        self.assertEqual(result.status, RunStatus.SUCCESS)
+        self.assertEqual(result.records_written, 2)
+        self.assertEqual(result.validation_counts["pass_with_caveat"], 1)
+        self.assertEqual(self.client.curve_windows, [("2026-04-20", "2026-04-20")])
+        path = build_dataset_file_path(
+            "rates.gov_curve_points",
+            StorageZone.NORMALIZED,
+            [("year", 2026), ("month", "04")],
+            lakehouse_root=self.lakehouse_root,
+        )
+        frame = pd.read_parquet(path).sort_values("field_name").reset_index(drop=True)
+        self.assertEqual(
+            frame["field_name"].tolist(),
+            ["cn_gov_10y_yield", "cn_gov_1y_yield"],
+        )
+        self.assertEqual(
+            frame.loc[frame["field_name"].eq("cn_gov_10y_yield"), "field_role"].iloc[0],
+            "primary",
+        )
 
     def test_daily_rates_run_through_source_to_canonical_write(self) -> None:
         self._insert_calendar_window(date(2026, 4, 20), date(2026, 4, 20))

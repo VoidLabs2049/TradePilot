@@ -19,6 +19,7 @@ from tradepilot.db import get_conn
 from tradepilot.etl.read_models import (
     get_latest_etf_aw_regime_context,
     get_latest_etf_aw_snapshot,
+    get_latest_etf_aw_strategy_context,
 )
 from tradepilot.ingestion.models import NewsSyncRequest, SyncRequest
 from tradepilot.ingestion.service import IngestionService
@@ -522,6 +523,13 @@ class DailyWorkflowService:
 
         return get_latest_etf_aw_regime_context(as_of_date=as_of_date)
 
+    def get_latest_etf_aw_strategy_context(
+        self, as_of_date: date | None = None
+    ) -> dict | None:
+        """Return the latest ETF all-weather strategy context."""
+
+        return get_latest_etf_aw_strategy_context(as_of_date=as_of_date)
+
     def build_context_payload(self, run: WorkflowRunRecord) -> WorkflowContextPayload:
         """Convert one workflow run into the stage-1 context contract.
 
@@ -536,6 +544,9 @@ class DailyWorkflowService:
         etf_aw_regime_context = get_latest_etf_aw_regime_context(
             as_of_date=date.fromisoformat(run.workflow_date)
         )
+        etf_aw_strategy_context = get_latest_etf_aw_strategy_context(
+            as_of_date=date.fromisoformat(run.workflow_date)
+        )
         if run.phase == WorkflowPhase.POST_MARKET:
             context = {
                 "market_overview": summary.market_overview,
@@ -546,6 +557,7 @@ class DailyWorkflowService:
                 "alerts": summary.alerts,
                 "etf_aw_context": etf_aw_context,
                 "etf_aw_regime_context": etf_aw_regime_context,
+                "etf_aw_strategy_context": etf_aw_strategy_context,
             }
         else:
             context = {
@@ -558,6 +570,7 @@ class DailyWorkflowService:
                 "carry_over": summary.carry_over,
                 "etf_aw_context": etf_aw_context,
                 "etf_aw_regime_context": etf_aw_regime_context,
+                "etf_aw_strategy_context": etf_aw_strategy_context,
             }
         metadata = {
             **summary.metadata,

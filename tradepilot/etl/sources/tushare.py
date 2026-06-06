@@ -28,8 +28,10 @@ class TushareSourceAdapter(BaseSourceAdapter):
         "market.etf_adj_factor",
         "market.etf_daily",
         "market.index_daily",
+        "macro.slow_fields",
         "rates.daily_rates",
         "rates.lpr",
+        "rates.gov_curve_points",
     }
 
     def __init__(self, client: TushareClient | Any | None = None) -> None:
@@ -61,9 +63,15 @@ class TushareSourceAdapter(BaseSourceAdapter):
         elif dataset_name == "market.index_daily":
             payload = self._fetch_market_daily(request, instrument_type="index")
             endpoint = "index_daily"
+        elif dataset_name == "macro.slow_fields":
+            payload = self._fetch_macro_slow_fields(request)
+            endpoint = "macro_slow_fields"
         elif dataset_name == "rates.daily_rates":
             payload = self._fetch_daily_rates(request)
             endpoint = "shibor"
+        elif dataset_name == "rates.gov_curve_points":
+            payload = self._fetch_gov_curve_points(request)
+            endpoint = "gov_curve_points"
         else:
             payload = self._fetch_lpr(request)
             endpoint = "shibor_lpr"
@@ -163,9 +171,21 @@ class TushareSourceAdapter(BaseSourceAdapter):
         start_date, end_date = _date_window(request)
         return self._client.get_shibor(start_date.isoformat(), end_date.isoformat())
 
+    def _fetch_macro_slow_fields(self, request: IngestionRequest) -> pd.DataFrame:
+        start_date, end_date = _date_window(request)
+        return self._client.get_macro_slow_fields(
+            start_date.isoformat(), end_date.isoformat()
+        )
+
     def _fetch_lpr(self, request: IngestionRequest) -> pd.DataFrame:
         start_date, end_date = _date_window(request)
         return self._client.get_lpr(start_date.isoformat(), end_date.isoformat())
+
+    def _fetch_gov_curve_points(self, request: IngestionRequest) -> pd.DataFrame:
+        start_date, end_date = _date_window(request)
+        return self._client.get_gov_curve_points(
+            start_date.isoformat(), end_date.isoformat()
+        )
 
 
 def _date_window(request: IngestionRequest) -> tuple[date, date]:

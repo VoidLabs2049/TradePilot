@@ -28,6 +28,28 @@ _ETF_AW_SNAPSHOT_STATUS_ORDER = ["stale", "missing", "partial", "complete"]
 _ETF_AW_SNAPSHOT_STATUSES = set(_ETF_AW_SNAPSHOT_STATUS_ORDER)
 _ETF_AW_REGIME_SCORE_DATASET = "derived.etf_aw_regime_score"
 _ETF_AW_REGIME_SCORE_SCHEMA_VERSION = "etf_aw_regime_score_v1"
+_ETF_AW_MARKET_FEATURES_DATASET = "derived.etf_aw_market_features"
+_ETF_AW_MARKET_FEATURES_SCHEMA_VERSION = "etf_aw_market_features_v1"
+_ETF_AW_STRATEGY_CONTEXT_DATASET = "derived.etf_aw_strategy_context"
+_ETF_AW_STRATEGY_CONTEXT_SCHEMA_VERSION = "etf_aw_strategy_context_v1"
+_ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION = "etf_aw_strategy_context_contract_v1"
+_ETF_AW_MACRO_RATES_CONTEXT_SCHEMA_VERSION = "etf_aw_macro_rates_context_v1"
+_MACRO_SLOW_FIELDS_DATASET = "macro.slow_fields"
+_RATES_DAILY_RATES_DATASET = "rates.daily_rates"
+_RATES_LPR_DATASET = "rates.lpr"
+_RATES_GOV_CURVE_POINTS_DATASET = "rates.gov_curve_points"
+_ETF_AW_PRIMARY_FIELDS = {
+    "official_pmi",
+    "shibor_1w",
+    "lpr_1y",
+    "cn_gov_10y_yield",
+}
+_ETF_AW_CONFIRMATORY_FIELDS = {
+    "shibor_overnight",
+    "lpr_5y",
+    "cn_gov_1y_yield",
+    "cn_yield_curve_slope_10y_1y",
+}
 
 
 def get_latest_etf_aw_snapshot(
@@ -127,6 +149,138 @@ def list_etf_aw_regime_contexts(
     return [_regime_contract(row) for _, row in frame.iterrows()]
 
 
+def get_latest_etf_aw_strategy_context(
+    as_of_date: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return the latest ETF all-weather strategy context at or before a date."""
+
+    frame = _read_etf_aw_strategy_context_partitions(lakehouse_root=lakehouse_root)
+    if frame.empty:
+        return None
+    frame = _normalize_strategy_context_frame(frame)
+    if as_of_date is not None and not frame.empty:
+        frame = frame[frame["rebalance_date"] <= as_of_date].copy()
+    if frame.empty:
+        return None
+    latest_date = max(frame["rebalance_date"].dropna().tolist())
+    latest = frame[frame["rebalance_date"] == latest_date].copy()
+    latest = _sort_latest_rows(latest)
+    return _strategy_context_contract(latest.iloc[-1])
+
+
+def list_etf_aw_strategy_contexts(
+    start: date,
+    end: date,
+    *,
+    lakehouse_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return ETF all-weather strategy contexts in a rebalance-date window."""
+
+    if start > end:
+        start, end = end, start
+    frame = _read_etf_aw_strategy_context_partitions(
+        start=start,
+        end=end,
+        lakehouse_root=lakehouse_root,
+    )
+    if frame.empty:
+        return []
+    frame = _normalize_strategy_context_frame(frame)
+    frame = frame[frame["rebalance_date"].between(start, end, inclusive="both")]
+    frame = _sort_latest_rows(frame)
+    latest = frame.drop_duplicates(
+        ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+        keep="last",
+    )
+    return [_strategy_context_contract(row) for _, row in latest.iterrows()]
+
+
+def get_latest_etf_aw_market_features(
+    as_of_date: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return latest ETF all-weather market features at or before a date."""
+
+    frame = _read_etf_aw_market_features_partitions(lakehouse_root=lakehouse_root)
+    if frame.empty:
+        return None
+    frame = _normalize_market_features_frame(frame)
+    if as_of_date is not None and not frame.empty:
+        frame = frame[frame["rebalance_date"] <= as_of_date].copy()
+    if frame.empty:
+        return None
+    latest_date = max(frame["rebalance_date"].dropna().tolist())
+    latest = frame[frame["rebalance_date"] == latest_date].copy()
+    latest = _sort_latest_rows(latest)
+    latest = latest.drop_duplicates(
+        [
+            "calendar_name",
+            "rebalance_date",
+            "feature_name",
+            "feature_scope",
+            "feature_subject",
+        ],
+        keep="last",
+    )
+    return _market_features_contract(latest)
+
+
+def get_latest_etf_aw_macro_rates_context(
+    as_of_date: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return timing-safe macro/rates context at or before a rebalance date."""
+
+    if as_of_date is None:
+        as_of_date = _latest_rates_effective_date(lakehouse_root=lakehouse_root)
+    if as_of_date is None:
+        return None
+    macro = _read_macro_slow_fields_partitions(lakehouse_root=lakehouse_root)
+    daily_rates = _read_daily_rates_partitions(lakehouse_root=lakehouse_root)
+    lpr = _read_lpr_partitions(lakehouse_root=lakehouse_root)
+    curve = _read_gov_curve_points_partitions(lakehouse_root=lakehouse_root)
+    return _macro_rates_context_contract(
+        rebalance_date=as_of_date,
+        macro=macro,
+        daily_rates=daily_rates,
+        lpr=lpr,
+        curve=curve,
+    )
+
+
+def list_etf_aw_macro_rates_contexts(
+    start: date,
+    end: date,
+    *,
+    lakehouse_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return macro/rates contexts for available dates in a window."""
+
+    if start > end:
+        start, end = end, start
+    macro = _read_macro_slow_fields_partitions(lakehouse_root=lakehouse_root)
+    daily_rates = _read_daily_rates_partitions(lakehouse_root=lakehouse_root)
+    lpr = _read_lpr_partitions(lakehouse_root=lakehouse_root)
+    curve = _read_gov_curve_points_partitions(lakehouse_root=lakehouse_root)
+    dates = _rates_context_dates(macro, daily_rates, lpr, curve, start, end)
+    if not dates and start == end:
+        dates = [start]
+    return [
+        _macro_rates_context_contract(
+            rebalance_date=rebalance_date,
+            macro=macro,
+            daily_rates=daily_rates,
+            lpr=lpr,
+            curve=curve,
+        )
+        for rebalance_date in dates
+    ]
+
+
 def _read_etf_aw_snapshot_partitions(
     start: date | None = None,
     end: date | None = None,
@@ -197,6 +351,216 @@ def _read_etf_aw_regime_score_partitions(
     return pd.concat(frames, ignore_index=True)
 
 
+def _read_etf_aw_market_features_partitions(
+    start: date | None = None,
+    end: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for year, month in _dataset_months(
+        _ETF_AW_MARKET_FEATURES_DATASET,
+        start,
+        end,
+        lakehouse_root=lakehouse_root,
+    ):
+        path = build_dataset_file_path(
+            _ETF_AW_MARKET_FEATURES_DATASET,
+            StorageZone.DERIVED,
+            [("year", year), ("month", f"{month:02d}")],
+            lakehouse_root=lakehouse_root,
+        )
+        if path.exists():
+            frames.append(pd.read_parquet(path))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _read_etf_aw_strategy_context_partitions(
+    start: date | None = None,
+    end: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for year, month in _dataset_months(
+        _ETF_AW_STRATEGY_CONTEXT_DATASET,
+        start,
+        end,
+        lakehouse_root=lakehouse_root,
+    ):
+        path = build_dataset_file_path(
+            _ETF_AW_STRATEGY_CONTEXT_DATASET,
+            StorageZone.DERIVED,
+            [("year", year), ("month", f"{month:02d}")],
+            lakehouse_root=lakehouse_root,
+        )
+        if path.exists():
+            frames.append(pd.read_parquet(path))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _read_daily_rates_partitions(
+    start: date | None = None,
+    end: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> pd.DataFrame:
+    frame = _read_partitioned_lakehouse_dataset(
+        _RATES_DAILY_RATES_DATASET,
+        StorageZone.NORMALIZED,
+        start,
+        end,
+        lakehouse_root=lakehouse_root,
+    )
+    if frame.empty:
+        return frame
+    return _normalize_rate_fact_frame(frame, observation_date_column="trade_date")
+
+
+def _read_macro_slow_fields_partitions(
+    start: date | None = None,
+    end: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> pd.DataFrame:
+    frame = _read_partitioned_lakehouse_dataset(
+        _MACRO_SLOW_FIELDS_DATASET,
+        StorageZone.NORMALIZED,
+        start,
+        end,
+        lakehouse_root=lakehouse_root,
+    )
+    if frame.empty:
+        return frame
+    return _normalize_macro_fact_frame(frame)
+
+
+def _read_lpr_partitions(
+    start: date | None = None,
+    end: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> pd.DataFrame:
+    frame = _read_partitioned_lakehouse_dataset(
+        _RATES_LPR_DATASET,
+        StorageZone.NORMALIZED,
+        start,
+        end,
+        lakehouse_root=lakehouse_root,
+    )
+    if frame.empty:
+        return frame
+    return _normalize_rate_fact_frame(frame, observation_date_column="quote_date")
+
+
+def _read_gov_curve_points_partitions(
+    start: date | None = None,
+    end: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> pd.DataFrame:
+    frame = _read_partitioned_lakehouse_dataset(
+        _RATES_GOV_CURVE_POINTS_DATASET,
+        StorageZone.NORMALIZED,
+        start,
+        end,
+        lakehouse_root=lakehouse_root,
+    )
+    if frame.empty:
+        return frame
+    return _normalize_rate_fact_frame(frame, observation_date_column="curve_date")
+
+
+def _read_partitioned_lakehouse_dataset(
+    dataset_name: str,
+    zone: StorageZone,
+    start: date | None,
+    end: date | None,
+    *,
+    lakehouse_root: Path | None,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for year, month in _dataset_months_in_zone(
+        dataset_name,
+        zone,
+        start,
+        end,
+        lakehouse_root=lakehouse_root,
+    ):
+        path = build_dataset_file_path(
+            dataset_name,
+            zone,
+            [("year", year), ("month", f"{month:02d}")],
+            lakehouse_root=lakehouse_root,
+        )
+        if path.exists():
+            frames.append(pd.read_parquet(path))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _normalize_rate_fact_frame(
+    frame: pd.DataFrame, *, observation_date_column: str
+) -> pd.DataFrame:
+    required = {
+        "field_name",
+        observation_date_column,
+        "value",
+        "unit",
+        "field_role",
+        "release_date",
+        "effective_date",
+        "revision_note",
+        "source_caveat",
+        "quality_status",
+    }
+    if not required.issubset(frame.columns):
+        return pd.DataFrame()
+    normalized = frame.copy()
+    for column in (observation_date_column, "release_date", "effective_date"):
+        normalized[column] = _normalize_date_series(normalized[column])
+    if "ingested_at" in normalized.columns:
+        normalized["ingested_at"] = pd.to_datetime(
+            normalized["ingested_at"], errors="coerce"
+        )
+    normalized = normalized.dropna(subset=["field_name", "effective_date"])
+    return normalized
+
+
+def _normalize_macro_fact_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    required = {
+        "field_name",
+        "period_label",
+        "period_type",
+        "value",
+        "unit",
+        "field_role",
+        "release_date",
+        "effective_date",
+        "revision_note",
+        "source_caveat",
+        "quality_status",
+    }
+    if not required.issubset(frame.columns):
+        return pd.DataFrame()
+    normalized = frame.copy()
+    for column in ("release_date", "effective_date"):
+        normalized[column] = _normalize_date_series(normalized[column])
+    if "ingested_at" in normalized.columns:
+        normalized["ingested_at"] = pd.to_datetime(
+            normalized["ingested_at"], errors="coerce"
+        )
+    normalized = normalized.dropna(
+        subset=["field_name", "period_label", "effective_date"]
+    )
+    return normalized
+
+
 def _normalize_snapshot_frame(frame: pd.DataFrame) -> pd.DataFrame:
     if not _ETF_AW_SNAPSHOT_REQUIRED_COLUMNS.issubset(frame.columns):
         return pd.DataFrame()
@@ -209,8 +573,82 @@ def _normalize_snapshot_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return normalized[normalized["data_status"].isin(_ETF_AW_SNAPSHOT_STATUSES)]
 
 
+def _normalize_market_features_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    required = {
+        "schema_version",
+        "calendar_name",
+        "calendar_month",
+        "rebalance_date",
+        "feature_name",
+        "feature_scope",
+        "feature_subject",
+        "feature_value",
+        "feature_status",
+    }
+    if not required.issubset(frame.columns):
+        return pd.DataFrame()
+    normalized = frame.copy()
+    normalized["rebalance_date"] = _normalize_date_series(normalized["rebalance_date"])
+    normalized = normalized.dropna(subset=["rebalance_date"])
+    normalized = normalized[
+        normalized["schema_version"].astype(str)
+        == _ETF_AW_MARKET_FEATURES_SCHEMA_VERSION
+    ].copy()
+    return normalized
+
+
+def _normalize_strategy_context_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    required = {
+        "schema_version",
+        "contract_version",
+        "calendar_name",
+        "calendar_month",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "context_status",
+    }
+    if not required.issubset(frame.columns):
+        return pd.DataFrame()
+    normalized = frame.copy()
+    normalized["rebalance_date"] = _normalize_date_series(normalized["rebalance_date"])
+    if "effective_date" in normalized.columns:
+        normalized["effective_date"] = _normalize_date_series(
+            normalized["effective_date"]
+        )
+    normalized = normalized.dropna(subset=["rebalance_date"])
+    normalized = normalized[
+        (
+            normalized["schema_version"].astype(str)
+            == _ETF_AW_STRATEGY_CONTEXT_SCHEMA_VERSION
+        )
+        & (
+            normalized["contract_version"].astype(str)
+            == _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION
+        )
+    ].copy()
+    return normalized
+
+
 def _dataset_months(
     dataset_name: str,
+    start: date | None,
+    end: date | None,
+    *,
+    lakehouse_root: Path | None,
+) -> list[tuple[int, int]]:
+    return _dataset_months_in_zone(
+        dataset_name,
+        StorageZone.DERIVED,
+        start,
+        end,
+        lakehouse_root=lakehouse_root,
+    )
+
+
+def _dataset_months_in_zone(
+    dataset_name: str,
+    zone: StorageZone,
     start: date | None,
     end: date | None,
     *,
@@ -230,15 +668,19 @@ def _dataset_months(
         return months
 
     upper_month = (end.year, end.month) if end is not None else None
-    dataset_root = (
-        (lakehouse_root / StorageZone.DERIVED.value)
-        if lakehouse_root is not None
-        else None
-    )
+    dataset_root = (lakehouse_root / zone.value) if lakehouse_root is not None else None
     if dataset_root is None:
-        from tradepilot.config import LAKEHOUSE_DERIVED_ROOT
+        from tradepilot.config import (
+            LAKEHOUSE_DERIVED_ROOT,
+            LAKEHOUSE_NORMALIZED_ROOT,
+            LAKEHOUSE_RAW_ROOT,
+        )
 
-        dataset_root = LAKEHOUSE_DERIVED_ROOT
+        dataset_root = {
+            StorageZone.RAW: LAKEHOUSE_RAW_ROOT,
+            StorageZone.NORMALIZED: LAKEHOUSE_NORMALIZED_ROOT,
+            StorageZone.DERIVED: LAKEHOUSE_DERIVED_ROOT,
+        }[zone]
     root = dataset_root / dataset_name
     if not root.exists():
         return []
@@ -278,6 +720,305 @@ def _snapshot_months(
         end,
         lakehouse_root=lakehouse_root,
     )
+
+
+def _latest_rates_effective_date(*, lakehouse_root: Path | None) -> date | None:
+    macro = _read_macro_slow_fields_partitions(lakehouse_root=lakehouse_root)
+    daily_rates = _read_daily_rates_partitions(lakehouse_root=lakehouse_root)
+    lpr = _read_lpr_partitions(lakehouse_root=lakehouse_root)
+    curve = _read_gov_curve_points_partitions(lakehouse_root=lakehouse_root)
+    dates = []
+    for frame in (macro, daily_rates, lpr, curve):
+        if frame.empty or "effective_date" not in frame.columns:
+            continue
+        dates.extend(frame["effective_date"].dropna().tolist())
+    return max(dates) if dates else None
+
+
+def _rates_context_dates(
+    macro: pd.DataFrame,
+    daily_rates: pd.DataFrame,
+    lpr: pd.DataFrame,
+    curve: pd.DataFrame,
+    start: date,
+    end: date,
+) -> list[date]:
+    dates: set[date] = set()
+    for frame in (macro, daily_rates, lpr, curve):
+        if frame.empty or "effective_date" not in frame.columns:
+            continue
+        for value in frame["effective_date"].dropna().tolist():
+            if start <= value <= end:
+                dates.add(value)
+    return sorted(dates)
+
+
+def _macro_rates_context_contract(
+    *,
+    rebalance_date: date,
+    macro: pd.DataFrame,
+    daily_rates: pd.DataFrame,
+    lpr: pd.DataFrame,
+    curve: pd.DataFrame,
+) -> dict[str, Any]:
+    macro_fields = _latest_eligible_macro_rows(macro, rebalance_date)
+    daily_selected = _latest_eligible_rate_rows(
+        daily_rates,
+        rebalance_date,
+        source_dataset=_RATES_DAILY_RATES_DATASET,
+        observation_date_column="trade_date",
+    )
+    lpr_selected = _latest_eligible_rate_rows(
+        lpr,
+        rebalance_date,
+        source_dataset=_RATES_LPR_DATASET,
+        observation_date_column="quote_date",
+    )
+    curve_fields = _latest_eligible_curve_rows(curve, rebalance_date)
+    rates_fields = daily_selected + lpr_selected
+    available_fields = macro_fields + rates_fields + curve_fields
+    available_names = {str(field["field_name"]) for field in available_fields}
+    missing_primary = sorted(_ETF_AW_PRIMARY_FIELDS - available_names)
+    missing_confirmatory = sorted(_ETF_AW_CONFIRMATORY_FIELDS - available_names)
+    excluded_future = _future_effective_rows(
+        macro,
+        daily_rates,
+        lpr,
+        curve,
+        rebalance_date,
+    )
+    if missing_primary:
+        context_status = "unavailable"
+    elif missing_confirmatory:
+        context_status = "partial"
+    else:
+        context_status = "complete"
+    source_caveats = _rate_caveats(available_fields, "source_caveat")
+    revision_caveats = _rate_caveats(available_fields, "revision_note")
+    return {
+        "schema_version": _ETF_AW_MACRO_RATES_CONTEXT_SCHEMA_VERSION,
+        "rebalance_date": rebalance_date.isoformat(),
+        "context_status": context_status,
+        "macro_fields": macro_fields,
+        "rates_fields": rates_fields,
+        "curve_fields": curve_fields,
+        "available_fields": available_fields,
+        "missing_primary_fields": missing_primary,
+        "missing_confirmatory_fields": missing_confirmatory,
+        "source_caveats": source_caveats,
+        "revision_caveats": revision_caveats,
+        "quality_notes": {
+            "macro_fields_deferred": "official_pmi" not in available_names,
+            "curve_fields_deferred": "cn_gov_10y_yield" not in available_names,
+            "rates_primary_fields_available": {"shibor_1w", "lpr_1y"}.issubset(
+                available_names
+            ),
+            "missing_primary_fields": missing_primary,
+            "missing_confirmatory_fields": missing_confirmatory,
+            "excluded_future_effective_fields": excluded_future,
+            "point_in_time_filter": "effective_date <= rebalance_date",
+            "latest_history_macro": bool(macro_fields),
+        },
+    }
+
+
+def _latest_eligible_rate_rows(
+    frame: pd.DataFrame,
+    rebalance_date: date,
+    *,
+    source_dataset: str,
+    observation_date_column: str,
+) -> list[dict[str, Any]]:
+    if frame.empty:
+        return []
+    eligible = frame[frame["effective_date"] <= rebalance_date].copy()
+    if eligible.empty:
+        return []
+    sort_columns = ["field_name", "effective_date"]
+    if "ingested_at" in eligible.columns:
+        sort_columns.append("ingested_at")
+    eligible = eligible.sort_values(sort_columns)
+    latest = eligible.drop_duplicates(["field_name"], keep="last")
+    return [
+        _rate_field_contract(
+            row,
+            source_dataset=source_dataset,
+            observation_date_column=observation_date_column,
+        )
+        for _, row in latest.sort_values("field_name").iterrows()
+    ]
+
+
+def _latest_eligible_macro_rows(
+    frame: pd.DataFrame, rebalance_date: date
+) -> list[dict[str, Any]]:
+    if frame.empty:
+        return []
+    eligible = frame[frame["effective_date"] <= rebalance_date].copy()
+    if eligible.empty:
+        return []
+    sort_columns = ["field_name", "effective_date"]
+    if "ingested_at" in eligible.columns:
+        sort_columns.append("ingested_at")
+    eligible = eligible.sort_values(sort_columns)
+    latest = eligible.drop_duplicates(["field_name"], keep="last")
+    return [
+        _macro_field_contract(row)
+        for _, row in latest.sort_values("field_name").iterrows()
+    ]
+
+
+def _latest_eligible_curve_rows(
+    frame: pd.DataFrame, rebalance_date: date
+) -> list[dict[str, Any]]:
+    if frame.empty:
+        return []
+    eligible = frame[frame["effective_date"] <= rebalance_date].copy()
+    if eligible.empty:
+        return []
+    sort_columns = ["field_name", "effective_date"]
+    if "ingested_at" in eligible.columns:
+        sort_columns.append("ingested_at")
+    eligible = eligible.sort_values(sort_columns)
+    latest = eligible.drop_duplicates(["field_name"], keep="last")
+    rows = [
+        _rate_field_contract(
+            row,
+            source_dataset=_RATES_GOV_CURVE_POINTS_DATASET,
+            observation_date_column="curve_date",
+        )
+        for _, row in latest.sort_values("field_name").iterrows()
+    ]
+    slope = _curve_slope_field(rows)
+    if slope is not None:
+        rows.append(slope)
+    return rows
+
+
+def _macro_field_contract(row: pd.Series) -> dict[str, Any]:
+    return {
+        "source_dataset": _MACRO_SLOW_FIELDS_DATASET,
+        "field_name": _optional_text(row.get("field_name")),
+        "field_role": _optional_text(row.get("field_role")),
+        "period_label": _optional_text(row.get("period_label")),
+        "period_type": _optional_text(row.get("period_type")),
+        "value": _optional_float(row.get("value")),
+        "unit": _optional_text(row.get("unit")),
+        "release_date": _date_text(row.get("release_date")),
+        "effective_date": _date_text(row.get("effective_date")),
+        "revision_note": _optional_text(row.get("revision_note")),
+        "source_caveat": _optional_text(row.get("source_caveat")),
+        "quality_status": _optional_text(row.get("quality_status")),
+    }
+
+
+def _rate_field_contract(
+    row: pd.Series,
+    *,
+    source_dataset: str,
+    observation_date_column: str,
+) -> dict[str, Any]:
+    field = {
+        "source_dataset": source_dataset,
+        "field_name": _optional_text(row.get("field_name")),
+        "field_role": _optional_text(row.get("field_role")),
+        "value": _optional_float(row.get("value")),
+        "unit": _optional_text(row.get("unit")),
+        "release_date": _date_text(row.get("release_date")),
+        "effective_date": _date_text(row.get("effective_date")),
+        "revision_note": _optional_text(row.get("revision_note")),
+        "source_caveat": _optional_text(row.get("source_caveat")),
+        "quality_status": _optional_text(row.get("quality_status")),
+    }
+    field[observation_date_column] = _date_text(row.get(observation_date_column))
+    return field
+
+
+def _curve_slope_field(fields: list[dict[str, Any]]) -> dict[str, Any] | None:
+    by_name = {field.get("field_name"): field for field in fields}
+    one_year = by_name.get("cn_gov_1y_yield")
+    ten_year = by_name.get("cn_gov_10y_yield")
+    if one_year is None or ten_year is None:
+        return None
+    one_value = one_year.get("value")
+    ten_value = ten_year.get("value")
+    if one_value is None or ten_value is None:
+        return None
+    effective_dates = [
+        value
+        for value in (one_year.get("effective_date"), ten_year.get("effective_date"))
+        if value is not None
+    ]
+    release_dates = [
+        value
+        for value in (one_year.get("release_date"), ten_year.get("release_date"))
+        if value is not None
+    ]
+    return {
+        "source_dataset": "derived.etf_aw_macro_rates_context",
+        "field_name": "cn_yield_curve_slope_10y_1y",
+        "field_role": "confirmatory",
+        "value": float(ten_value) - float(one_value),
+        "unit": "percentage_point",
+        "release_date": max(release_dates) if release_dates else None,
+        "effective_date": max(effective_dates) if effective_dates else None,
+        "revision_note": "derived_from_latest_eligible_curve_points",
+        "source_caveat": "derived_from_eligible_1y_10y_curve_points",
+        "quality_status": "pass_with_caveat",
+    }
+
+
+def _future_effective_rows(
+    macro: pd.DataFrame,
+    daily_rates: pd.DataFrame,
+    lpr: pd.DataFrame,
+    curve: pd.DataFrame,
+    rebalance_date: date,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for source_dataset, frame in (
+        (_MACRO_SLOW_FIELDS_DATASET, macro),
+        (_RATES_DAILY_RATES_DATASET, daily_rates),
+        (_RATES_LPR_DATASET, lpr),
+        (_RATES_GOV_CURVE_POINTS_DATASET, curve),
+    ):
+        if frame.empty:
+            continue
+        future = frame[frame["effective_date"] > rebalance_date]
+        for _, row in future.sort_values(["field_name", "effective_date"]).iterrows():
+            rows.append(
+                {
+                    "source_dataset": source_dataset,
+                    "field_name": _optional_text(row.get("field_name")),
+                    "effective_date": _date_text(row.get("effective_date")),
+                    "rebalance_date": rebalance_date.isoformat(),
+                }
+            )
+    return rows
+
+
+def _rate_caveats(
+    fields: list[dict[str, Any]], caveat_key: str
+) -> list[dict[str, str | None]]:
+    caveats: list[dict[str, str | None]] = []
+    seen: set[tuple[str | None, str | None, str | None]] = set()
+    for field in fields:
+        key = (
+            field.get("source_dataset"),
+            field.get("field_name"),
+            field.get(caveat_key),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        caveats.append(
+            {
+                "source_dataset": field.get("source_dataset"),
+                "field_name": field.get("field_name"),
+                caveat_key: field.get(caveat_key),
+            }
+        )
+    return caveats
 
 
 def _snapshot_contract(frame: pd.DataFrame) -> dict[str, Any]:
@@ -328,6 +1069,82 @@ def _regime_contract(row: pd.Series) -> dict[str, Any]:
     }
 
 
+def _strategy_context_contract(row: pd.Series) -> dict[str, Any]:
+    missing_primary = _json_list(row.get("missing_primary_fields_json"))
+    missing_confirmatory = _json_list(row.get("missing_confirmatory_fields_json"))
+    available_fields = _json_list(row.get("available_fields_json"))
+    source_caveats = _json_list(row.get("source_caveats_json"))
+    revision_caveats = _json_list(row.get("revision_caveats_json"))
+    point_in_time_notes = _quality_notes(row.get("point_in_time_notes_json"))
+    market_features = _quality_notes(row.get("market_features_json"))
+    return {
+        "schema_version": _ETF_AW_STRATEGY_CONTEXT_SCHEMA_VERSION,
+        "contract_version": _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION,
+        "calendar_name": _optional_text(row.get("calendar_name")),
+        "calendar_month": _optional_text(row.get("calendar_month")),
+        "rebalance_date": _date_text(row.get("rebalance_date")),
+        "effective_date": _date_text(row.get("effective_date")),
+        "strategy_name": _optional_text(row.get("strategy_name")),
+        "strategy_version": _optional_text(row.get("strategy_version")),
+        "context_status": _optional_text(row.get("context_status")),
+        "readiness_level": _optional_text(row.get("readiness_level")),
+        "context_basis": _optional_text(row.get("context_basis")),
+        "market_context_status": _optional_text(row.get("market_context_status")),
+        "market": {
+            "label": _optional_text(row.get("market_regime_label")),
+            "score": _optional_float(row.get("market_score")),
+            "confidence_score": _optional_float(row.get("market_confidence_score")),
+            "confidence_cap": _optional_float(row.get("market_confidence_cap")),
+        },
+        "macro_rates": {
+            "status": _optional_text(row.get("macro_rates_context_status")),
+            "missing_primary_fields": missing_primary,
+            "missing_confirmatory_fields": missing_confirmatory,
+            "available_fields": available_fields,
+            "source_caveats": source_caveats,
+            "revision_caveats": revision_caveats,
+        },
+        "quality_notes": point_in_time_notes,
+        "market_features": market_features,
+        "source_snapshot_rebalance_date": _date_text(
+            row.get("source_snapshot_rebalance_date")
+        ),
+        "source_regime_rebalance_date": _date_text(
+            row.get("source_regime_rebalance_date")
+        ),
+        "source_macro_rates_rebalance_date": _date_text(
+            row.get("source_macro_rates_rebalance_date")
+        ),
+    }
+
+
+def _market_features_contract(frame: pd.DataFrame) -> dict[str, Any]:
+    ordered = frame.sort_values(["feature_scope", "feature_subject", "feature_name"])
+    first = ordered.iloc[0]
+    return {
+        "schema_version": _ETF_AW_MARKET_FEATURES_SCHEMA_VERSION,
+        "calendar_name": _optional_text(first.get("calendar_name")),
+        "calendar_month": _optional_text(first.get("calendar_month")),
+        "rebalance_date": _date_text(first.get("rebalance_date")),
+        "features": [_market_feature_contract(row) for _, row in ordered.iterrows()],
+    }
+
+
+def _market_feature_contract(row: pd.Series) -> dict[str, Any]:
+    return {
+        "feature_name": _optional_text(row.get("feature_name")),
+        "feature_scope": _optional_text(row.get("feature_scope")),
+        "feature_subject": _optional_text(row.get("feature_subject")),
+        "feature_value": _optional_float(row.get("feature_value")),
+        "unit": _optional_text(row.get("unit")),
+        "source_dataset": _optional_text(row.get("source_dataset")),
+        "source_status": _optional_text(row.get("source_status")),
+        "feature_status": _optional_text(row.get("feature_status")),
+        "quality_notes": _quality_notes(row.get("quality_notes")),
+        "source_rebalance_date": _date_text(row.get("source_rebalance_date")),
+    }
+
+
 def _sleeve_contract(row: pd.Series) -> dict[str, Any]:
     return {
         "sleeve_code": str(row["sleeve_code"]),
@@ -344,6 +1161,16 @@ def _sleeve_contract(row: pd.Series) -> dict[str, Any]:
         "quality_notes": _quality_notes(row.get("quality_notes")),
         "source_max_trade_date": _date_text(row.get("source_max_trade_date")),
     }
+
+
+def _sort_latest_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    if "ingested_at" not in frame.columns:
+        return frame.sort_values(["rebalance_date"])
+    sorted_frame = frame.copy()
+    sorted_frame["ingested_at"] = pd.to_datetime(
+        sorted_frame["ingested_at"], errors="coerce"
+    )
+    return sorted_frame.sort_values(["rebalance_date", "ingested_at"])
 
 
 def _quality_notes(value: object) -> dict[str, Any]:

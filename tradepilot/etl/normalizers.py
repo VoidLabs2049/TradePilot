@@ -252,6 +252,85 @@ class EtfAdjFactorNormalizer(BaseNormalizer):
         return _result(canonical, context=ctx)
 
 
+class MacroSlowFieldsNormalizer(BaseNormalizer):
+    """Normalize slow macro observations into long canonical facts."""
+
+    _FIELD_COLUMNS = {
+        "official_pmi": ("official_pmi", "pmi", "manufacturing_pmi"),
+    }
+    _FIELD_ROLES = {
+        "official_pmi": "primary",
+    }
+    _FIELD_UNITS = {
+        "official_pmi": "index_point",
+    }
+
+    def normalize(
+        self,
+        raw_payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> NormalizationResult:
+        """Normalize supported slow macro payloads."""
+
+        ctx = context or {}
+        rows: list[dict[str, Any]] = []
+        for _, raw_row in raw_payload.iterrows():
+            if "field_name" in raw_payload.columns and "value" in raw_payload.columns:
+                field_name = _normalize_macro_field_name(raw_row.get("field_name"))
+                if field_name in self._FIELD_ROLES:
+                    rows.append(
+                        self._row(ctx, raw_row, field_name, raw_row.get("value"))
+                    )
+                continue
+            for field_name, candidates in self._FIELD_COLUMNS.items():
+                column = _first_existing(raw_payload, list(candidates))
+                if column is None:
+                    continue
+                rows.append(self._row(ctx, raw_row, field_name, raw_row.get(column)))
+        canonical = pd.DataFrame(rows, columns=_MACRO_SLOW_FIELDS_COLUMNS)
+        return _result(canonical, context=ctx)
+
+    def _row(
+        self,
+        ctx: dict[str, Any],
+        raw_row: pd.Series,
+        field_name: str,
+        value: object,
+    ) -> dict[str, Any]:
+        period_label = _period_label(raw_row) or _period_label_from_date(raw_row)
+        release_date = _coerce_date(raw_row.get("release_date"))
+        if release_date is None and period_label is not None:
+            release_date = _monthly_release_date(period_label, 1)
+        effective_date = _coerce_date(raw_row.get("effective_date"))
+        if effective_date is None:
+            effective_date = _next_common_open_from_context(ctx, release_date)
+        return {
+            "field_name": field_name,
+            "period_label": period_label,
+            "period_type": "monthly",
+            "value": _coerce_number(value),
+            "unit": self._FIELD_UNITS[field_name],
+            "field_role": self._FIELD_ROLES[field_name],
+            "release_date": release_date,
+            "effective_date": effective_date,
+            "definition_regime": str(raw_row.get("definition_regime") or ""),
+            "regime_note": str(raw_row.get("regime_note") or ""),
+            "source_name": str(ctx.get("source_name", "")),
+            "raw_batch_id": ctx.get("raw_batch_id"),
+            "ingested_at": pd.Timestamp.utcnow().tz_localize(None),
+            "revision_note": str(
+                ctx.get(
+                    "revision_note",
+                    "latest_history_only_unless_vintage_captured",
+                )
+            ),
+            "source_caveat": str(
+                ctx.get("source_caveat", "tushare_wrapper_latest_history_caveat")
+            ),
+            "quality_status": str(ctx.get("quality_status", "pass")),
+        }
+
+
 class DailyRatesNormalizer(BaseNormalizer):
     """Normalize daily rates into long canonical facts."""
 
@@ -401,6 +480,96 @@ class LprNormalizer(BaseNormalizer):
         }
 
 
+class GovCurvePointsNormalizer(BaseNormalizer):
+    """Normalize government curve points into long canonical facts."""
+
+    _TENOR_FIELDS = {
+        1.0: "cn_gov_1y_yield",
+        10.0: "cn_gov_10y_yield",
+    }
+    _FIELD_ROLES = {
+        "cn_gov_1y_yield": "confirmatory",
+        "cn_gov_10y_yield": "primary",
+    }
+
+    def normalize(
+        self,
+        raw_payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> NormalizationResult:
+        """Normalize source curve point payloads."""
+
+        ctx = context or {}
+        rows: list[dict[str, Any]] = []
+        for _, raw_row in raw_payload.iterrows():
+            if "field_name" in raw_payload.columns and "value" in raw_payload.columns:
+                field_name = _normalize_curve_field_name(raw_row.get("field_name"))
+                if field_name in self._FIELD_ROLES:
+                    rows.append(
+                        self._row(
+                            ctx,
+                            raw_row,
+                            field_name,
+                            raw_row.get("value"),
+                            _curve_tenor_from_row(raw_row, field_name),
+                        )
+                    )
+                continue
+            for tenor_years, field_name in self._TENOR_FIELDS.items():
+                column = _first_existing(
+                    raw_payload,
+                    [
+                        f"{int(tenor_years)}y",
+                        f"yield_{int(tenor_years)}y",
+                        field_name,
+                    ],
+                )
+                if column is None:
+                    continue
+                rows.append(
+                    self._row(
+                        ctx, raw_row, field_name, raw_row.get(column), tenor_years
+                    )
+                )
+        canonical = pd.DataFrame(rows, columns=_GOV_CURVE_POINTS_COLUMNS)
+        return _result(canonical, context=ctx)
+
+    def _row(
+        self,
+        ctx: dict[str, Any],
+        raw_row: pd.Series,
+        field_name: str,
+        value: object,
+        tenor_years: float | None,
+    ) -> dict[str, Any]:
+        curve_date = _coerce_date(
+            _first_row_value(raw_row, ["curve_date", "date", "trade_date"])
+        )
+        release_date = _coerce_date(raw_row.get("release_date")) or curve_date
+        effective_date = _coerce_date(raw_row.get("effective_date")) or curve_date
+        return {
+            "curve_code": str(raw_row.get("curve_code") or "cn_gov_bond"),
+            "curve_date": curve_date,
+            "tenor_years": tenor_years,
+            "field_name": field_name,
+            "value": _coerce_number(value),
+            "unit": "percent",
+            "field_role": self._FIELD_ROLES[field_name],
+            "release_date": release_date,
+            "effective_date": effective_date,
+            "source_name": str(ctx.get("source_name", "")),
+            "raw_batch_id": ctx.get("raw_batch_id"),
+            "ingested_at": pd.Timestamp.utcnow().tz_localize(None),
+            "revision_note": str(
+                ctx.get("revision_note", "extraction_method_risk_present")
+            ),
+            "source_caveat": str(
+                ctx.get("source_caveat", "tushare_curve_extraction_caveat")
+            ),
+            "quality_status": str(ctx.get("quality_status", "pass")),
+        }
+
+
 def get_normalizer(dataset_name: str) -> BaseNormalizer:
     """Return the normalizer for one Stage B dataset."""
 
@@ -412,10 +581,14 @@ def get_normalizer(dataset_name: str) -> BaseNormalizer:
         return EtfAdjFactorNormalizer()
     if dataset_name in {"market.etf_daily", "market.index_daily"}:
         return MarketDailyNormalizer()
+    if dataset_name == "macro.slow_fields":
+        return MacroSlowFieldsNormalizer()
     if dataset_name == "rates.daily_rates":
         return DailyRatesNormalizer()
     if dataset_name == "rates.lpr":
         return LprNormalizer()
+    if dataset_name == "rates.gov_curve_points":
+        return GovCurvePointsNormalizer()
     raise KeyError(f"no normalizer registered for dataset: {dataset_name}")
 
 
@@ -434,9 +607,44 @@ _DAILY_RATES_COLUMNS = [
     "source_caveat",
     "quality_status",
 ]
+_MACRO_SLOW_FIELDS_COLUMNS = [
+    "field_name",
+    "period_label",
+    "period_type",
+    "value",
+    "unit",
+    "field_role",
+    "release_date",
+    "effective_date",
+    "definition_regime",
+    "regime_note",
+    "source_name",
+    "raw_batch_id",
+    "ingested_at",
+    "revision_note",
+    "source_caveat",
+    "quality_status",
+]
 _LPR_COLUMNS = [
     "field_name",
     "quote_date",
+    "value",
+    "unit",
+    "field_role",
+    "release_date",
+    "effective_date",
+    "source_name",
+    "raw_batch_id",
+    "ingested_at",
+    "revision_note",
+    "source_caveat",
+    "quality_status",
+]
+_GOV_CURVE_POINTS_COLUMNS = [
+    "curve_code",
+    "curve_date",
+    "tenor_years",
+    "field_name",
     "value",
     "unit",
     "field_role",
@@ -500,6 +708,18 @@ def _normalize_rate_field_name(value: object) -> str:
     return mapping.get(text, text)
 
 
+def _normalize_macro_field_name(value: object) -> str:
+    """Normalize source macro field names to canonical keys."""
+
+    text = str(value or "").strip().lower()
+    mapping = {
+        "pmi": "official_pmi",
+        "official_pmi": "official_pmi",
+        "manufacturing_pmi": "official_pmi",
+    }
+    return mapping.get(text, text)
+
+
 def _normalize_lpr_field_name(value: object) -> str:
     """Normalize source LPR field names to canonical keys."""
 
@@ -515,6 +735,34 @@ def _normalize_lpr_field_name(value: object) -> str:
     return mapping.get(text, text)
 
 
+def _normalize_curve_field_name(value: object) -> str:
+    """Normalize source curve field names to canonical keys."""
+
+    text = str(value or "").strip().lower()
+    mapping = {
+        "1y": "cn_gov_1y_yield",
+        "cn_gov_1y_yield": "cn_gov_1y_yield",
+        "yield_1y": "cn_gov_1y_yield",
+        "10y": "cn_gov_10y_yield",
+        "cn_gov_10y_yield": "cn_gov_10y_yield",
+        "yield_10y": "cn_gov_10y_yield",
+    }
+    return mapping.get(text, text)
+
+
+def _curve_tenor_from_row(row: pd.Series, field_name: str) -> float | None:
+    """Return tenor years from a curve row or canonical field name."""
+
+    value = row.get("tenor_years")
+    number = _coerce_number(value)
+    if number is not None:
+        return number
+    return {
+        "cn_gov_1y_yield": 1.0,
+        "cn_gov_10y_yield": 10.0,
+    }.get(field_name)
+
+
 def _period_label(row: pd.Series) -> str | None:
     """Return a YYYY-MM period label from common source columns."""
 
@@ -527,6 +775,28 @@ def _period_label(row: pd.Series) -> str | None:
     if re.fullmatch(r"\d{4}-\d{2}", text):
         return text
     return None
+
+
+def _period_label_from_date(row: pd.Series) -> str | None:
+    """Return YYYY-MM from date-like source columns."""
+
+    value = _first_row_value(row, ["date", "release_date", "effective_date"])
+    parsed = _coerce_date(value)
+    if parsed is None:
+        return None
+    return f"{parsed.year:04d}-{parsed.month:02d}"
+
+
+def _monthly_release_date(period_label: str, day: int) -> date:
+    """Return a conservative release date in the month after a period."""
+
+    year_text, month_text = period_label.split("-", 1)
+    year = int(year_text)
+    month = int(month_text) + 1
+    if month == 13:
+        year += 1
+        month = 1
+    return date(year, month, day)
 
 
 def _next_common_open_from_context(

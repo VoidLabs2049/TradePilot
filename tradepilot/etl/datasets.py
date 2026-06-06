@@ -322,6 +322,105 @@ def build_derived_etf_aw_regime_score_dataset() -> DatasetDefinition:
     )
 
 
+def build_derived_etf_aw_market_features_dataset() -> DatasetDefinition:
+    """Return the ETF all-weather strategy-facing market features definition."""
+
+    return DatasetDefinition(
+        dataset_name="derived.etf_aw_market_features",
+        category=DatasetCategory.DERIVED,
+        grain="calendar_rebalance_feature",
+        primary_source="derived",
+        storage_zone=StorageZone.DERIVED,
+        partition_strategy="year_month",
+        canonical_schema_name="etf_aw_market_features_v1",
+        timing_semantics=(
+            "Strategy-facing market feature rows built only from ETF all-weather "
+            "rebalance snapshot and market-only regime score derived datasets."
+        ),
+        validation_rule_names=[
+            "market_features.duplicate_business_key",
+            "market_features.required_columns",
+            "market_features.scope_allowed",
+            "market_features.name_matches_scope",
+            "market_features.status_allowed",
+            "market_features.complete_values_finite",
+            "market_features.quality_notes_json",
+            "market_features.no_macro_rates_features",
+        ],
+        dependencies=[
+            "derived.etf_aw_rebalance_snapshot",
+            "derived.etf_aw_regime_score",
+        ],
+    )
+
+
+def build_derived_etf_aw_strategy_context_dataset() -> DatasetDefinition:
+    """Return the ETF all-weather strategy context boundary definition."""
+
+    return DatasetDefinition(
+        dataset_name="derived.etf_aw_strategy_context",
+        category=DatasetCategory.DERIVED,
+        grain="calendar_rebalance_strategy_context",
+        primary_source="derived",
+        storage_zone=StorageZone.DERIVED,
+        partition_strategy="year_month",
+        canonical_schema_name="etf_aw_strategy_context_v1",
+        timing_semantics=(
+            "Strategy-facing context assembly boundary; this dataset carries "
+            "market, macro, rates, source, revision, and point-in-time caveats "
+            "but no allocation or trade instruction fields."
+        ),
+        validation_rule_names=[
+            "strategy_context.duplicate_business_key",
+            "strategy_context.status_allowed",
+            "strategy_context.complete_requires_primary_fields",
+            "strategy_context.research_ready_requires_complete",
+            "strategy_context.no_allocation_trade_fields",
+            "strategy_context.json_fields_valid",
+            "strategy_context.deferred_requires_point_in_time_notes",
+        ],
+        dependencies=[
+            "derived.etf_aw_market_features",
+            "derived.etf_aw_regime_score",
+        ],
+    )
+
+
+def build_macro_slow_fields_dataset() -> DatasetDefinition:
+    """Return the Stage F slow macro fields dataset definition."""
+
+    return DatasetDefinition(
+        dataset_name="macro.slow_fields",
+        category=DatasetCategory.MACRO,
+        grain="field_period",
+        primary_source="tushare",
+        storage_zone=StorageZone.NORMALIZED,
+        partition_strategy="year_month",
+        canonical_schema_name="slow_fields_v1",
+        timing_semantics=(
+            "Slow macro observations use conservative release-date rules and "
+            "become eligible only after effective_date."
+        ),
+        validation_rule_names=[
+            "slow_fields.duplicate_business_key",
+            "slow_fields.field_allowed",
+            "slow_fields.value_plausible",
+            "slow_fields.unit_allowed",
+            "slow_fields.release_date_required",
+            "slow_fields.effective_date_required",
+            "slow_fields.effective_date_after_release",
+            "slow_fields.field_role_matches",
+            "slow_fields.source_caveat_present",
+        ],
+        supports_incremental=True,
+        watermark_key="effective_date",
+        dependencies=["reference.trading_calendar"],
+        dependency_types={
+            "reference.trading_calendar": DependencyType.WINDOW,
+        },
+    )
+
+
 def build_rates_daily_rates_dataset() -> DatasetDefinition:
     """Return the Stage F daily interbank rates dataset definition."""
 
@@ -387,6 +486,42 @@ def build_rates_lpr_dataset() -> DatasetDefinition:
     )
 
 
+def build_rates_gov_curve_points_dataset() -> DatasetDefinition:
+    """Return the Stage F government curve point dataset definition."""
+
+    return DatasetDefinition(
+        dataset_name="rates.gov_curve_points",
+        category=DatasetCategory.RATES,
+        grain="curve_tenor_date",
+        primary_source="tushare",
+        storage_zone=StorageZone.NORMALIZED,
+        partition_strategy="year_month",
+        canonical_schema_name="gov_curve_points_v1",
+        timing_semantics=(
+            "Government curve points are state observations; effective_date is "
+            "the curve observation date and consumers must preserve extraction caveats."
+        ),
+        validation_rule_names=[
+            "gov_curve_points.duplicate_business_key",
+            "gov_curve_points.field_allowed",
+            "gov_curve_points.value_plausible",
+            "gov_curve_points.unit_allowed",
+            "gov_curve_points.curve_date_required",
+            "gov_curve_points.release_date_required",
+            "gov_curve_points.effective_date_required",
+            "gov_curve_points.tenor_positive",
+            "gov_curve_points.field_role_matches",
+            "gov_curve_points.source_caveat_present",
+        ],
+        supports_incremental=True,
+        watermark_key="curve_date",
+        dependencies=["reference.trading_calendar"],
+        dependency_types={
+            "reference.trading_calendar": DependencyType.WINDOW,
+        },
+    )
+
+
 def build_market_index_daily_dataset() -> DatasetDefinition:
     """Return the Stage B index daily dataset definition."""
 
@@ -437,6 +572,10 @@ def build_stage_b_datasets() -> list[DatasetDefinition]:
         build_derived_etf_aw_sleeve_daily_dataset(),
         build_derived_etf_aw_rebalance_snapshot_dataset(),
         build_derived_etf_aw_regime_score_dataset(),
+        build_derived_etf_aw_market_features_dataset(),
+        build_derived_etf_aw_strategy_context_dataset(),
+        build_macro_slow_fields_dataset(),
         build_rates_daily_rates_dataset(),
         build_rates_lpr_dataset(),
+        build_rates_gov_curve_points_dataset(),
     ]

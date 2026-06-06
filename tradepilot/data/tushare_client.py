@@ -27,8 +27,10 @@ _MARKET_DAILY_STATS_COLUMNS = (
     "turnover_rate",
 )
 _ETF_ADJ_FACTOR_COLUMNS = ("date", "etf_code", "adj_factor")
+_MACRO_SLOW_FIELDS_COLUMNS = ("period_label", "official_pmi")
 _SHIBOR_COLUMNS = ("date", "on", "1w", "2w", "1m", "3m", "6m", "9m", "1y")
 _LPR_COLUMNS = ("date", "1y", "5y")
+_GOV_CURVE_POINTS_COLUMNS = ("curve_date", "curve_code", "1y", "10y")
 
 
 def _empty_frame(columns: tuple[str, ...]) -> pd.DataFrame:
@@ -41,6 +43,15 @@ def _empty_with_columns(*columns: str) -> pd.DataFrame:
 
 def _to_tushare_date(value: str) -> str:
     return value.replace("-", "")
+
+
+def _to_period_label(value: object) -> str:
+    text = str(value)
+    if len(text) >= 7 and text[4] == "-":
+        return text[:7]
+    if len(text) >= 6:
+        return f"{text[:4]}-{text[4:6]}"
+    return text
 
 
 def _with_exchange_suffix(code: str, *, kind: str) -> str:
@@ -511,6 +522,32 @@ class TushareClient:
             .reset_index(drop=True),
         )
 
+    def get_macro_slow_fields(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """Return supported slow macro fields from Tushare-compatible wrappers."""
+
+        pro = self._pro
+        if pro is None or not hasattr(pro, "cn_pmi"):
+            return _empty_frame(_MACRO_SLOW_FIELDS_COLUMNS)
+        start_month = start_date[:7].replace("-", "")
+        end_month = end_date[:7].replace("-", "")
+        frame = pro.cn_pmi(
+            start_m=start_month,
+            end_m=end_month,
+            fields="month,pmi010000",
+        )
+        if frame.empty:
+            return _empty_frame(_MACRO_SLOW_FIELDS_COLUMNS)
+        normalized = frame.rename(
+            columns={"month": "period_label", "pmi010000": "official_pmi"}
+        ).copy()
+        normalized["period_label"] = normalized["period_label"].map(_to_period_label)
+        return cast(
+            pd.DataFrame,
+            normalized.loc[:, list(_MACRO_SLOW_FIELDS_COLUMNS)]
+            .sort_values("period_label")
+            .reset_index(drop=True),
+        )
+
     def get_lpr(self, start_date: str, end_date: str) -> pd.DataFrame:
         """Return loan prime rates from Tushare."""
 
@@ -532,6 +569,48 @@ class TushareClient:
             pd.DataFrame,
             normalized.loc[:, list(_LPR_COLUMNS)]
             .sort_values("date")
+            .reset_index(drop=True),
+        )
+
+    def get_gov_curve_points(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """Return supported China government curve points from wrapper payloads."""
+
+        pro = self._pro
+        if pro is None or not hasattr(pro, "yc_cb"):
+            return _empty_frame(_GOV_CURVE_POINTS_COLUMNS)
+        frame = pro.yc_cb(
+            start_date=_to_tushare_date(start_date),
+            end_date=_to_tushare_date(end_date),
+        )
+        if frame.empty:
+            return _empty_frame(_GOV_CURVE_POINTS_COLUMNS)
+        normalized = frame.copy()
+        if (
+            "trade_date" in normalized.columns
+            and "curve_date" not in normalized.columns
+        ):
+            normalized = normalized.rename(columns={"trade_date": "curve_date"})
+        if "curve_code" not in normalized.columns:
+            normalized["curve_code"] = "cn_gov_bond"
+        rename_map = {
+            "1年": "1y",
+            "1Y": "1y",
+            "y1": "1y",
+            "10年": "10y",
+            "10Y": "10y",
+            "y10": "10y",
+        }
+        normalized = normalized.rename(columns=rename_map)
+        for column in _GOV_CURVE_POINTS_COLUMNS:
+            if column not in normalized.columns:
+                normalized[column] = pd.NA
+        normalized["curve_date"] = pd.to_datetime(
+            normalized["curve_date"], format="%Y%m%d", errors="coerce"
+        )
+        return cast(
+            pd.DataFrame,
+            normalized.loc[:, list(_GOV_CURVE_POINTS_COLUMNS)]
+            .sort_values("curve_date")
             .reset_index(drop=True),
         )
 
