@@ -72,6 +72,64 @@ class StageFReadModelTests(unittest.TestCase):
         self.assertEqual(len(context["source_caveats"]), 8)
         self.assertEqual(len(context["revision_caveats"]), 8)
 
+    def test_old_required_fields_mark_context_stale(self) -> None:
+        self._write_macro_fields(
+            [self._macro("official_pmi", "2025-09", date(2025, 10, 1), 50.8)]
+        )
+        self._write_daily_rates(
+            [
+                self._daily_rate("shibor_1w", date(2025, 10, 20), 1.85, "primary"),
+                self._daily_rate(
+                    "shibor_overnight",
+                    date(2025, 10, 20),
+                    1.72,
+                    "confirmatory",
+                ),
+            ]
+        )
+        self._write_lpr(
+            [
+                self._lpr("lpr_1y", date(2025, 10, 20), 3.10, "primary"),
+                self._lpr("lpr_5y", date(2025, 10, 20), 3.60, "confirmatory"),
+            ]
+        )
+        self._write_curve_points(
+            [
+                self._curve(
+                    "cn_gov_1y_yield", 1.0, date(2025, 10, 20), 1.55, "confirmatory"
+                ),
+                self._curve(
+                    "cn_gov_10y_yield", 10.0, date(2025, 10, 20), 2.35, "primary"
+                ),
+            ]
+        )
+
+        context = get_latest_etf_aw_macro_rates_context(
+            as_of_date=date(2026, 4, 20),
+            lakehouse_root=self.lakehouse_root,
+        )
+
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(context["context_status"], "stale")
+        self.assertEqual(context["missing_primary_fields"], [])
+        stale_names = {
+            field["field_name"] for field in context["quality_notes"]["stale_fields"]
+        }
+        self.assertEqual(
+            stale_names,
+            {
+                "official_pmi",
+                "shibor_1w",
+                "shibor_overnight",
+                "lpr_1y",
+                "lpr_5y",
+                "cn_gov_1y_yield",
+                "cn_gov_10y_yield",
+                "cn_yield_curve_slope_10y_1y",
+            },
+        )
+
     def test_latest_context_selects_eligible_primary_rates(self) -> None:
         self._write_daily_rates(
             [

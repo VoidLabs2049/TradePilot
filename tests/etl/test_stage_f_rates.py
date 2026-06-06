@@ -11,6 +11,7 @@ import unittest
 import pandas as pd
 
 from tradepilot import db
+from tradepilot.data.tushare_client import TushareClient
 from tradepilot.etl.models import (
     IngestionRequest,
     RunStatus,
@@ -76,6 +77,27 @@ class StageFRatesMockTushareClient:
                 "curve_code": ["cn_gov_bond"],
                 "1y": [1.55],
                 "10y": [2.35],
+            }
+        )
+
+
+class StageFRatesRawTusharePro:
+    """Raw Tushare pro fixture for provider boundary parsing tests."""
+
+    def __init__(self) -> None:
+        self.curve_calls: list[dict[str, str]] = []
+
+    def yc_cb(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """Return long-format government curve rows matching Tushare yc_cb."""
+
+        self.curve_calls.append({"start_date": start_date, "end_date": end_date})
+        return pd.DataFrame(
+            {
+                "trade_date": ["20260420", "20260420", "20260420", "20260420"],
+                "ts_code": ["1001.CB", "1001.CB", "1002.CB", "1001.CB"],
+                "curve_type": ["0", "0.0", "0", "1"],
+                "curve_term": [1.0, 10.0, 1.0, 10.0],
+                "yield": [1.55, 2.35, 9.99, 8.88],
             }
         )
 
@@ -210,6 +232,27 @@ class StageFRatesTests(unittest.TestCase):
               AND source_name = 'tushare'
             """).fetchone()
         self.assertEqual(watermark[0], date(2026, 4, 20))
+
+    def test_tushare_client_pivots_yc_cb_long_format_curve_points(self) -> None:
+        pro = StageFRatesRawTusharePro()
+        client = TushareClient.__new__(TushareClient)
+        client._pro = pro
+
+        frame = client.get_gov_curve_points("2026-04-20", "2026-04-20")
+
+        self.assertEqual(
+            pro.curve_calls,
+            [{"start_date": "20260420", "end_date": "20260420"}],
+        )
+        self.assertEqual(
+            frame.columns.tolist(), ["curve_date", "curve_code", "1y", "10y"]
+        )
+        self.assertEqual(len(frame), 1)
+        row = frame.iloc[0]
+        self.assertEqual(row["curve_date"], pd.Timestamp("2026-04-20"))
+        self.assertEqual(row["curve_code"], "1001.CB")
+        self.assertEqual(row["1y"], 1.55)
+        self.assertEqual(row["10y"], 2.35)
 
     def test_lpr_run_uses_effective_date_and_quote_watermark(self) -> None:
         self._insert_calendar_window(date(2026, 4, 20), date(2026, 4, 20))

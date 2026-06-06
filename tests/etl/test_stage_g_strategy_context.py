@@ -183,6 +183,28 @@ class StageGStrategyContextTests(unittest.TestCase):
         self.assertEqual(row["readiness_level"], "not_ready")
         self.assertEqual(row["market_context_status"], "stale")
 
+    def test_stale_macro_rates_context_makes_strategy_context_stale(self) -> None:
+        self._write_stale_macro_rates_context()
+        self._run_pipeline(self._complete_rows())
+
+        self.service.run_bootstrap(
+            "derived.etf_aw_strategy_context.build",
+            start=date(2024, 7, 1),
+            end=date(2024, 7, 31),
+        )
+
+        row = self._read_context_file(2024, 7).iloc[0]
+        self.assertEqual(row["context_status"], "stale")
+        self.assertEqual(row["readiness_level"], "not_ready")
+        self.assertEqual(row["market_context_status"], "complete")
+        self.assertEqual(row["macro_rates_context_status"], "stale")
+        notes = json.loads(row["point_in_time_notes_json"])
+        stale_names = {
+            field["field_name"]
+            for field in notes["macro_rates_quality_notes"]["stale_fields"]
+        }
+        self.assertIn("shibor_1w", stale_names)
+
     def test_partial_market_context_stays_degraded_research(self) -> None:
         self._write_full_macro_rates_context()
         self._run_pipeline(
@@ -311,79 +333,39 @@ class StageGStrategyContextTests(unittest.TestCase):
             ),
         )
         self._write_required_rates()
-        self.service._write_gov_curve_points(
-            self.service.registry.get_dataset("rates.gov_curve_points"),
-            pd.DataFrame(
-                [
-                    {
-                        "curve_code": "cn_gov_bond",
-                        "curve_date": date(2024, 7, 22),
-                        "tenor_years": 1.0,
-                        "field_name": "cn_gov_1y_yield",
-                        "value": 1.55,
-                        "unit": "percent",
-                        "field_role": "confirmatory",
-                        "release_date": date(2024, 7, 22),
-                        "effective_date": date(2024, 7, 22),
-                        "source_name": "fixture",
-                        "raw_batch_id": 4,
-                        "ingested_at": pd.Timestamp("2024-07-22 09:00:00"),
-                        "revision_note": "extraction_method_risk_present",
-                        "source_caveat": "fixture_curve_extraction_caveat",
-                        "quality_status": "pass_with_caveat",
-                    },
-                    {
-                        "curve_code": "cn_gov_bond",
-                        "curve_date": date(2024, 7, 22),
-                        "tenor_years": 10.0,
-                        "field_name": "cn_gov_10y_yield",
-                        "value": 2.35,
-                        "unit": "percent",
-                        "field_role": "primary",
-                        "release_date": date(2024, 7, 22),
-                        "effective_date": date(2024, 7, 22),
-                        "source_name": "fixture",
-                        "raw_batch_id": 4,
-                        "ingested_at": pd.Timestamp("2024-07-22 09:00:00"),
-                        "revision_note": "extraction_method_risk_present",
-                        "source_caveat": "fixture_curve_extraction_caveat",
-                        "quality_status": "pass_with_caveat",
-                    },
-                ]
-            ),
-        )
+        self._write_curve_points(date(2024, 7, 22))
 
-    def _write_required_rates(self) -> None:
+    def _write_required_rates(self, effective_date: date = date(2024, 7, 22)) -> None:
         self.service._write_daily_rates(
             self.service.registry.get_dataset("rates.daily_rates"),
             pd.DataFrame(
                 [
                     {
                         "field_name": "shibor_1w",
-                        "trade_date": date(2024, 7, 22),
+                        "trade_date": effective_date,
                         "value": 1.85,
                         "unit": "percent",
                         "field_role": "primary",
-                        "release_date": date(2024, 7, 22),
-                        "effective_date": date(2024, 7, 22),
+                        "release_date": effective_date,
+                        "effective_date": effective_date,
                         "source_name": "fixture",
                         "raw_batch_id": 1,
-                        "ingested_at": pd.Timestamp("2024-07-22 09:00:00"),
+                        "ingested_at": pd.Timestamp(effective_date),
                         "revision_note": "low_revision_risk",
                         "source_caveat": "fixture_same_day_availability_caveat",
                         "quality_status": "pass",
                     },
                     {
                         "field_name": "shibor_overnight",
-                        "trade_date": date(2024, 7, 22),
+                        "trade_date": effective_date,
                         "value": 1.72,
                         "unit": "percent",
                         "field_role": "confirmatory",
-                        "release_date": date(2024, 7, 22),
-                        "effective_date": date(2024, 7, 22),
+                        "release_date": effective_date,
+                        "effective_date": effective_date,
                         "source_name": "fixture",
                         "raw_batch_id": 1,
-                        "ingested_at": pd.Timestamp("2024-07-22 09:00:00"),
+                        "ingested_at": pd.Timestamp(effective_date),
                         "revision_note": "low_revision_risk",
                         "source_caveat": "fixture_same_day_availability_caveat",
                         "quality_status": "pass",
@@ -397,30 +379,30 @@ class StageGStrategyContextTests(unittest.TestCase):
                 [
                     {
                         "field_name": "lpr_1y",
-                        "quote_date": date(2024, 7, 22),
+                        "quote_date": effective_date,
                         "value": 3.10,
                         "unit": "percent",
                         "field_role": "primary",
-                        "release_date": date(2024, 7, 22),
-                        "effective_date": date(2024, 7, 22),
+                        "release_date": effective_date,
+                        "effective_date": effective_date,
                         "source_name": "fixture",
                         "raw_batch_id": 2,
-                        "ingested_at": pd.Timestamp("2024-07-22 09:00:00"),
+                        "ingested_at": pd.Timestamp(effective_date),
                         "revision_note": "low_revision_risk_relative_to_other_slow_fields",
                         "source_caveat": "fixture_source_date_used",
                         "quality_status": "pass",
                     },
                     {
                         "field_name": "lpr_5y",
-                        "quote_date": date(2024, 7, 22),
+                        "quote_date": effective_date,
                         "value": 3.60,
                         "unit": "percent",
                         "field_role": "confirmatory",
-                        "release_date": date(2024, 7, 22),
-                        "effective_date": date(2024, 7, 22),
+                        "release_date": effective_date,
+                        "effective_date": effective_date,
                         "source_name": "fixture",
                         "raw_batch_id": 2,
-                        "ingested_at": pd.Timestamp("2024-07-22 09:00:00"),
+                        "ingested_at": pd.Timestamp(effective_date),
                         "revision_note": "low_revision_risk_relative_to_other_slow_fields",
                         "source_caveat": "fixture_source_date_used",
                         "quality_status": "pass",
@@ -428,6 +410,79 @@ class StageGStrategyContextTests(unittest.TestCase):
                 ]
             ),
         )
+
+    def _write_curve_points(self, effective_date: date) -> None:
+        self.service._write_gov_curve_points(
+            self.service.registry.get_dataset("rates.gov_curve_points"),
+            pd.DataFrame(
+                [
+                    {
+                        "curve_code": "cn_gov_bond",
+                        "curve_date": effective_date,
+                        "tenor_years": 1.0,
+                        "field_name": "cn_gov_1y_yield",
+                        "value": 1.55,
+                        "unit": "percent",
+                        "field_role": "confirmatory",
+                        "release_date": effective_date,
+                        "effective_date": effective_date,
+                        "source_name": "fixture",
+                        "raw_batch_id": 4,
+                        "ingested_at": pd.Timestamp(effective_date),
+                        "revision_note": "extraction_method_risk_present",
+                        "source_caveat": "fixture_curve_extraction_caveat",
+                        "quality_status": "pass_with_caveat",
+                    },
+                    {
+                        "curve_code": "cn_gov_bond",
+                        "curve_date": effective_date,
+                        "tenor_years": 10.0,
+                        "field_name": "cn_gov_10y_yield",
+                        "value": 2.35,
+                        "unit": "percent",
+                        "field_role": "primary",
+                        "release_date": effective_date,
+                        "effective_date": effective_date,
+                        "source_name": "fixture",
+                        "raw_batch_id": 4,
+                        "ingested_at": pd.Timestamp(effective_date),
+                        "revision_note": "extraction_method_risk_present",
+                        "source_caveat": "fixture_curve_extraction_caveat",
+                        "quality_status": "pass_with_caveat",
+                    },
+                ]
+            ),
+        )
+
+    def _write_stale_macro_rates_context(self) -> None:
+        self.service._write_macro_slow_fields(
+            self.service.registry.get_dataset("macro.slow_fields"),
+            pd.DataFrame(
+                [
+                    {
+                        "field_name": "official_pmi",
+                        "period_label": "2023-12",
+                        "period_type": "monthly",
+                        "value": 50.8,
+                        "unit": "index_point",
+                        "field_role": "primary",
+                        "release_date": date(2024, 1, 1),
+                        "effective_date": date(2024, 1, 1),
+                        "definition_regime": "",
+                        "regime_note": "",
+                        "source_name": "fixture",
+                        "raw_batch_id": 3,
+                        "ingested_at": pd.Timestamp("2024-01-01 09:00:00"),
+                        "revision_note": "latest_history_only_unless_vintage_captured",
+                        "source_caveat": "fixture_latest_history_caveat",
+                        "quality_status": "pass_with_caveat",
+                    }
+                ]
+            ),
+        )
+        old_date = date(2024, 1, 22)
+        self._write_required_rates(old_date)
+        self._write_curve_points(old_date)
 
     def _read_context_file(self, year: int, month: int) -> pd.DataFrame:
         return pd.read_parquet(self._context_file_path(year, month))

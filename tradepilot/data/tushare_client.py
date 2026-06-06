@@ -530,6 +530,7 @@ class TushareClient:
             return _empty_frame(_MACRO_SLOW_FIELDS_COLUMNS)
         start_month = start_date[:7].replace("-", "")
         end_month = end_date[:7].replace("-", "")
+        # Tushare cn_pmi: month is YYYYMM; pmi010000 is official manufacturing PMI.
         frame = pro.cn_pmi(
             start_m=start_month,
             end_m=end_month,
@@ -537,9 +538,13 @@ class TushareClient:
         )
         if frame.empty:
             return _empty_frame(_MACRO_SLOW_FIELDS_COLUMNS)
+        if not {"month", "pmi010000"}.issubset(frame.columns):
+            return _empty_frame(_MACRO_SLOW_FIELDS_COLUMNS)
         normalized = frame.rename(
             columns={"month": "period_label", "pmi010000": "official_pmi"}
         ).copy()
+        if normalized["official_pmi"].dropna().empty:
+            return _empty_frame(_MACRO_SLOW_FIELDS_COLUMNS)
         normalized["period_label"] = normalized["period_label"].map(_to_period_label)
         return cast(
             pd.DataFrame,
@@ -586,6 +591,8 @@ class TushareClient:
             return _empty_frame(_GOV_CURVE_POINTS_COLUMNS)
         normalized = frame.copy()
         if {"trade_date", "curve_term", "yield"}.issubset(normalized.columns):
+            # Tushare yc_cb long format: 1001.CB is ChinaBond government bond curve;
+            # curve_type 0 is the spot yield curve used for 1Y/10Y points.
             if "ts_code" in normalized.columns:
                 normalized = normalized[normalized["ts_code"].astype(str) == "1001.CB"]
             if "curve_type" in normalized.columns:

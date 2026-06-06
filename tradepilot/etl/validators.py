@@ -544,6 +544,9 @@ class MacroSlowFieldsValidator(BaseValidator):
     _FIELD_ROLES = {
         "official_pmi": "primary",
     }
+    _FIELD_VALUE_RANGES = {
+        "official_pmi": (0.0, 100.0),
+    }
 
     def validate(
         self,
@@ -573,7 +576,15 @@ class MacroSlowFieldsValidator(BaseValidator):
             results, ctx, payload, ["field_name", "period_label"], "slow_fields"
         )
         _allowed_field_result(results, ctx, payload, self._FIELD_ROLES, "slow_fields")
-        _value_plausibility_result(results, ctx, payload, "slow_fields", 0.0, 100.0)
+        for field_name, (minimum, maximum) in self._FIELD_VALUE_RANGES.items():
+            _value_plausibility_result(
+                results,
+                ctx,
+                payload[payload["field_name"].eq(field_name)],
+                "slow_fields",
+                minimum,
+                maximum,
+            )
         bad_unit = payload[~payload["unit"].isin({"index_point", "percent"})]
         _row_records(
             results,

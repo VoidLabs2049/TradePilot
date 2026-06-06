@@ -300,6 +300,8 @@ class MacroSlowFieldsNormalizer(BaseNormalizer):
         period_label = _period_label(raw_row) or _period_label_from_date(raw_row)
         release_date = _coerce_date(raw_row.get("release_date"))
         if release_date is None and period_label is not None:
+            # Conservative PMI timing: use the first day after the period month;
+            # actual official PMI is usually released near month end.
             release_date = _monthly_release_date(period_label, 1)
         effective_date = _coerce_date(raw_row.get("effective_date"))
         if effective_date is None:

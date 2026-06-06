@@ -50,6 +50,16 @@ _ETF_AW_CONFIRMATORY_FIELDS = {
     "cn_gov_1y_yield",
     "cn_yield_curve_slope_10y_1y",
 }
+_ETF_AW_FIELD_MAX_AGE_DAYS = {
+    "official_pmi": 65,
+    "shibor_1w": 10,
+    "shibor_overnight": 10,
+    "lpr_1y": 65,
+    "lpr_5y": 65,
+    "cn_gov_1y_yield": 10,
+    "cn_gov_10y_yield": 10,
+    "cn_yield_curve_slope_10y_1y": 10,
+}
 
 
 def get_latest_etf_aw_snapshot(
@@ -780,6 +790,7 @@ def _macro_rates_context_contract(
     available_names = {str(field["field_name"]) for field in available_fields}
     missing_primary = sorted(_ETF_AW_PRIMARY_FIELDS - available_names)
     missing_confirmatory = sorted(_ETF_AW_CONFIRMATORY_FIELDS - available_names)
+    stale_fields = _stale_macro_rate_fields(available_fields, rebalance_date)
     excluded_future = _future_effective_rows(
         macro,
         daily_rates,
@@ -789,6 +800,8 @@ def _macro_rates_context_contract(
     )
     if missing_primary:
         context_status = "unavailable"
+    elif stale_fields:
+        context_status = "stale"
     elif missing_confirmatory:
         context_status = "partial"
     else:
@@ -815,6 +828,8 @@ def _macro_rates_context_contract(
             ),
             "missing_primary_fields": missing_primary,
             "missing_confirmatory_fields": missing_confirmatory,
+            "stale_fields": stale_fields,
+            "field_freshness_max_age_days": _ETF_AW_FIELD_MAX_AGE_DAYS,
             "excluded_future_effective_fields": excluded_future,
             "point_in_time_filter": "effective_date <= rebalance_date",
             "latest_history_macro": bool(macro_fields),
@@ -1019,6 +1034,40 @@ def _rate_caveats(
             }
         )
     return caveats
+
+
+def _stale_macro_rate_fields(
+    fields: list[dict[str, Any]], rebalance_date: date
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for field in fields:
+        field_name = str(field.get("field_name") or "")
+        max_age_days = _ETF_AW_FIELD_MAX_AGE_DAYS.get(field_name)
+        if max_age_days is None:
+            continue
+        effective_date = _contract_date(field.get("effective_date"))
+        if effective_date is None:
+            continue
+        age_days = (rebalance_date - effective_date).days
+        if age_days <= max_age_days:
+            continue
+        rows.append(
+            {
+                "source_dataset": field.get("source_dataset"),
+                "field_name": field_name,
+                "effective_date": effective_date.isoformat(),
+                "age_days": age_days,
+                "max_age_days": max_age_days,
+            }
+        )
+    return sorted(rows, key=lambda row: str(row["field_name"]))
+
+
+def _contract_date(value: object) -> date | None:
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
 
 
 def _snapshot_contract(frame: pd.DataFrame) -> dict[str, Any]:
