@@ -4,7 +4,25 @@
 
 生产补数据脚本放在 `scripts/etl/`；人工核验、查看和外部来源对比脚本放在 `scripts/etl-review/`。
 
-## 1. 启动 WSL
+## 1. 脚本边界
+
+| 入口 | 类型 | 用途 | Python 入口 | 写入位置 |
+| --- | --- | --- | --- | --- |
+| `scripts/etl/update-etf-aw.sh` | 正常数据 pipeline | 手动补缺、`--scheduled` 定时包装、下载项目定义的正常数据源并重建 derived 数据 | `tradepilot.etl.update_etf_aw_data` | `data/tradepilot.duckdb`、`data/lakehouse/`、`logs/etf-aw-update.log` |
+| `scripts/etl-review/export-etf-aw-sources.sh` | 人工 review | `--view` 查看本地结果；导出单只 ETF 或 `--full-history` 全历史的本地/外部来源日线并生成差异对比 | `tools.etl_review.view_etf_aw`、`tools.etl_review.export_etf_aw_sources` | 默认只读；传 `--csv` 或做来源对比时写 CSV |
+| `python -m tools.etl_review.check_etf_aw_data` | 人工检查 | 检查 DuckDB 元数据、lakehouse parquet、derived/read model 一致性 | `tools.etl_review.check_etf_aw_data` | 只读 |
+| `python -m tools.etl_review.view_parquet` | 人工查看 | 查看任意 parquet 文件或目录，适合临时排查字段和样例行 | `tools.etl_review.view_parquet` | 默认只读；传 `--csv` 时写指定 CSV |
+
+主入口只有两个：
+
+- 正常补数/更新：`./scripts/etl/update-etf-aw.sh`
+- 人工查看/来源对比：`./scripts/etl-review/export-etf-aw-sources.sh`
+
+`scripts/etl/` 是日常生产补数据入口，只更新项目 ETL 注册表里的正常数据源；当前 ETF all-weather 路径通过 `tradepilot.etl.sources.tushare` 和项目内 derived 构建完成，不调用 `eastmoney`、`tencent`、`sina` 这类外部网站接口。
+
+`scripts/etl-review/` 和 `tools/etl_review` 是人工核验、排查、来源对比工具，不作为调度主路径，也不写入 DuckDB 或 lakehouse 的生产数据集。
+
+## 2. 启动 WSL
 
 在 Windows PowerShell 或 Windows Terminal 中运行：
 
@@ -32,7 +50,15 @@ TUSHARE_TOKEN=your_tushare_token
 
 `data/tradepilot.duckdb` 和 `data/lakehouse/` 是本地生成数据，不随仓库共享。新 clone 或缺少 lakehouse parquet 时，`./scripts/etl/update-etf-aw.sh` 会自动从项目定义的历史起点回补：ETF 行情和交易日历从 `2016-01-01`，宏观/利率从 `2025-01-01`。
 
-## 2. 自动更新定时任务
+## 3. 自动更新定时任务
+
+定时任务应调用正常 pipeline 的包装模式：
+
+```bash
+./scripts/etl/update-etf-aw.sh --scheduled
+```
+
+`--scheduled` 会进入仓库根目录、加锁、进入 `nix develop`，并把日志写到 `logs/etf-aw-update.log`。
 
 查看定时任务是否启用、下一次什么时候运行：
 
@@ -70,7 +96,7 @@ systemctl --user disable --now tradepilot-etf-aw-update.timer
 systemctl --user enable --now tradepilot-etf-aw-update.timer
 ```
 
-## 3. 日志
+## 4. 日志
 
 实时查看自动更新日志：
 
@@ -90,13 +116,15 @@ tail -n 120 logs/etf-aw-update.log
 journalctl --user -u tradepilot-etf-aw-update.service -n 120 --no-pager
 ```
 
-## 4. 手动更新数据
+## 5. 手动更新数据
 
 自动补缺、下载最新数据并重建 derived 数据：
 
 ```bash
 ./scripts/etl/update-etf-aw.sh
 ```
+
+这条命令是正常数据 pipeline 的手动入口。它更新 `reference.trading_calendar`、`market.etf_daily`、`market.etf_adj_factor`、`macro.slow_fields`、`rates.daily_rates`、`rates.lpr`、`rates.gov_curve_points`，再重建 ETF all-weather derived 数据。它不会请求 `eastmoney`、`tencent`、`sina`。
 
 只查看将要执行的更新计划，不写数据：
 
@@ -122,35 +150,43 @@ journalctl --user -u tradepilot-etf-aw-update.service -n 120 --no-pager
 ./scripts/etl/update-etf-aw.sh --repair-days 90
 ```
 
-## 5. 查看 ETF 数据
+## 6. 查看 ETF 数据
 
 查看某只 ETF 的日度数据：
 
 ```bash
-./scripts/etl-review/view-etf-aw.sh 510300 2026-06-01 2026-06-07
+./scripts/etl-review/export-etf-aw-sources.sh --view 510300 2026-06-01 2026-06-07
 ```
 
 查看月度 rebalance snapshot：
 
 ```bash
-./scripts/etl-review/view-etf-aw.sh 510300 2026-04-01 2026-06-07 --dataset snapshot
+./scripts/etl-review/export-etf-aw-sources.sh --view 510300 2026-04-01 2026-06-07 --dataset snapshot
 ```
 
 导出为 CSV：
 
 ```bash
-./scripts/etl-review/view-etf-aw.sh 510300 2026-06-01 2026-06-07 --csv /tmp/510300.csv
+./scripts/etl-review/export-etf-aw-sources.sh --view 510300 2026-06-01 2026-06-07 --csv /tmp/510300.csv
 ```
 
-## 6. 外部网站数据导出
+查看任意 parquet 文件或分区目录：
 
-从多个外部来源下载同一只 ETF 的日线，导出 CSV，并自动生成交叉对比文件：
+```bash
+python -m tools.etl_review.view_parquet data/lakehouse/derived/derived.etf_aw_sleeve_daily --schema --limit 5
+```
+
+## 7. 人工来源对比
+
+这个入口只用于人工复核本地结果，不属于正常数据更新 pipeline。默认对比 `local,tencent,sina`：`local` 是本地最终数据 `derived.etf_aw_sleeve_daily`，`tencent/sina` 是外部网站来源。需要东方财富、雪球或 Investing 时必须显式传 `--sources`。
+
+对比单只 ETF 的指定日期区间：
 
 ```bash
 ./scripts/etl-review/export-etf-aw-sources.sh 511010 2026-06-01 2026-06-07
 ```
 
-默认来源是 `eastmoney,tencent,sina`。输出目录默认在：
+输出目录默认在：
 
 ```text
 data/source-review/
@@ -159,7 +195,13 @@ data/source-review/
 指定来源：
 
 ```bash
-./scripts/etl-review/export-etf-aw-sources.sh 510300 2026-05-01 2026-06-07 --sources eastmoney,tencent,sina
+./scripts/etl-review/export-etf-aw-sources.sh 510300 2026-05-01 2026-06-07 --sources local,tencent,sina
+```
+
+如果要把东方财富加入人工检查：
+
+```bash
+./scripts/etl-review/export-etf-aw-sources.sh 510300 2026-05-01 2026-06-07 --sources local,eastmoney,tencent,sina
 ```
 
 尝试导出 Investing 页面表格：
@@ -186,10 +228,10 @@ errors.csv       # 失败来源记录；只有失败时才生成
 按 5 只 ETF all-weather sleeve 做全量历史导出和对比：
 
 ```bash
-./scripts/etl-review/export-etf-aw-full-history.sh
+./scripts/etl-review/export-etf-aw-sources.sh --full-history
 ```
 
-全量脚本默认来源是 `local,tencent,sina`，默认时间是 `2016-01-01` 到今天。`local` 表示本地最终数据 `derived.etf_aw_sleeve_daily`。输出目录默认在：
+全量模式默认来源是 `local,tencent,sina`，默认时间是 `2016-01-01` 到今天。输出目录默认在：
 
 ```text
 data/source-review/full-history/
@@ -209,12 +251,12 @@ run_manifest.csv              # 每只 ETF、每个来源的行数和状态
 如果要把东方财富也加入全量检查：
 
 ```bash
-./scripts/etl-review/export-etf-aw-full-history.sh --sources local,eastmoney,tencent,sina
+./scripts/etl-review/export-etf-aw-sources.sh --full-history --sources local,eastmoney,tencent,sina
 ```
 
 若东方财富、雪球或 Investing 被网站限制，失败会写入 `all_codes_errors.csv`。
 
-## 7. 数据质量检查
+## 8. 数据质量检查
 
 运行 ETF all-weather 数据检查：
 
@@ -234,7 +276,7 @@ python -m unittest discover -s tests/etl -p 'test_*.py'
 python -c "from tradepilot.main import app; print('OK')"
 ```
 
-## 8. 无人登录时继续运行
+## 9. 无人登录时继续运行
 
 当前使用的是 user systemd timer。若 WSL 发行版没有启动，任务不会凭空执行；若需要用户未登录时也继续运行，需要用有权限的账号执行：
 

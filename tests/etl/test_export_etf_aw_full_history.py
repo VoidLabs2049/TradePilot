@@ -11,8 +11,7 @@ import pandas as pd
 from click.testing import CliRunner
 
 from tools.etl_review import export_etf_aw_sources as source_module
-from tools.etl_review.export_etf_aw_full_history import main
-from tools.etl_review.export_etf_aw_sources import FetchContext
+from tools.etl_review.export_etf_aw_sources import FetchContext, main
 
 
 class ExportEtfAwFullHistoryTests(unittest.TestCase):
@@ -33,6 +32,7 @@ class ExportEtfAwFullHistoryTests(unittest.TestCase):
                 result = CliRunner().invoke(
                     main,
                     [
+                        "--full-history",
                         "--codes",
                         "511010,510300",
                         "--start",
@@ -70,6 +70,7 @@ class ExportEtfAwFullHistoryTests(unittest.TestCase):
                 result = CliRunner().invoke(
                     main,
                     [
+                        "--full-history",
                         "--codes",
                         "511010",
                         "--start",

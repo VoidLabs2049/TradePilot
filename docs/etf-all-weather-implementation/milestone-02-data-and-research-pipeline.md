@@ -49,6 +49,11 @@ Most allocation systems fail not because the high-level idea is wrong, but becau
 - gold ETF
 - cash / short-bond proxy
 
+Operational boundary:
+- Normal backfill/update uses the project ETL pipeline, currently `./scripts/etl/update-etf-aw.sh`, and writes DuckDB metadata plus lakehouse raw/normalized/derived data.
+- Manual review uses `./scripts/etl-review/export-etf-aw-sources.sh`: `--view` is local read-only inspection, while source comparison including `--full-history` only writes CSV review artifacts under `data/source-review/`.
+- `eastmoney`, `tencent`, `sina`, `xueqiu`, and `investing` are review-only comparison sources. They are not normal ETF all-weather pipeline inputs.
+
 2. Macro slow variables
 - PMI level and momentum
 - PPI direction or momentum

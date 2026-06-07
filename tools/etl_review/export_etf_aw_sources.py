@@ -1,11 +1,11 @@
-"""Export external ETF daily data sources as CSV for manual comparison."""
+"""Export ETF all-weather source CSVs for manual comparison."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Callable, Any
+from typing import Any, Callable
 
 import click
 import pandas as pd
@@ -13,7 +13,10 @@ import requests
 
 from tradepilot.config import LAKEHOUSE_ROOT
 
-_DEFAULT_SOURCES = "eastmoney,tencent,sina"
+_V1_CODES = ("510300.SH", "159845.SZ", "511010.SH", "518850.SH", "159001.SZ")
+_HISTORY_START = date(2016, 1, 1)
+_DEFAULT_SOURCES = "local,tencent,sina"
+_FULL_HISTORY_DEFAULT_SOURCES = "local,tencent,sina"
 _EXPORT_COLUMNS = [
     "source",
     "etf_code",
@@ -60,22 +63,58 @@ class FetchContext:
     investing_url: str | None = None
 
 
+@dataclass(frozen=True)
+class FullHistoryResult:
+    """Paths and counts produced by one full-history export run."""
+
+    output_dir: Path
+    successful_codes: list[str]
+    failed_codes: list[str]
+
+
 @click.command()
-@click.argument("etf_code")
-@click.argument("start")
-@click.argument("end")
+@click.argument("etf_code", required=False)
+@click.argument("start", required=False)
+@click.argument("end", required=False)
+@click.option(
+    "--full-history",
+    is_flag=True,
+    help="Compare the full v1 ETF all-weather sleeve history instead of one ETF.",
+)
+@click.option(
+    "--codes",
+    type=str,
+    default=",".join(_V1_CODES),
+    show_default=True,
+    help="Comma-separated ETF codes for --full-history.",
+)
+@click.option(
+    "--start",
+    "history_start",
+    type=str,
+    default=None,
+    help="Full-history start date. Defaults to 2016-01-01.",
+)
+@click.option(
+    "--end",
+    "history_end",
+    type=str,
+    default=None,
+    help="Full-history end date. Defaults to today.",
+)
 @click.option(
     "--sources",
     type=str,
-    default=_DEFAULT_SOURCES,
-    show_default=True,
-    help="Comma-separated sources: local,eastmoney,tencent,sina,xueqiu,investing,all.",
+    default=None,
+    help=(
+        "Comma-separated sources: local,eastmoney,tencent,sina,xueqiu,"
+        "investing,all. Defaults to local,tencent,sina."
+    ),
 )
 @click.option(
     "--out-dir",
     type=click.Path(path_type=Path, file_okay=False),
-    default=Path("data/source-review"),
-    show_default=True,
+    default=None,
     help="Directory for exported CSV files.",
 )
 @click.option(
@@ -93,36 +132,198 @@ class FetchContext:
 @click.option(
     "--timeout",
     type=int,
-    default=15,
-    show_default=True,
-    help="HTTP request timeout in seconds.",
+    default=None,
+    help="HTTP request timeout in seconds. Defaults to 15, or 30 for --full-history.",
 )
 @click.option(
     "--fail-fast",
     is_flag=True,
-    help="Stop on the first source failure instead of writing errors.csv.",
+    help="Stop on the first ETF/source failure instead of writing errors.csv.",
 )
 def main(
-    etf_code: str,
-    start: str,
-    end: str,
-    sources: str,
+    etf_code: str | None,
+    start: str | None,
+    end: str | None,
+    full_history: bool,
+    codes: str,
+    history_start: str | None,
+    history_end: str | None,
+    sources: str | None,
+    out_dir: Path | None,
+    xueqiu_cookie: str | None,
+    investing_url: str | None,
+    timeout: int | None,
+    fail_fast: bool,
+) -> None:
+    """Download ETF comparison data and export CSV files."""
+
+    timeout_value = _resolve_timeout(timeout, full_history)
+    if timeout_value <= 0:
+        raise click.BadParameter("timeout must be positive", param_hint="--timeout")
+    if full_history:
+        _run_full_history_export(
+            etf_code=etf_code,
+            start_arg=start,
+            end_arg=end,
+            codes=codes,
+            history_start=history_start,
+            history_end=history_end,
+            sources=sources,
+            out_dir=out_dir,
+            xueqiu_cookie=xueqiu_cookie,
+            investing_url=investing_url,
+            timeout=timeout_value,
+            fail_fast=fail_fast,
+        )
+        return
+    _run_single_export(
+        etf_code=etf_code,
+        start_arg=start,
+        end_arg=end,
+        history_start=history_start,
+        history_end=history_end,
+        sources=sources,
+        out_dir=out_dir,
+        xueqiu_cookie=xueqiu_cookie,
+        investing_url=investing_url,
+        timeout=timeout_value,
+        fail_fast=fail_fast,
+    )
+
+
+def export_full_history(
+    *,
+    codes: list[str],
+    start: date,
+    end: date,
+    sources: list[str],
     out_dir: Path,
+    timeout: int,
+    xueqiu_cookie: str | None = None,
+    investing_url: str | None = None,
+    fail_fast: bool = False,
+) -> FullHistoryResult:
+    """Export source CSVs and aggregate comparison files for multiple ETFs."""
+
+    output_dir = out_dir / f"{start}_{end}"
+    by_code_dir = output_dir / "by-code"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _remove_generated_outputs(output_dir)
+
+    combined_frames: list[pd.DataFrame] = []
+    comparison_frames: list[pd.DataFrame] = []
+    summary_frames: list[pd.DataFrame] = []
+    mismatch_frames: list[pd.DataFrame] = []
+    manifest_rows: list[dict[str, Any]] = []
+    error_rows: list[dict[str, str]] = []
+    successful_codes: list[str] = []
+    failed_codes: list[str] = []
+
+    for code in codes:
+        context = FetchContext(
+            etf_code=code,
+            start=start,
+            end=end,
+            timeout=timeout,
+            xueqiu_cookie=xueqiu_cookie,
+            investing_url=investing_url,
+        )
+        try:
+            export_dir, frames, errors = export_sources(
+                context=context,
+                sources=sources,
+                out_dir=by_code_dir,
+                fail_fast=fail_fast,
+            )
+        except Exception as exc:
+            if fail_fast:
+                raise
+            failed_codes.append(code)
+            error_rows.append({"etf_code": code, "source": "", "error": str(exc)})
+            manifest_rows.append(_manifest_row(code, "", 0, "failed", str(exc)))
+            continue
+
+        successful_codes.append(code)
+        errors_by_source = {error["source"]: error["error"] for error in errors}
+        for source in sources:
+            frame = frames.get(source)
+            status = "success" if frame is not None else "failed"
+            manifest_rows.append(
+                _manifest_row(
+                    code,
+                    source,
+                    0 if frame is None else len(frame),
+                    status,
+                    errors_by_source.get(source, ""),
+                )
+            )
+        error_rows.extend(
+            {
+                "etf_code": code,
+                "source": error["source"],
+                "error": error["error"],
+            }
+            for error in errors
+        )
+        combined_frames.append(pd.read_csv(export_dir / "combined.csv"))
+        comparison = pd.read_csv(export_dir / "comparison.csv")
+        summary = pd.read_csv(export_dir / "summary.csv")
+        comparison_frames.append(comparison)
+        summary_frames.append(summary.assign(etf_code=code))
+        mismatch = _mismatch_rows(comparison)
+        if not mismatch.empty:
+            mismatch_frames.append(mismatch)
+
+    _write_concat(combined_frames, output_dir / "all_codes_combined.csv")
+    _write_concat(comparison_frames, output_dir / "all_codes_comparison.csv")
+    _write_concat(summary_frames, output_dir / "all_codes_summary.csv")
+    _write_concat(mismatch_frames, output_dir / "all_codes_mismatch_rows.csv")
+    pd.DataFrame(manifest_rows).to_csv(output_dir / "run_manifest.csv", index=False)
+    if error_rows:
+        pd.DataFrame(error_rows).to_csv(
+            output_dir / "all_codes_errors.csv", index=False
+        )
+    if not successful_codes:
+        raise click.ClickException(
+            "full-history export failed for every ETF; "
+            f"see {output_dir / 'all_codes_errors.csv'}"
+        )
+    return FullHistoryResult(
+        output_dir=output_dir,
+        successful_codes=successful_codes,
+        failed_codes=failed_codes,
+    )
+
+
+def _run_single_export(
+    *,
+    etf_code: str | None,
+    start_arg: str | None,
+    end_arg: str | None,
+    history_start: str | None,
+    history_end: str | None,
+    sources: str | None,
+    out_dir: Path | None,
     xueqiu_cookie: str | None,
     investing_url: str | None,
     timeout: int,
     fail_fast: bool,
 ) -> None:
-    """Download ETF daily data from external sources and export CSV files."""
-
-    if timeout <= 0:
-        raise click.BadParameter("timeout must be positive", param_hint="--timeout")
-    start_date = _parse_date(start, "start")
-    end_date = _parse_date(end, "end")
+    if history_start is not None or history_end is not None:
+        raise click.UsageError(
+            "--start/--end are only valid with --full-history; "
+            "use positional START END for one ETF"
+        )
+    if etf_code is None or start_arg is None or end_arg is None:
+        raise click.UsageError(
+            "ETF_CODE START END are required unless --full-history is set"
+        )
+    start_date = _parse_date(start_arg, "start")
+    end_date = _parse_date(end_arg, "end")
     if start_date > end_date:
         start_date, end_date = end_date, start_date
     code = _normalize_etf_code(etf_code)
-    source_names = _parse_sources(sources)
+    source_names = _parse_sources(sources or _DEFAULT_SOURCES)
     context = FetchContext(
         etf_code=code,
         start=start_date,
@@ -134,7 +335,7 @@ def main(
     export_dir, frames, errors = export_sources(
         context=context,
         sources=source_names,
-        out_dir=out_dir,
+        out_dir=out_dir or Path("data/source-review"),
         fail_fast=fail_fast,
     )
     click.echo(f"etf={code} start={start_date} end={end_date} output={export_dir}")
@@ -154,6 +355,52 @@ def main(
         click.echo(f"summary={summary}")
 
 
+def _run_full_history_export(
+    *,
+    etf_code: str | None,
+    start_arg: str | None,
+    end_arg: str | None,
+    codes: str,
+    history_start: str | None,
+    history_end: str | None,
+    sources: str | None,
+    out_dir: Path | None,
+    xueqiu_cookie: str | None,
+    investing_url: str | None,
+    timeout: int,
+    fail_fast: bool,
+) -> None:
+    if etf_code is not None or start_arg is not None or end_arg is not None:
+        raise click.UsageError(
+            "--full-history does not accept ETF_CODE START END positional arguments"
+        )
+    start = _parse_date(history_start, "start") if history_start else _HISTORY_START
+    end = _parse_date(history_end, "end") if history_end else date.today()
+    if start > end:
+        start, end = end, start
+    source_list = _parse_sources(sources or _FULL_HISTORY_DEFAULT_SOURCES)
+    result = export_full_history(
+        codes=_parse_codes(codes),
+        start=start,
+        end=end,
+        sources=source_list,
+        out_dir=out_dir or Path("data/source-review/full-history"),
+        timeout=timeout,
+        xueqiu_cookie=xueqiu_cookie,
+        investing_url=investing_url,
+        fail_fast=fail_fast,
+    )
+    click.echo(f"output={result.output_dir}")
+    click.echo(f"successful_codes={','.join(result.successful_codes)}")
+    if result.failed_codes:
+        click.echo(f"failed_codes={','.join(result.failed_codes)}")
+    click.echo(f"combined={result.output_dir / 'all_codes_combined.csv'}")
+    click.echo(f"comparison={result.output_dir / 'all_codes_comparison.csv'}")
+    click.echo(f"summary={result.output_dir / 'all_codes_summary.csv'}")
+    click.echo(f"mismatch_rows={result.output_dir / 'all_codes_mismatch_rows.csv'}")
+    click.echo(f"manifest={result.output_dir / 'run_manifest.csv'}")
+
+
 def export_sources(
     *,
     context: FetchContext,
@@ -167,7 +414,12 @@ def export_sources(
         out_dir / f"{context.etf_code.replace('.', '_')}_{context.start}_{context.end}"
     )
     export_dir.mkdir(parents=True, exist_ok=True)
-    for generated_name in ("combined.csv", "errors.csv"):
+    for generated_name in (
+        "combined.csv",
+        "comparison.csv",
+        "summary.csv",
+        "errors.csv",
+    ):
         generated_path = export_dir / generated_name
         if generated_path.exists():
             generated_path.unlink()
@@ -632,6 +884,70 @@ def _parse_sources(value: str) -> list[str]:
             f"unknown sources: {', '.join(unknown)}", param_hint="sources"
         )
     return list(dict.fromkeys(raw_sources))
+
+
+def _parse_codes(value: str) -> list[str]:
+    codes = [_normalize_etf_code(part) for part in value.split(",") if part.strip()]
+    if not codes:
+        raise click.BadParameter(
+            "at least one ETF code is required", param_hint="codes"
+        )
+    return list(dict.fromkeys(codes))
+
+
+def _resolve_timeout(value: int | None, full_history: bool) -> int:
+    if value is not None:
+        return value
+    return 30 if full_history else 15
+
+
+def _manifest_row(
+    etf_code: str,
+    source: str,
+    rows: int,
+    status: str,
+    error: str,
+) -> dict[str, Any]:
+    return {
+        "etf_code": etf_code,
+        "source": source,
+        "rows": rows,
+        "status": status,
+        "error": error,
+    }
+
+
+def _mismatch_rows(comparison: pd.DataFrame) -> pd.DataFrame:
+    if comparison.empty:
+        return comparison
+    mismatch = comparison["sources_missing"].fillna("").astype(str) != ""
+    for field in _COMPARE_FIELDS:
+        range_column = f"{field}_range"
+        if range_column in comparison:
+            values = pd.to_numeric(comparison[range_column], errors="coerce").fillna(0)
+            mismatch = mismatch | (values > _compare_tolerance(field))
+    return comparison[mismatch].copy()
+
+
+def _write_concat(frames: list[pd.DataFrame], path: Path) -> None:
+    if not frames:
+        pd.DataFrame().to_csv(path, index=False)
+        return
+    pd.concat(frames, ignore_index=True).to_csv(path, index=False)
+
+
+def _remove_generated_outputs(output_dir: Path) -> None:
+    for file_name in (
+        "all_codes_combined.csv",
+        "all_codes_comparison.csv",
+        "all_codes_summary.csv",
+        "all_codes_mismatch_rows.csv",
+        "all_codes_errors.csv",
+        "run_manifest.csv",
+    ):
+        file_path = output_dir / file_name
+        if file_path.exists():
+            file_path.unlink()
 
 
 def _date_windows(start: date, end: date, max_days: int) -> list[tuple[date, date]]:
