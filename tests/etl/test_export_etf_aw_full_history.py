@@ -10,9 +10,9 @@ import unittest
 import pandas as pd
 from click.testing import CliRunner
 
-from tradepilot.etl import export_etf_aw_sources as source_module
-from tradepilot.etl.export_etf_aw_full_history import main
-from tradepilot.etl.export_etf_aw_sources import FetchContext
+from tools.etl_review import export_etf_aw_sources as source_module
+from tools.etl_review.export_etf_aw_full_history import main
+from tools.etl_review.export_etf_aw_sources import FetchContext
 
 
 class ExportEtfAwFullHistoryTests(unittest.TestCase):

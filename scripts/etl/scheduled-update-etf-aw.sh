@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$REPO_ROOT"
 mkdir -p logs
@@ -20,5 +20,5 @@ else
 fi
 
 exec "$FLOCK_BIN" -n /tmp/tradepilot-etf-aw-update.lock \
-  "$NIX_BIN" develop --command bash -lc './scripts/update-etf-aw' \
+  "$NIX_BIN" develop --command bash -lc './scripts/etl/update-etf-aw.sh' \
   >> logs/etf-aw-update.log 2>&1

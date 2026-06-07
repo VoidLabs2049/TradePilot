@@ -9,7 +9,7 @@ import unittest
 import pandas as pd
 from click.testing import CliRunner
 
-from tradepilot.etl.view_parquet import main
+from tools.etl_review.view_parquet import main
 
 
 class ViewParquetCliTests(unittest.TestCase):

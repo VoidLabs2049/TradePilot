@@ -10,7 +10,7 @@ from typing import Any
 import click
 import pandas as pd
 
-from tradepilot.etl.export_etf_aw_sources import (
+from tools.etl_review.export_etf_aw_sources import (
     FetchContext,
     _COMPARE_FIELDS,
     _compare_tolerance,

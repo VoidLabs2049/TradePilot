@@ -2,6 +2,8 @@
 
 本文记录 ETF all-weather 数据更新、定时任务、日志查看和人工核对常用指令。
 
+生产补数据脚本放在 `scripts/etl/`；人工核验、查看和外部来源对比脚本放在 `scripts/etl-review/`。
+
 ## 1. 启动 WSL
 
 在 Windows PowerShell 或 Windows Terminal 中运行：
@@ -28,7 +30,7 @@ cd /home/nixos/workspace/TradePilot
 TUSHARE_TOKEN=your_tushare_token
 ```
 
-`data/tradepilot.duckdb` 和 `data/lakehouse/` 是本地生成数据，不随仓库共享。新 clone 或缺少 lakehouse parquet 时，`./scripts/update-etf-aw` 会自动从项目定义的历史起点回补：ETF 行情和交易日历从 `2016-01-01`，宏观/利率从 `2025-01-01`。
+`data/tradepilot.duckdb` 和 `data/lakehouse/` 是本地生成数据，不随仓库共享。新 clone 或缺少 lakehouse parquet 时，`./scripts/etl/update-etf-aw.sh` 会自动从项目定义的历史起点回补：ETF 行情和交易日历从 `2016-01-01`，宏观/利率从 `2025-01-01`。
 
 ## 2. 自动更新定时任务
 
@@ -93,31 +95,31 @@ journalctl --user -u tradepilot-etf-aw-update.service -n 120 --no-pager
 自动补缺、下载最新数据并重建 derived 数据：
 
 ```bash
-./scripts/update-etf-aw
+./scripts/etl/update-etf-aw.sh
 ```
 
 只查看将要执行的更新计划，不写数据：
 
 ```bash
-./scripts/update-etf-aw --dry-run
+./scripts/etl/update-etf-aw.sh --dry-run
 ```
 
 强制忽略已有水位并完整重跑项目定义历史：
 
 ```bash
-./scripts/update-etf-aw --full-refresh
+./scripts/etl/update-etf-aw.sh --full-refresh
 ```
 
 指定 ETF 和时间范围：
 
 ```bash
-./scripts/update-etf-aw --codes 510300.SH,159845.SZ --start 2026-06-01 --end 2026-06-07
+./scripts/etl/update-etf-aw.sh --codes 510300.SH,159845.SZ --start 2026-06-01 --end 2026-06-07
 ```
 
 扩大回补窗口，例如回补最近 90 天：
 
 ```bash
-./scripts/update-etf-aw --repair-days 90
+./scripts/etl/update-etf-aw.sh --repair-days 90
 ```
 
 ## 5. 查看 ETF 数据
@@ -125,19 +127,19 @@ journalctl --user -u tradepilot-etf-aw-update.service -n 120 --no-pager
 查看某只 ETF 的日度数据：
 
 ```bash
-./scripts/view-etf-aw 510300 2026-06-01 2026-06-07
+./scripts/etl-review/view-etf-aw.sh 510300 2026-06-01 2026-06-07
 ```
 
 查看月度 rebalance snapshot：
 
 ```bash
-./scripts/view-etf-aw 510300 2026-04-01 2026-06-07 --dataset snapshot
+./scripts/etl-review/view-etf-aw.sh 510300 2026-04-01 2026-06-07 --dataset snapshot
 ```
 
 导出为 CSV：
 
 ```bash
-./scripts/view-etf-aw 510300 2026-06-01 2026-06-07 --csv /tmp/510300.csv
+./scripts/etl-review/view-etf-aw.sh 510300 2026-06-01 2026-06-07 --csv /tmp/510300.csv
 ```
 
 ## 6. 外部网站数据导出
@@ -145,7 +147,7 @@ journalctl --user -u tradepilot-etf-aw-update.service -n 120 --no-pager
 从多个外部来源下载同一只 ETF 的日线，导出 CSV，并自动生成交叉对比文件：
 
 ```bash
-./scripts/export-etf-aw-sources 511010 2026-06-01 2026-06-07
+./scripts/etl-review/export-etf-aw-sources.sh 511010 2026-06-01 2026-06-07
 ```
 
 默认来源是 `eastmoney,tencent,sina`。输出目录默认在：
@@ -157,19 +159,19 @@ data/source-review/
 指定来源：
 
 ```bash
-./scripts/export-etf-aw-sources 510300 2026-05-01 2026-06-07 --sources eastmoney,tencent,sina
+./scripts/etl-review/export-etf-aw-sources.sh 510300 2026-05-01 2026-06-07 --sources eastmoney,tencent,sina
 ```
 
 尝试导出 Investing 页面表格：
 
 ```bash
-./scripts/export-etf-aw-sources 511010 2026-06-01 2026-06-07 --sources investing --investing-url https://cn.investing.com/etfs/guotai-sse-deliverable-5-tb-historical-data
+./scripts/etl-review/export-etf-aw-sources.sh 511010 2026-06-01 2026-06-07 --sources investing --investing-url https://cn.investing.com/etfs/guotai-sse-deliverable-5-tb-historical-data
 ```
 
 尝试导出雪球数据时通常需要从浏览器复制 Cookie：
 
 ```bash
-./scripts/export-etf-aw-sources 511010 2026-06-01 2026-06-07 --sources xueqiu --xueqiu-cookie 'xq_a_token=...; u=...'
+./scripts/etl-review/export-etf-aw-sources.sh 511010 2026-06-01 2026-06-07 --sources xueqiu --xueqiu-cookie 'xq_a_token=...; u=...'
 ```
 
 每次运行会输出：
@@ -184,7 +186,7 @@ errors.csv       # 失败来源记录；只有失败时才生成
 按 5 只 ETF all-weather sleeve 做全量历史导出和对比：
 
 ```bash
-./scripts/export-etf-aw-full-history
+./scripts/etl-review/export-etf-aw-full-history.sh
 ```
 
 全量脚本默认来源是 `local,tencent,sina`，默认时间是 `2016-01-01` 到今天。`local` 表示本地最终数据 `derived.etf_aw_sleeve_daily`。输出目录默认在：
@@ -207,7 +209,7 @@ run_manifest.csv              # 每只 ETF、每个来源的行数和状态
 如果要把东方财富也加入全量检查：
 
 ```bash
-./scripts/export-etf-aw-full-history --sources local,eastmoney,tencent,sina
+./scripts/etl-review/export-etf-aw-full-history.sh --sources local,eastmoney,tencent,sina
 ```
 
 若东方财富、雪球或 Investing 被网站限制，失败会写入 `all_codes_errors.csv`。
@@ -217,7 +219,7 @@ run_manifest.csv              # 每只 ETF、每个来源的行数和状态
 运行 ETF all-weather 数据检查：
 
 ```bash
-python -m tradepilot.etl.check_etf_aw_data
+python -m tools.etl_review.check_etf_aw_data
 ```
 
 运行 ETL 测试：

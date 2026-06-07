@@ -10,8 +10,8 @@ import unittest
 import pandas as pd
 from click.testing import CliRunner
 
-from tradepilot.etl import export_etf_aw_sources as module
-from tradepilot.etl.export_etf_aw_sources import FetchContext, main
+from tools.etl_review import export_etf_aw_sources as module
+from tools.etl_review.export_etf_aw_sources import FetchContext, main
 
 
 class ExportEtfAwSourcesTests(unittest.TestCase):

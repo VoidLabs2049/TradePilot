@@ -4,18 +4,18 @@ set -euo pipefail
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   cat <<'USAGE'
 Usage:
-  ./scripts/update-etf-aw [options]
+  ./scripts/etl/update-etf-aw.sh [options]
 
 Examples:
-  ./scripts/update-etf-aw
-  ./scripts/update-etf-aw --dry-run
-  ./scripts/update-etf-aw --full-refresh
-  ./scripts/update-etf-aw --start 2026-05-01 --end 2026-06-07
-  ./scripts/update-etf-aw --repair-days 90
-  ./scripts/update-etf-aw --codes 510300.SH,159845.SZ
+  ./scripts/etl/update-etf-aw.sh
+  ./scripts/etl/update-etf-aw.sh --dry-run
+  ./scripts/etl/update-etf-aw.sh --full-refresh
+  ./scripts/etl/update-etf-aw.sh --start 2026-05-01 --end 2026-06-07
+  ./scripts/etl/update-etf-aw.sh --repair-days 90
+  ./scripts/etl/update-etf-aw.sh --codes 510300.SH,159845.SZ
 
 Daily cron example:
-  30 18 * * 1-5 cd /path/to/TradePilot && mkdir -p logs && ./scripts/update-etf-aw >> logs/etf-aw-update.log 2>&1
+  30 18 * * 1-5 cd /path/to/TradePilot && mkdir -p logs && ./scripts/etl/update-etf-aw.sh >> logs/etf-aw-update.log 2>&1
 
 This command downloads ETF all-weather data and rebuilds derived tables.
 On a fresh clone, or when local lakehouse parquet coverage is missing, it backfills
