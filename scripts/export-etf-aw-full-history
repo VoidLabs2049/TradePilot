@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  cat <<'USAGE'
+Usage:
+  ./scripts/export-etf-aw-full-history [options]
+
+Examples:
+  ./scripts/export-etf-aw-full-history
+  ./scripts/export-etf-aw-full-history --sources local,tencent,sina
+  ./scripts/export-etf-aw-full-history --codes 511010.SH --start 2016-01-01 --end 2026-06-07
+  ./scripts/export-etf-aw-full-history --codes 511010 --sources local,eastmoney,tencent,sina
+
+The command exports full-history website CSVs for ETF all-weather sleeves and
+writes aggregate comparison files under data/source-review/full-history.
+Default sources: local,tencent,sina. Add eastmoney/xueqiu/investing with --sources when needed.
+USAGE
+  exit 0
+fi
+
+python -m tradepilot.etl.export_etf_aw_full_history "$@"

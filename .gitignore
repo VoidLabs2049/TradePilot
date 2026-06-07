@@ -192,6 +192,7 @@ research_report/*
 
 # local lakehouse data
 data/lakehouse/
+data/source-review/
 
 # local agent state
 .codex

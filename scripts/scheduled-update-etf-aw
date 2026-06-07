@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+
+cd "$REPO_ROOT"
+mkdir -p logs
+
+if command -v flock >/dev/null 2>&1; then
+  FLOCK_BIN="$(command -v flock)"
+else
+  FLOCK_BIN="/run/current-system/sw/bin/flock"
+fi
+
+if command -v nix >/dev/null 2>&1; then
+  NIX_BIN="$(command -v nix)"
+else
+  NIX_BIN="/run/current-system/sw/bin/nix"
+fi
+
+exec "$FLOCK_BIN" -n /tmp/tradepilot-etf-aw-update.lock \
+  "$NIX_BIN" develop --command bash -lc './scripts/update-etf-aw' \
+  >> logs/etf-aw-update.log 2>&1

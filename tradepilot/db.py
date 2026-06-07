@@ -38,9 +38,15 @@ def get_conn() -> duckdb.DuckDBPyConnection:
     if not _initialized:
         with _init_lock:
             if not _initialized:
-                _init_tables(conn)
+                initialize_schema(conn)
                 _initialized = True
     return conn
+
+
+def initialize_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create and migrate TradePilot tables on an explicit DuckDB connection."""
+
+    _init_tables(conn)
 
 
 def _init_tables(conn: duckdb.DuckDBPyConnection) -> None:

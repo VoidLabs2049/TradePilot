@@ -76,6 +76,7 @@ _ETF_AW_STRATEGY_CONTEXT_SCHEMA_VERSION = "etf_aw_strategy_context_v1"
 _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION = "etf_aw_strategy_context_contract_v1"
 _ETF_AW_STRATEGY_NAME = "etf_aw_v1"
 _ETF_AW_STRATEGY_VERSION = "stage_g_v1"
+_ETF_AW_SLEEVE_DAILY_RETURN_LOOKBACK_DAYS = 31
 _ETF_AW_SNAPSHOT_LOOKBACK_DAYS = 420
 _ETF_AW_SNAPSHOT_WINDOWS = {
     "return_1m": (21, 15),
@@ -1387,15 +1388,16 @@ class ETLService:
     def _build_etf_aw_sleeve_daily(self, start: date, end: date) -> dict:
         start, end = _ordered_dates(start, end)
         self._bootstrap_etf_aw_sleeves()
+        read_start = start - timedelta(days=_ETF_AW_SLEEVE_DAILY_RETURN_LOOKBACK_DAYS)
         daily = self._read_partitioned_dataset(
             "market.etf_daily",
-            start,
+            read_start,
             end,
             StorageZone.NORMALIZED,
         )
         adj = self._read_partitioned_dataset(
             "market.etf_adj_factor",
-            start,
+            read_start,
             end,
             StorageZone.NORMALIZED,
         )
@@ -1519,9 +1521,6 @@ class ETLService:
             on="instrument_id",
             how="inner",
         )
-        merged = merged[
-            merged["trade_date"].between(start, end, inclusive="both")
-        ].copy()
         merged = merged.sort_values(["instrument_id", "trade_date"]).reset_index(
             drop=True
         )
@@ -1530,6 +1529,9 @@ class ETLService:
         merged["adj_pct_chg"] = (
             merged.groupby("instrument_id")["adj_close"].pct_change() * 100
         )
+        merged = merged[
+            merged["trade_date"].between(start, end, inclusive="both")
+        ].copy()
         merged["sleeve_code"] = merged["instrument_id"]
         merged["source_name"] = "derived.market_etf_daily_plus_adj_factor"
         merged["ingested_at"] = _utc_now()
