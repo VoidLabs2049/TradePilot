@@ -1,10 +1,14 @@
-# Progress Status — ETF All-Weather Data Sources
+# Progress Status — ETF All-Weather
 
 ## Purpose
 
-This document is the continuation handoff for the current ETF all-weather data workstream.
+This document is the continuation handoff for the current ETF all-weather workstream.
 
-Primary developer-facing handoff summary:
+Primary design entry:
+
+- `../etf-all-weather-implementation/current-design.md`
+
+Primary data-source handoff summary:
 
 - `developer-handoff-summary.md`
 
@@ -20,7 +24,7 @@ It answers three questions:
 
 ### Completed
 
-The following work has been completed and documented:
+The following research and data-source work has been completed and documented:
 
 1. **Mission framing and source-map research**
    - `mission-charter.md`
@@ -46,6 +50,50 @@ The following work has been completed and documented:
 6. **Frozen v1 field boundary**
    - `v1-canonical-field-list.md`
 
+The following implementation stages have also been completed in the repository:
+
+7. **Stage B real-data ingestion slice**
+   - `reference.instruments`
+   - `reference.trading_calendar`
+   - `market.etf_daily`
+   - `market.index_daily`
+   - raw and normalized Parquet paths
+   - validation gating, dedupe-on-rewrite, and watermark advancement
+   - report: `../stage-b-ingestion-real-data-test-report.md`
+
+8. **Stage C ETF all-weather v1 data base**
+   - `reference.trading_calendar.full_history`
+   - `reference.rebalance_calendar.monthly_post_20`
+   - `reference.etf_aw_sleeves.frozen_v1`
+   - `market.etf_daily`
+   - `market.etf_adj_factor`
+   - `derived.etf_aw_sleeve_daily`
+   - report: `../stage-c-data-backfill-report.md`
+
+9. **Stage D monthly rebalance snapshot**
+   - `derived.etf_aw_rebalance_snapshot.build`
+   - `derived.etf_aw_rebalance_snapshot`
+   - read model contract: `etf_aw_snapshot_v1` / `etf_aw_snapshot_contract_v1`
+
+10. **Stage E market-only regime score**
+    - `derived.etf_aw_regime_score.build`
+    - `derived.etf_aw_regime_score`
+    - read model contract: `etf_aw_regime_score_v1`
+    - labels include `risk_on`, `hedge_bid`, `defensive`, `mixed`, and `insufficient_data`
+
+11. **Stage F macro/rates context**
+    - `macro.slow_fields`
+    - `rates.daily_rates`
+    - `rates.lpr`
+    - `rates.gov_curve_points`
+    - read models: `get_latest_etf_aw_macro_rates_context`, `list_etf_aw_macro_rates_contexts`
+
+12. **Stage G strategy context**
+    - `derived.etf_aw_market_features.build`
+    - `derived.etf_aw_strategy_context.build`
+    - read models: `get_latest_etf_aw_market_features`, `get_latest_etf_aw_strategy_context`
+    - contract boundary: context only, no `target_weight`, `trade_action`, or order instruction fields
+
 ### Stable v1 Outcome So Far
 
 The current frozen v1 sleeve set is:
@@ -60,76 +108,89 @@ The current frozen v1 field boundary is documented in:
 
 - `v1-canonical-field-list.md`
 
+The current implementation design boundary is documented in:
+
+- `../etf-all-weather-implementation/current-design.md`
+
 ---
 
 ## What Is Not Finished Yet
 
-The workstream is **not** at implementation-complete state.
+The workstream is **not** at strategy-complete state.
 
 The main unfinished parts are:
 
-### 1. V1 schema design
+### 1. Risk budget layer
 
-Not done yet.
-
-Still needed:
-- table layout
-- primary keys
-- naming conventions
-- typed field definitions
-- storage separation between raw / normalized / derived
-
-### 2. Release-date metadata hardening in data model
-
-Rules are documented, but not yet encoded into schema or ingestion logic.
+Not implemented yet.
 
 Still needed:
-- `period_label`
-- `release_date`
-- `effective_date`
-- `revision_note`
-- `definition_regime` for M1-family fields
 
-### 3. Curve extraction hardening
+- `derived.etf_aw_risk_budget` schema
+- read model contract
+- rules-based `strategy_context -> sleeve risk budget` mapper
+- degradation behavior for incomplete, stale, or unavailable contexts
+- tests for valid, partial, stale, and missing inputs
 
-Not done yet.
+### 2. Target weight layer
 
-Current state:
-- `yc_cb` is useful, but naïve long-window fetch is truncated by row limits
+Not implemented yet.
 
 Still needed:
-- paged or windowed extraction design
-- canonical 1Y / 10Y extraction logic
-- history completeness verification after redesign
 
-### 4. Remaining Stage 02+ data validation
+- `derived.etf_aw_target_weight` schema
+- budgeted inverse-vol MVP
+- later simplified ERC only if the inverse-vol baseline is insufficient
+- covariance window and minimum-observation rules
+- explicit handling for cash sleeve low volatility
+- explainability fields for budget, risk inputs, raw weights, constrained weights, and downgrade reasons
 
-Not done yet.
+### 3. Rebalance recommendation layer
 
-Stage 01 covered the minimum panel.
-Still needed later:
-- validation-only metadata fields
+Not implemented yet.
+
+Still needed:
+
+- current-position input contract
+- turnover estimate
+- cost filter
+- minimum trade amount and ETF lot-size handling
+- cash buffer
+- paper rebalance plan
+
+This layer must not auto-submit orders.
+
+### 4. Backtest and baseline comparison
+
+Not implemented yet.
+
+Still needed:
+
+- monthly explainability table
+- equal-weight baseline
+- static inverse-vol baseline
+- static risk-parity-like baseline
+- cost and turnover assumptions
+- parameter perturbation checks
+
+### 5. Remaining Stage 02+ data validation
+
+Partially done.
+
+Stage B-G created a usable data and context base. Still needed later:
+
+- validation-only ETF metadata fields
 - AUM / fund_share reconciliation
 - optional market breadth review
 - optional overseas overlay review
 - deferred fields only if promoted
-
-### 5. Strategy implementation layer
-
-Not started in code yet.
-
-Still needed:
-- notebook MVP scaffold
-- explainability table
-- baseline comparison pack
-- backtest logic
-- shadow portfolio phase
 
 ### 6. Pre-development data-research closure
 
 Closed at research-note level.
 
 See:
+
 - `pre-development-gap-checklist.md`
 - `stage-01-v1-sleeve-validation-addendum.md`
 - `etf-return-semantics-note.md`
@@ -144,15 +205,16 @@ See:
 
 The most natural next step is:
 
-### `v1 schema design`
+### `derived.etf_aw_risk_budget` design
 
 Reason:
 
 - the asset boundary is frozen
-- the field boundary is frozen
-- timing rules are frozen enough to encode
+- the data base and context layers are implemented through Stage G
+- current Stage G intentionally stops before `target_weight` and `trade_action`
+- the next missing strategy layer is risk budget generation
 
-This means the project can now move from research specification into a formal data model without reopening upstream scoping questions.
+This means the project can move from research/context assembly into the first explicit strategy calculation layer without reopening upstream scoping questions.
 
 ---
 
@@ -160,12 +222,13 @@ This means the project can now move from research specification into a formal da
 
 When resuming, use this order:
 
-1. design `v1 schema`
-2. design `v1 schema`
-3. encode release/effective-date metadata fields
-4. design curve extraction method for rates layer
-5. define raw -> normalized -> derived pipeline
-6. only then start notebook MVP implementation
+1. keep `../etf-all-weather-implementation/current-design.md` as the current design entry
+2. design `derived.etf_aw_risk_budget`
+3. implement a rules-based risk budget mapper
+4. design `derived.etf_aw_target_weight`
+5. implement budgeted inverse-vol MVP
+6. add monthly explainability table and baseline comparison
+7. only then consider simplified ERC or execution constraints
 
 ---
 
@@ -173,18 +236,20 @@ When resuming, use this order:
 
 If resuming later, the minimum file set to reload is:
 
-1. `synthesis-01.md`
-2. `v1-canonical-field-list.md`
-3. `release-date-rules-v1-slow-fields.md`
-4. `stage-01-data-reliability-test-report.md`
-5. this file: `progress-status.md`
-6. `pre-development-gap-checklist.md`
-7. `etf-return-semantics-note.md`
-8. `monthly-rebalance-date-rule-note.md`
-9. `minimum-official-source-verification-note.md`
-10. `revision-risk-ranking-note.md`
-11. `bond-sleeve-suitability-signoff-511010.md`
-12. `developer-handoff-summary.md`
+1. `../etf-all-weather-implementation/current-design.md`
+2. this file: `progress-status.md`
+3. `v1-canonical-field-list.md`
+4. `release-date-rules-v1-slow-fields.md`
+5. `stage-01-data-reliability-test-report.md`
+6. `../stage-b-ingestion-real-data-test-report.md`
+7. `../stage-c-data-backfill-report.md`
+8. `pre-development-gap-checklist.md`
+9. `etf-return-semantics-note.md`
+10. `monthly-rebalance-date-rule-note.md`
+11. `minimum-official-source-verification-note.md`
+12. `revision-risk-ranking-note.md`
+13. `bond-sleeve-suitability-signoff-511010.md`
+14. `developer-handoff-summary.md`
 
 ---
 
@@ -194,4 +259,5 @@ Current project state:
 
 - `data research and v1 boundary definition complete`
 - `pre-development data-research closure complete`
-- `schema and implementation not yet complete`
+- `Stage B-G data/context implementation complete enough for the next strategy layer`
+- `risk budget, target weight, rebalance plan, backtest, and shadow portfolio not yet complete`

@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>all_weather_hedging — 全模块架构图</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d2991d;
+    --orange: #db6d28;
+    --red: #f85149;
+    --purple: #a371f7;
+    --cyan: #39d2c0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    padding: 20px;
+  }
+  h1 { font-size: 1.4em; text-align: center; margin: 0 0 8px; color: var(--accent); }
+  .subtitle { text-align: center; color: var(--dim); font-size: 0.85em; margin-bottom: 24px; }
+
+  .diagram {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  .layer-label {
+    writing-mode: vertical-lr;
+    text-orientation: mixed;
+    font-size: 0.75em;
+    color: var(--dim);
+    letter-spacing: 2px;
+    padding: 8px 4px;
+    text-align: center;
+    min-width: 28px;
+    border-right: 2px solid var(--border);
+    margin-right: 12px;
+    flex-shrink: 0;
+  }
+
+  .layer {
+    display: flex;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .layer-cards {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    flex: 1;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    min-width: 180px;
+    flex: 1 1 180px;
+    position: relative;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: var(--accent); }
+
+  .card .file {
+    font-size: 0.75em;
+    color: var(--dim);
+    margin-bottom: 4px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .card .title {
+    font-size: 0.9em;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  .card .desc {
+    font-size: 0.78em;
+    color: var(--text);
+  }
+
+  .card.green { border-left: 3px solid var(--green); }
+  .card.yellow { border-left: 3px solid var(--yellow); }
+  .card.orange { border-left: 3px solid var(--orange); }
+  .card.purple { border-left: 3px solid var(--purple); }
+  .card.red { border-left: 3px solid var(--red); }
+
+  .arrow-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 0.9em;
+    color: var(--dim);
+    padding: 2px 0;
+    gap: 8px;
+  }
+  .arrow { color: var(--green); font-weight: bold; }
+
+  .highlight { display: inline-block; background: rgba(88,166,255,0.12); padding: 1px 5px; border-radius: 3px; font-size: 0.85em; }
+
+  .section-title {
+    font-size: 0.8em;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 8px 0 4px;
+    border-bottom: 1px solid var(--border);
+    margin: 16px 0 10px;
+  }
+
+  .gap-callout {
+    background: var(--surface);
+    border: 2px dashed var(--red);
+    border-radius: 8px;
+    padding: 14px 18px;
+    text-align: center;
+    margin: 12px 0;
+  }
+  .gap-callout .label {
+    color: var(--red);
+    font-weight: 600;
+    font-size: 0.9em;
+  }
+  .gap-callout .body {
+    color: var(--dim);
+    font-size: 0.8em;
+    margin-top: 4px;
+  }
+
+  .legend {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin: 24px 0 12px;
+    font-size: 0.78em;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+  .legend-dot.green { background: var(--green); }
+  .legend-dot.yellow { background: var(--yellow); }
+  .legend-dot.orange { background: var(--orange); }
+  .legend-dot.purple { background: var(--purple); }
+
+  .insight-box {
+    background: var(--surface);
+    border: 1px solid var(--purple);
+    border-radius: 8px;
+    padding: 14px;
+    margin-top: 20px;
+    font-size: 0.82em;
+    max-width: 1200px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .insight-box .title { color: var(--purple); font-weight: 600; margin-bottom: 8px; }
+  .insight-box ul { list-style: none; }
+  .insight-box li { padding: 3px 0; }
+  .insight-box li::before { content: "▪ "; color: var(--purple); }
+</style>
+</head>
+<body>
+
+<h1>all_weather_hedging — 全模块架构</h1>
+<p class="subtitle">14 文件 · 6 层 · 实时异步管线 &nbsp;|&nbsp; <span class="highlight">绿色=直接继承</span> <span class="highlight" style="background:rgba(210,153,29,0.15)">黄色=改造复用</span> <span class="highlight" style="background:rgba(219,109,40,0.15)">橙色=学习模式</span></p>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot green"></div> 直接继承</div>
+  <div class="legend-item"><div class="legend-dot yellow"></div> 需要改造</div>
+  <div class="legend-item"><div class="legend-dot orange"></div> 学习模式</div>
+  <div class="legend-item"><div class="legend-dot purple"></div> 缺失模块（来自我们框架）</div>
+</div>
+
+<div class="diagram">
+
+  <!-- LAYER 0: Config -->
+  <div class="layer">
+    <div class="layer-label">CONFIG</div>
+    <div class="layer-cards">
+      <div class="card orange">
+        <div class="file">config.py</div>
+        <div class="title">全局超参数</div>
+        <div class="desc">
+          4类宏观资产 · 50只合成股票 · CNN(64步/8ch/32filter/dil[1,2,4,8]) · 风险预算[0.4,0.3,0.15,0.15] · 期权delta≤0.15 · stream 10ms
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓ 配置注入</span></div>
+
+  <!-- LAYER 1: Data -->
+  <div class="layer">
+    <div class="layer-label">DATA</div>
+    <div class="layer-cards">
+      <div class="card green">
+        <div class="file">data/schema.py</div>
+        <div class="title">数据模型</div>
+        <div class="desc">
+          StreamTick → StreamChunk → RiskReport + HedgeReport → StreamOutputChunk<br>
+          <span class="highlight">纯 dataclass，类型清晰</span>
+        </div>
+      </div>
+      <div class="card orange">
+        <div class="file">data/generator.py</div>
+        <div class="title">合成数据生成器</div>
+        <div class="desc">
+          4维多元正态收益 · EQUITY-BOND负相关 · 50只股票β暴露 · 期权链含vol smile
+        </div>
+      </div>
+      <div class="card orange">
+        <div class="file">data/stream.py</div>
+        <div class="title">异步流式管道</div>
+        <div class="desc">
+          deque(maxlen=64) 滑动窗口 · 10ms间隔 · 10-tick步进 → yield StreamChunk
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓ macro_returns[64][4]</span></div>
+
+  <!-- LAYER 2: Models -->
+  <div class="layer">
+    <div class="layer-label">MODEL</div>
+    <div class="layer-cards">
+      <div class="card orange">
+        <div class="file">models/cnn1d.py</div>
+        <div class="title">AllWeatherRisk1DCNN</div>
+        <div class="desc">
+          <b>CausalConv1d</b>: 右侧pad+裁切防未来泄露<br>
+          <b>扩张残差块×4</b>: dil=[1,2,4,8] → 感受野61<br>
+          <b>多任务头</b>: vol(Softplus) · corr(Tanh) · tail(Softplus)<br>
+          ~20K params · 轻量
+        </div>
+      </div>
+      <div class="card orange">
+        <div class="file">models/pretrain.py</div>
+        <div class="title">预训练引擎</div>
+        <div class="desc">
+          <b>标签自监督</b>: 滑动窗口std/corr/CVaR<br>
+          5000样本 · regime switch每500步 · Adam lr=1e-3 · 15 epoch<br>
+          loss = 1.0·vol + 0.5·corr + 1.0·cvar
+        </div>
+      </div>
+      <div class="card yellow">
+        <div class="file">models/inference.py</div>
+        <div class="title">推理引擎</div>
+        <div class="desc">
+          加载 cnn_weights.pth · 下三角→完整相关矩阵 · <b>无置信度输出</b>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓ vol(4) + corr(4×4) + tail(4)</span></div>
+
+  <!-- LAYER 3: Risk -->
+  <div class="layer">
+    <div class="layer-label">RISK</div>
+    <div class="layer-cards">
+      <div class="card green">
+        <div class="file">risk/parity.py</div>
+        <div class="title">Newton风险平价</div>
+        <div class="desc">
+          目标: RC_i ≈ budget_i<br>
+          Hessian求解 + line search正权重约束<br>
+          <span class="highlight">数学正确，可直接继承</span>
+        </div>
+      </div>
+      <div class="card green">
+        <div class="file">risk/engine.py</div>
+        <div class="title">风险指标引擎</div>
+        <div class="desc">
+          Cov = diag(vol)·corr·diag(vol)<br>
+          VaR(95%)=1.645·σ_p<br>
+          CVaR = 0.5·参数化 + 0.5·CNN tail<br>
+          MRC/RC 分解
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row">
+    <span class="arrow">↓ weights → 风险报告</span>
+    <span style="margin: 0 20px; color: var(--dim)">|</span>
+    <span class="arrow">↓ 期权链生成</span>
+  </div>
+
+  <!-- LAYER 4: Hedging -->
+  <div class="layer">
+    <div class="layer-label">HEDGE</div>
+    <div class="layer-cards">
+      <div class="card green">
+        <div class="file">hedging/options.py</div>
+        <div class="title">Black-Scholes Greeks</div>
+        <div class="desc">
+          BS公式 · delta/gamma/vega · 手写实现<br>
+          <span class="highlight">干净，可直接继承</span>
+        </div>
+      </div>
+      <div class="card orange">
+        <div class="file">hedging/deep_otm.py</div>
+        <div class="title">Deep OTM对冲优化</div>
+        <div class="desc">
+          筛选 |delta|≤0.15 虚值期权<br>
+          <b>GD 500步</b>: min |netΔ|²+100·|netΓ|²+L1成本+L2流动性<br>
+          连续松弛→四舍五入整百手
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓ RiskReport + HedgeReport</span></div>
+
+  <!-- LAYER 5: Pipeline + Main -->
+  <div class="layer">
+    <div class="layer-label">PIPE</div>
+    <div class="layer-cards">
+      <div class="card orange">
+        <div class="file">pipeline/orchestrator.py</div>
+        <div class="title">实时管线编排器</div>
+        <div class="desc">
+          AsyncGenerator 模式:<br>
+          stream → CNN → parity → risk → hedge → yield<br>
+          <span class="highlight">量化系统通用骨架</span>
+        </div>
+      </div>
+      <div class="card yellow">
+        <div class="file">main.py</div>
+        <div class="title">入口</div>
+        <div class="desc">
+          pretrain → asyncio.run(live_pipeline)<br>
+          每个chunk打印 VaR/CVaR/权重/风险贡献/对冲
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- GAP: Missing layers from our framework -->
+  <div class="section-title">▸ 我们框架有但他们缺失的层</div>
+  <div class="gap-callout">
+    <div class="label">⚠ 核心缺口：宏观状态识别层（全天候的灵魂）</div>
+    <div class="body">
+      他们直接从收益序列预测统计矩，跳过经济象限判断。<br>
+      我们的三层状态识别（宏观慢 → 市场中 → 技术快）在此处插入，输出动态风险预算。
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-label">MISSING</div>
+    <div class="layer-cards">
+      <div class="card purple">
+        <div class="file">(new) state/classifier.py</div>
+        <div class="title">四象限状态识别器</div>
+        <div class="desc">
+          宏观变量(PMI/PPI/M1-M2/信用利差) → 象限分布 P(Q|X) + 置信度<br>
+          规则打分 → 逻辑回归 → (未来)轻量MLP
+        </div>
+      </div>
+      <div class="card purple">
+        <div class="file">(new) state/budget.py</div>
+        <div class="title">动态风险预算映射器</div>
+        <div class="desc">
+          b_t = b_neutral + λ·Σ P(Q=q)·Δb^(q)<br>
+          置信度只控制偏移幅度，不确定生死
+        </div>
+      </div>
+      <div class="card purple">
+        <div class="file">(new) features/</div>
+        <div class="title">三层特征工程</div>
+        <div class="desc">
+          宏观慢: PMI/PPI/社融/M1-M2/信用利差<br>
+          市场中: 风格RS/融资余额/成交扩散<br>
+          技术快: MA/ADX/RSI/ATR
+        </div>
+      </div>
+      <div class="card purple">
+        <div class="file">(new) backtest/</div>
+        <div class="title">回测+验证</div>
+        <div class="desc">
+          样本外验证 · 参数敏感性 · 阶段分析<br>
+          交易成本 · 换手率约束
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fusion architecture -->
+  <div class="section-title">▸ 融合架构（推荐路径）</div>
+  <div class="layer">
+    <div class="layer-label">FUSION</div>
+    <div class="layer-cards" style="flex: 1;">
+      <div style="flex: 1; min-width: 100%;">
+        <svg viewBox="0 0 900 280" style="width: 100%; max-height: 280px; font-family: monospace; font-size: 12px;">
+          <defs>
+            <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#58a6ff"/>
+            </marker>
+          </defs>
+
+          <!-- Left: our framework (regime) -->
+          <rect x="20" y="20" width="260" height="100" rx="8" fill="#161b22" stroke="#a371f7" stroke-width="1.5"/>
+          <text x="150" y="45" text-anchor="middle" fill="#a371f7" font-size="12" font-weight="600">我们的框架: 状态识别层</text>
+          <text x="150" y="65" text-anchor="middle" fill="#8b949e" font-size="11">宏观变量 → 四象限打分</text>
+          <text x="150" y="82" text-anchor="middle" fill="#8b949e" font-size="11">→ 置信度分布 → 风险预算</text>
+          <text x="150" y="105" text-anchor="middle" fill="#3fb950" font-size="10">b_t = b_neutral + λ·ΣP(Q)·Δb</text>
+
+          <!-- Right: their code (CNN) -->
+          <rect x="620" y="20" width="260" height="100" rx="8" fill="#161b22" stroke="#d2991d" stroke-width="1.5"/>
+          <text x="750" y="45" text-anchor="middle" fill="#d2991d" font-size="12" font-weight="600">他们的代码: 统计矩估计</text>
+          <text x="750" y="65" text-anchor="middle" fill="#8b949e" font-size="11">收益序列 → Causal CNN</text>
+          <text x="750" y="82" text-anchor="middle" fill="#8b949e" font-size="11">→ vol/corr/tail 预测</text>
+          <text x="750" y="105" text-anchor="middle" fill="#3fb950" font-size="10">多任务头 · 因果卷积</text>
+
+          <!-- Center: ERC -->
+          <rect x="340" y="20" width="220" height="100" rx="8" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+          <text x="450" y="45" text-anchor="middle" fill="#3fb950" font-size="12" font-weight="600">可继承: 优化 + 风险</text>
+          <text x="450" y="65" text-anchor="middle" fill="#8b949e" font-size="11">Newton风险平价求解器</text>
+          <text x="450" y="82" text-anchor="middle" fill="#8b949e" font-size="11">VaR/CVaR/MRC引擎</text>
+          <text x="450" y="105" text-anchor="middle" fill="#3fb950" font-size="10">BS Greeks · Schema</text>
+
+          <!-- Arrows from regime and CNN to ERC -->
+          <line x1="280" y1="70" x2="335" y2="50" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <text x="295" y="38" fill="#58a6ff" font-size="9">预算 b_i</text>
+          <line x1="620" y1="70" x2="565" y2="50" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <text x="560" y="38" fill="#58a6ff" font-size="9">vol/corr</text>
+
+          <!-- ERC output -->
+          <line x1="450" y1="120" x2="450" y2="150" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+          <!-- Bottom: output -->
+          <rect x="200" y="155" width="500" height="55" rx="8" fill="#161b22" stroke="#39d2c0" stroke-width="1.5"/>
+          <text x="450" y="178" text-anchor="middle" fill="#39d2c0" font-size="12" font-weight="600">组合权重 w = argmin Σ(RC_i - b_i)²</text>
+          <text x="450" y="198" text-anchor="middle" fill="#8b949e" font-size="11">月度再平衡 · 阈值触发 · 尾部对冲 · 样本外验证</text>
+
+          <!-- Execution arrow -->
+          <line x1="450" y1="210" x2="450" y2="240" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+          <rect x="250" y="240" width="400" height="30" rx="6" fill="#161b22" stroke="#db6d28" stroke-width="1"/>
+          <text x="450" y="260" text-anchor="middle" fill="#db6d28" font-size="11">XtQuant/QMT 执行 · 真实券商账户</text>
+        </svg>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- 5 transferable patterns -->
+<div class="insight-box">
+  <div class="title">▸ 5 个可迁移技术模式（学习而不只是继承）</div>
+  <ul>
+    <li><b>1. 因果卷积 CausalConv1d</b> (cnn1d.py:13-30) — 右侧padding+裁切，严格防未来信息泄露。任何时序模型可直接复用。</li>
+    <li><b>2. 多任务头·激活函数匹配输出域</b> (cnn1d.py:65-84) — vol→Softplus(≥0), corr→Tanh([-1,1]), tail→Softplus(≥0)。金融ML核心纪律。</li>
+    <li><b>3. 统计量自监督标签构造</b> (pretrain.py:39-63) — 从收益序列直接计算std/corr/CVaR作标签，零人工标注，任何有价格的市场都可用。</li>
+    <li><b>4. GD解离散期权选择</b> (deep_otm.py:36-49) — 连续松弛→GD优化→离散化整百手。将组合选择从整数规划变成梯度下降。</li>
+    <li><b>5. AsyncGenerator管线骨架</b> (orchestrator.py:38-75) — data→model→risk→hedge 流式编排。量化系统通用架构模板。</li>
+  </ul>
+</div>
+
+</body>
+</html>
