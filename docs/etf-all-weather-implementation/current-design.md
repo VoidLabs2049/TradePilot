@@ -206,6 +206,7 @@ Tushare / project ETL
 
 ```text
 strategy_context
+-> backtest kernel acceptance fixture
 -> regime/budget mapper
 -> covariance estimator
 -> budgeted risk parity or inverse-vol engine
@@ -219,6 +220,7 @@ strategy_context
 
 1. `strategy_context` 是输入上下文，不应包含目标权重或交易动作。
 2. `target_weight` 和 `trade_action` 必须来自后续明确命名的数据集，不能混入现有 Stage G 合同。
+3. 回测需要拆成前置内核和后置评估层；前置内核只作为 `risk_budget` / `target_weight` 的开发期验收夹具，不承载完整策略评估叙事。
 
 ## V1 策略计算设计
 
@@ -232,6 +234,34 @@ strategy_context
 - `derived.etf_aw_sleeve_daily`
 
 宏观/利率字段可用于上下文和置信度校正，但在未完成充分验证前，不应单独触发大幅仓位切换。
+
+### 回测内核验收夹具
+
+在实现 `derived.etf_aw_risk_budget` 前，应先冻结一个小型回测内核设计。
+
+该内核的输入只包括：
+
+- 给定的月度权重序列。
+- `derived.etf_aw_sleeve_daily` 的 adjustment-aware 日频收益。
+- `reference.rebalance_calendar.monthly_post_20` 的调仓日历。
+
+该内核输出：
+
+- 净值曲线。
+- 年化收益、年化波动、Sharpe、最大回撤。
+- 月度换手。
+- 可复现实验诊断。
+
+该内核必须是纯函数验收夹具，不包含：
+
+- regime 评分。
+- risk budget 生成。
+- target weight 生成。
+- 参数搜索。
+- Dashboard 展示。
+- 自动交易建议。
+
+完整的 baseline 对标、成本假设、参数扰动和前端净值展示仍留在后置回测评估层。前置内核只解决一个问题：让后续预算映射、权重稳定性和换手行为有客观、可复现的开发期判据。
 
 ### 状态到预算
 
@@ -248,23 +278,35 @@ V1 先使用规则映射，不使用机器学习分类器。
 
 市场状态初始映射应克制：
 
-| Market regime | 预算倾向 |
-| --- | --- |
-| `risk_on` | 适度提高权益风险预算，降低现金/防御预算 |
-| `hedge_bid` | 提高黄金和现金/防御预算，压低权益预算 |
-| `defensive` | 提高债券和现金预算，压低权益预算 |
-| `mixed` | 接近中性预算 |
-| `insufficient_data` | 回到保守中性预算 |
+| Market regime | Base budget | Tilt direction |
+| --- | --- | --- |
+| `risk_on` | 中性预算 | 适度提高权益风险预算，降低现金/防御预算 |
+| `hedge_bid` | 中性预算 | 提高黄金和现金/防御预算，压低权益预算 |
+| `defensive` | 中性预算 | 提高债券和现金预算，压低权益预算 |
+| `mixed` | 中性预算 | 接近中性预算 |
+| `insufficient_data` | 保守中性预算 | 不做主动 tilt |
 
-置信度只控制偏移幅度，不直接决定极端仓位。
+`risk-budget-design.md` 必须把定性方向落成数值向量。初始规则固定为：
+
+```text
+tilted_budget = normalize(base_budget + confidence_score * delta_budget)
+```
+
+其中：
+
+- `base_budget` 是每个 sleeve 的中性风险预算，合计为 1。
+- `delta_budget` 是按 market regime 固定的预算偏移向量，合计为 0。
+- `confidence_score` 只控制偏移幅度，不直接决定极端仓位。
+- 降级状态必须回落到中性或保守中性预算，不能用缺失宏观字段放大偏移。
 
 ### 协方差估计
 
 V1 使用 `derived.etf_aw_sleeve_daily` 的 adjusted return：
 
-- 默认窗口：3M 或 6M，需在设计里固定。
-- 最小样本数不足时降级为 inverse-vol 或中性权重。
-- 协方差矩阵必须处理缺失、停牌和现金 sleeve 的低波动问题。
+- 默认窗口、最小观测数和缺失比例阈值必须在 `target-weight-design.md` 里固定。
+- 样本不足、协方差奇异、现金 sleeve 零波动、单 sleeve 数据缺失需要独立降级用例。
+- V1 必须定义 vol floor 和协方差收缩规则，避免低波动 sleeve 权重发散。
+- 降级需区分整体降级和单 sleeve 降级，并写入 explainability 字段。
 
 资料库里的 CNN vol/corr/tail 只能作为未来增强，不进入 V1。
 
@@ -284,6 +326,8 @@ V1 输出必须包含 explainability：
 - 约束后目标权重。
 - 降级原因。
 
+权重写出前需要固定数值精度，建议保留 6 位小数。no-trade band 阈值必须明显大于浮点容差，避免上月与本月尾差触发伪调仓。
+
 ### 实盘约束
 
 权重稳定前只做纸面约束设计，不生成真实订单。
@@ -291,6 +335,7 @@ V1 输出必须包含 explainability：
 后续执行约束包括：
 
 - 单 sleeve 上限。
+- no-trade band。
 - 最小交易金额。
 - ETF 最小交易单位。
 - 现金缓冲。
@@ -368,7 +413,25 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 
 ### 必需文档
 
-1. `risk-budget-design.md`
+1. `backtest-kernel-design.md`
+
+   范围：
+
+   - 给定权重序列到净值曲线的纯函数接口。
+   - 日频收益、月度调仓日历和权重生效日规则。
+   - Sharpe、最大回撤、换手等最小指标。
+   - 等权权重 fixture 先跑通。
+   - 单元测试和 deterministic fixture 边界。
+
+   非范围：
+
+   - 策略权重生成。
+   - baseline comparison pack。
+   - 成本模型。
+   - 参数扰动。
+   - Dashboard 展示。
+
+2. `risk-budget-design.md`
 
    范围：
 
@@ -376,7 +439,9 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - read model contract。
    - `strategy_context -> sleeve risk budget` 映射规则。
    - base budget 与 tilted budget。
+   - regime `delta_budget` 数值向量和 normalize 规则。
    - confidence 只控制偏移幅度的规则。
+   - 样本不足、宏观字段缺失、置信度不足时的保守回落规则。
    - `complete`、`partial`、`stale`、`missing`、`unavailable` 降级行为。
    - 单元测试和 fixture 边界。
 
@@ -386,7 +451,7 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - 交易建议。
    - 订单或执行约束。
 
-2. `target-weight-design.md`
+3. `target-weight-design.md`
 
    范围：
 
@@ -394,9 +459,10 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - budgeted inverse-vol MVP。
    - simplified ERC 是否值得引入的判断标准。
    - 协方差窗口、最小样本数、缺失数据处理。
-   - cash sleeve 低波动处理。
+   - vol floor、协方差收缩、奇异矩阵和 cash sleeve 低波动处理。
+   - 权重数值精度、no-trade band 和阈值大于浮点容差的规则。
    - raw target weight、constrained target weight、降级原因和 explainability 字段。
-   - 与等权、静态 inverse-vol、静态风险平价的 baseline 对比要求。
+   - 使用前置回测内核检查权重稳定性、换手和基础指标。
 
    非范围：
 
@@ -406,7 +472,7 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 
 ### 延后文档
 
-3. `rebalance-plan-design.md`
+4. `rebalance-plan-design.md`
 
    只有在 `target-weight-design.md` 对应实现稳定后再写。
 
@@ -416,11 +482,24 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - 目标权重到 paper rebalance plan。
    - 换手估算。
    - 成本过滤。
+   - no-trade band。
    - 最小交易金额和 ETF 最小交易单位。
    - 现金缓冲。
    - 不自动下单的人工确认边界。
 
-4. `shadow-run-design.md`
+5. `backtest-evaluation-design.md`
+
+   只有在 `target-weight-design.md` 对应实现能通过前置回测内核验收后再写。
+
+   范围：
+
+   - 等权、静态 inverse-vol、静态风险平价基线。
+   - 成本和换手假设。
+   - 参数扰动。
+   - 月度 explainability report。
+   - Dashboard 净值展示边界。
+
+6. `shadow-run-design.md`
 
    只有在 rebalance plan 能稳定生成后再写。
 
@@ -439,21 +518,24 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 - 能在无外部网络的测试 fixture 中构造 deterministic 输入。
 - 对 `complete`、`partial`、`stale`、`missing`、`unavailable` 均有降级行为。
 - 输出不能包含未来数据。
+- 前置回测内核能用等权 fixture 跑出确定性净值、指标和换手。
 - 输出可解释表能逐月说明状态、预算、权重和降级原因。
-- 与等权、静态 inverse-vol、静态风险平价做 baseline 对比。
-- 成本和换手至少以估算形式进入评估。
+- `target_weight` 至少通过前置回测内核检查换手没有异常爆发。
+- 后置评估层再与等权、静态 inverse-vol、静态风险平价做 baseline 对比，并纳入成本估算。
 
 ## 近期执行顺序
 
 1. 冻结本文档为当前设计入口。
 2. 更新旧 `progress-status.md`，避免文档状态继续停留在 “schema not done”。已完成。
-3. 新增并冻结 `risk-budget-design.md`。
-4. 实现 `derived.etf_aw_risk_budget` schema、read model 和规则式 mapper。
-5. 新增并冻结 `target-weight-design.md`。
-6. 实现 `derived.etf_aw_target_weight` 和 budgeted inverse-vol MVP。
-7. 增加 monthly explainability table 和 baseline comparison。
-8. 再评估是否引入 simplified ERC。
-9. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
+3. 新增并冻结 `backtest-kernel-design.md`。已完成。
+4. 实现前置回测内核，先用等权 fixture 跑通。已完成最小版本。
+5. 新增并冻结 `risk-budget-design.md`。
+6. 实现 `derived.etf_aw_risk_budget` schema、read model 和规则式 mapper。
+7. 新增并冻结 `target-weight-design.md`。
+8. 实现 `derived.etf_aw_target_weight` 和 budgeted inverse-vol MVP，并用前置回测内核验收。
+9. 增加 monthly explainability table 和后置 baseline comparison。
+10. 再评估是否引入 simplified ERC。
+11. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
 
 ## 非目标
 

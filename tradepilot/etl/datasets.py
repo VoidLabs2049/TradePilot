@@ -386,6 +386,36 @@ def build_derived_etf_aw_strategy_context_dataset() -> DatasetDefinition:
     )
 
 
+def build_derived_etf_aw_backtest_kernel_dataset() -> DatasetDefinition:
+    """Return the ETF all-weather minimal backtest kernel definition."""
+
+    return DatasetDefinition(
+        dataset_name="derived.etf_aw_backtest_kernel",
+        category=DatasetCategory.DERIVED,
+        grain="strategy_backtest_observation",
+        primary_source="derived",
+        storage_zone=StorageZone.DERIVED,
+        partition_strategy="year_month",
+        canonical_schema_name="etf_aw_backtest_kernel_v1",
+        timing_semantics=(
+            "Acceptance fixture that applies externally supplied or fixture "
+            "monthly sleeve weights to adjustment-aware sleeve daily returns; "
+            "it is not a strategy decision or full evaluation layer."
+        ),
+        validation_rule_names=[
+            "backtest_kernel.duplicate_business_key",
+            "backtest_kernel.observation_type_allowed",
+            "backtest_kernel.metric_values_finite",
+            "backtest_kernel.quality_notes_json",
+        ],
+        dependencies=[
+            "reference.rebalance_calendar",
+            "reference.etf_aw_sleeves",
+            "derived.etf_aw_sleeve_daily",
+        ],
+    )
+
+
 def build_macro_slow_fields_dataset() -> DatasetDefinition:
     """Return the Stage F slow macro fields dataset definition."""
 
@@ -574,6 +604,7 @@ def build_stage_b_datasets() -> list[DatasetDefinition]:
         build_derived_etf_aw_regime_score_dataset(),
         build_derived_etf_aw_market_features_dataset(),
         build_derived_etf_aw_strategy_context_dataset(),
+        build_derived_etf_aw_backtest_kernel_dataset(),
         build_macro_slow_fields_dataset(),
         build_rates_daily_rates_dataset(),
         build_rates_lpr_dataset(),

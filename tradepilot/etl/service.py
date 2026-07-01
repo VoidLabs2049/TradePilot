@@ -74,6 +74,11 @@ _ETF_AW_STRATEGY_CONTEXT_PROFILE = "derived.etf_aw_strategy_context.build"
 _ETF_AW_STRATEGY_CONTEXT_DATASET = "derived.etf_aw_strategy_context"
 _ETF_AW_STRATEGY_CONTEXT_SCHEMA_VERSION = "etf_aw_strategy_context_v1"
 _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION = "etf_aw_strategy_context_contract_v1"
+_ETF_AW_BACKTEST_KERNEL_PROFILE = "derived.etf_aw_backtest_kernel.build"
+_ETF_AW_BACKTEST_KERNEL_DATASET = "derived.etf_aw_backtest_kernel"
+_ETF_AW_BACKTEST_KERNEL_SCHEMA_VERSION = "etf_aw_backtest_kernel_v1"
+_ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME = "equal_weight_fixture"
+_ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION = "fixture_v1"
 _ETF_AW_STRATEGY_NAME = "etf_aw_v1"
 _ETF_AW_STRATEGY_VERSION = "stage_g_v1"
 _ETF_AW_SLEEVE_DAILY_RETURN_LOOKBACK_DAYS = 31
@@ -450,6 +455,11 @@ class ETLService:
             )
         if profile_name == _ETF_AW_STRATEGY_CONTEXT_PROFILE:
             return self._build_etf_aw_strategy_context(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        if profile_name == _ETF_AW_BACKTEST_KERNEL_PROFILE:
+            return self._build_etf_aw_backtest_kernel(
                 start or _TRADING_CALENDAR_HISTORY_START,
                 end or date.today(),
             )
@@ -903,6 +913,10 @@ class ETLService:
                 merged["effective_date"] = pd.to_datetime(
                     merged["effective_date"], errors="coerce"
                 )
+            if "observation_date" in merged.columns:
+                merged["observation_date"] = pd.to_datetime(
+                    merged["observation_date"], errors="coerce"
+                )
             for column in sort_columns:
                 if isinstance(merged[column].dtype, pd.CategoricalDtype):
                     merged[column] = merged[column].astype(str)
@@ -930,6 +944,10 @@ class ETLService:
             if "effective_date" in merged.columns:
                 merged["effective_date"] = pd.to_datetime(
                     merged["effective_date"], errors="coerce"
+                ).dt.date
+            if "observation_date" in merged.columns:
+                merged["observation_date"] = pd.to_datetime(
+                    merged["observation_date"], errors="coerce"
                 ).dt.date
             write_result = write_dataset_parquet(
                 merged,
@@ -2172,6 +2190,115 @@ class ETLService:
             partition_date_column="rebalance_date",
         )
 
+    def _build_etf_aw_backtest_kernel(self, start: date, end: date) -> dict:
+        start, end = _ordered_dates(start, end)
+        rebalance = self._read_rebalance_calendar(start, end)
+        if rebalance.empty:
+            return {
+                "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
+                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "canonical rebalance calendar is missing",
+            }
+        panel = self._read_partitioned_dataset(
+            "derived.etf_aw_sleeve_daily",
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        if panel.empty:
+            return {
+                "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
+                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "derived sleeve daily panel is missing",
+            }
+        weights = _equal_weight_backtest_fixture(rebalance)
+        backtest = self._make_etf_aw_backtest_kernel_frame(
+            panel=panel,
+            rebalance=rebalance,
+            weights=weights,
+            start=start,
+            end=end,
+        )
+        validation = _validate_backtest_kernel_frame(backtest)
+        if not all(validation.values()):
+            return {
+                "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
+                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "validation": validation,
+                "error_message": "ETF all-weather backtest kernel validation failed",
+            }
+        write_result = self._write_etf_aw_backtest_kernel(backtest)
+        return {
+            "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
+            "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
+            "status": RunStatus.SUCCESS.value,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "records_written": write_result.records_written,
+            "records_inserted": write_result.records_inserted,
+            "records_updated": write_result.records_updated,
+            "partitions_written": write_result.partitions_written,
+            "storage_paths": write_result.storage_paths,
+            "validation": validation,
+            "observation_type_counts": _value_counts_dict(backtest["observation_type"]),
+        }
+
+    def _make_etf_aw_backtest_kernel_frame(
+        self,
+        *,
+        panel: pd.DataFrame,
+        rebalance: pd.DataFrame,
+        weights: pd.DataFrame,
+        start: date,
+        end: date,
+    ) -> pd.DataFrame:
+        return _make_etf_aw_backtest_kernel_frame(
+            panel=panel,
+            rebalance=rebalance,
+            weights=weights,
+            start=start,
+            end=end,
+        )
+
+    def _write_etf_aw_backtest_kernel(
+        self, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=_ETF_AW_BACKTEST_KERNEL_DATASET,
+            zone=StorageZone.DERIVED,
+            canonical=canonical,
+            key_columns=(
+                "calendar_name",
+                "strategy_name",
+                "strategy_version",
+                "observation_type",
+                "observation_date",
+                "metric_name",
+            ),
+            sort_columns=(
+                "calendar_name",
+                "strategy_name",
+                "strategy_version",
+                "observation_type",
+                "observation_date",
+                "metric_name",
+                "ingested_at",
+            ),
+            partition_date_column="observation_date",
+        )
+
     def _bootstrap_rebalance_calendar_monthly_post_20(
         self, start: date, end: date
     ) -> dict:
@@ -2617,6 +2744,10 @@ def _business_keys(frame: pd.DataFrame, key_columns: tuple[str, ...]) -> set[tup
     if "rebalance_date" in key_frame.columns:
         key_frame["rebalance_date"] = pd.to_datetime(
             key_frame["rebalance_date"], errors="coerce"
+        ).dt.date
+    if "observation_date" in key_frame.columns:
+        key_frame["observation_date"] = pd.to_datetime(
+            key_frame["observation_date"], errors="coerce"
         ).dt.date
     return {
         tuple(str(value) if isinstance(value, str) else value for value in row)
@@ -3986,6 +4117,357 @@ def _validate_strategy_context_frame(frame: pd.DataFrame) -> dict[str, bool]:
             for _, row in frame[
                 frame["macro_rates_context_status"].astype(str) != "complete"
             ].iterrows()
+        ),
+    }
+
+
+def _equal_weight_backtest_fixture(rebalance: pd.DataFrame) -> pd.DataFrame:
+    """Return equal monthly weights for the frozen v1 ETF sleeves."""
+
+    rebalance = _normalize_rebalance_date_frame(rebalance)
+    rows: list[dict[str, Any]] = []
+    weight = 1.0 / len(_ETF_AW_SLEEVE_CODES)
+    for _, row in rebalance.dropna(subset=["rebalance_date"]).iterrows():
+        for sleeve_code in _ETF_AW_SLEEVE_CODES:
+            rows.append(
+                {
+                    "calendar_name": str(row["calendar_name"]),
+                    "rebalance_date": row["rebalance_date"],
+                    "sleeve_code": sleeve_code,
+                    "target_weight": weight,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _make_etf_aw_backtest_kernel_frame(
+    *,
+    panel: pd.DataFrame,
+    rebalance: pd.DataFrame,
+    weights: pd.DataFrame,
+    start: date,
+    end: date,
+) -> pd.DataFrame:
+    """Build daily NAV, metric, and turnover rows for supplied monthly weights."""
+
+    ingested_at = _utc_now()
+    diagnostics = _backtest_input_diagnostics(panel, rebalance, weights)
+    if diagnostics["blocking"]:
+        return _backtest_diagnostic_rows(
+            diagnostics=diagnostics,
+            start=start,
+            ingested_at=ingested_at,
+        )
+
+    panel = panel.copy()
+    panel["trade_date"] = pd.to_datetime(panel["trade_date"], errors="coerce").dt.date
+    panel = panel[
+        panel["trade_date"].between(start, end, inclusive="both")
+        & panel["sleeve_code"].astype(str).isin(_ETF_AW_SLEEVE_CODES)
+    ].copy()
+    panel["daily_return"] = panel["adj_pct_chg"].apply(_nullable_float)
+    panel["daily_return"] = panel["daily_return"].fillna(0.0) / 100.0
+    returns = (
+        panel.pivot_table(
+            index="trade_date",
+            columns="sleeve_code",
+            values="daily_return",
+            aggfunc="last",
+        )
+        .sort_index()
+        .dropna(how="all")
+    )
+    if returns.empty:
+        return _backtest_diagnostic_rows(
+            diagnostics={"blocking": True, "reasons": ["no_daily_returns"]},
+            start=start,
+            ingested_at=ingested_at,
+        )
+
+    weights = weights.copy()
+    weights["rebalance_date"] = pd.to_datetime(
+        weights["rebalance_date"], errors="coerce"
+    ).dt.date
+    rows: list[dict[str, Any]] = []
+    nav = 1.0
+    previous_target: dict[str, float] | None = None
+    monthly_returns: list[float] = []
+    return_values: list[float] = []
+    calendar_name = str(weights["calendar_name"].dropna().iloc[0])
+
+    weight_by_date = {
+        key: group.set_index("sleeve_code")["target_weight"].astype(float).to_dict()
+        for key, group in weights.groupby("rebalance_date")
+    }
+    effective_dates = sorted(weight_by_date)
+    current_weight: dict[str, float] | None = None
+    current_effective_date: date | None = None
+    last_month: tuple[int, int] | None = None
+    month_start_nav = nav
+
+    for trade_date, row in returns.iterrows():
+        applicable = [value for value in effective_dates if value <= trade_date]
+        if not applicable:
+            continue
+        effective_date = applicable[-1]
+        next_weight = weight_by_date[effective_date]
+        if current_effective_date != effective_date:
+            turnover = (
+                0.0
+                if previous_target is None
+                else 0.5
+                * sum(
+                    abs(next_weight.get(code, 0.0) - previous_target.get(code, 0.0))
+                    for code in _ETF_AW_SLEEVE_CODES
+                )
+            )
+            rows.append(
+                _backtest_row(
+                    calendar_name=calendar_name,
+                    observation_type="turnover",
+                    observation_date=trade_date,
+                    metric_name="monthly_turnover",
+                    metric_value=turnover,
+                    net_value=None,
+                    portfolio_return=None,
+                    quality_notes={
+                        "rebalance_date": effective_date.isoformat(),
+                        "turnover_basis": "previous_target_weight",
+                    },
+                    ingested_at=ingested_at,
+                )
+            )
+            current_weight = next_weight
+            current_effective_date = effective_date
+            previous_target = dict(next_weight)
+        portfolio_return = float(
+            sum(
+                current_weight.get(code, 0.0) * float(row.get(code, 0.0))
+                for code in _ETF_AW_SLEEVE_CODES
+            )
+        )
+        nav *= 1.0 + portfolio_return
+        return_values.append(portfolio_return)
+        month_key = (trade_date.year, trade_date.month)
+        if last_month is None:
+            last_month = month_key
+            month_start_nav = 1.0
+        elif month_key != last_month:
+            monthly_returns.append(nav / month_start_nav - 1.0)
+            month_start_nav = nav / (1.0 + portfolio_return)
+            last_month = month_key
+        rows.append(
+            _backtest_row(
+                calendar_name=calendar_name,
+                observation_type="daily_nav",
+                observation_date=trade_date,
+                metric_name="net_value",
+                metric_value=nav,
+                net_value=nav,
+                portfolio_return=portfolio_return,
+                quality_notes={"effective_rebalance_date": effective_date.isoformat()},
+                ingested_at=ingested_at,
+            )
+        )
+    if last_month is not None:
+        monthly_returns.append(nav / month_start_nav - 1.0)
+
+    metric_values = _backtest_metric_values(return_values, monthly_returns, nav)
+    metric_date = max(returns.index)
+    for metric_name, metric_value in metric_values.items():
+        rows.append(
+            _backtest_row(
+                calendar_name=calendar_name,
+                observation_type="metric",
+                observation_date=metric_date,
+                metric_name=metric_name,
+                metric_value=metric_value,
+                net_value=None,
+                portfolio_return=None,
+                quality_notes=diagnostics,
+                ingested_at=ingested_at,
+            )
+        )
+    return pd.DataFrame(rows)
+
+
+def _backtest_input_diagnostics(
+    panel: pd.DataFrame, rebalance: pd.DataFrame, weights: pd.DataFrame
+) -> dict[str, Any]:
+    """Return blocking diagnostics for the backtest kernel inputs."""
+
+    reasons: list[str] = []
+    if panel.empty:
+        reasons.append("empty_panel")
+    if rebalance.empty:
+        reasons.append("empty_rebalance_calendar")
+    if weights.empty:
+        reasons.append("empty_weights")
+    required_weight_columns = {
+        "calendar_name",
+        "rebalance_date",
+        "sleeve_code",
+        "target_weight",
+    }
+    missing_columns = sorted(required_weight_columns - set(weights.columns))
+    if missing_columns:
+        reasons.append("missing_weight_columns")
+    if not missing_columns and not weights.empty:
+        normalized = weights.copy()
+        normalized["rebalance_date"] = pd.to_datetime(
+            normalized["rebalance_date"], errors="coerce"
+        ).dt.date
+        duplicates = int(
+            normalized.duplicated(
+                ["calendar_name", "rebalance_date", "sleeve_code"]
+            ).sum()
+        )
+        if duplicates:
+            reasons.append("duplicate_weight_rows")
+        for _, group in normalized.groupby(["calendar_name", "rebalance_date"]):
+            codes = set(group["sleeve_code"].astype(str).tolist())
+            if codes != set(_ETF_AW_SLEEVE_CODES):
+                reasons.append("missing_sleeve_weight")
+                break
+            weight_sum = group["target_weight"].astype(float).sum()
+            if abs(weight_sum - 1.0) > 1e-6:
+                reasons.append("weight_sum_not_one")
+                break
+    return {
+        "blocking": bool(reasons),
+        "reasons": sorted(set(reasons)),
+    }
+
+
+def _backtest_diagnostic_rows(
+    *,
+    diagnostics: dict[str, Any],
+    start: date,
+    ingested_at: datetime,
+) -> pd.DataFrame:
+    """Return a validation-visible diagnostic row for blocked kernel inputs."""
+
+    return pd.DataFrame(
+        [
+            _backtest_row(
+                calendar_name=_REBALANCE_CALENDAR_NAME,
+                observation_type="diagnostic",
+                observation_date=start,
+                metric_name="input_validation",
+                metric_value=None,
+                net_value=None,
+                portfolio_return=None,
+                quality_notes=diagnostics,
+                ingested_at=ingested_at,
+            )
+        ]
+    )
+
+
+def _backtest_row(
+    *,
+    calendar_name: str,
+    observation_type: str,
+    observation_date: date,
+    metric_name: str,
+    metric_value: float | None,
+    net_value: float | None,
+    portfolio_return: float | None,
+    quality_notes: dict[str, Any],
+    ingested_at: datetime,
+) -> dict[str, Any]:
+    """Return one normalized backtest kernel observation row."""
+
+    return {
+        "schema_version": _ETF_AW_BACKTEST_KERNEL_SCHEMA_VERSION,
+        "calendar_name": calendar_name,
+        "strategy_name": _ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME,
+        "strategy_version": _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION,
+        "observation_type": observation_type,
+        "observation_date": observation_date,
+        "metric_name": metric_name,
+        "metric_value": metric_value,
+        "net_value": net_value,
+        "portfolio_return": portfolio_return,
+        "quality_notes_json": json.dumps(quality_notes, sort_keys=True),
+        "ingested_at": ingested_at,
+    }
+
+
+def _backtest_metric_values(
+    daily_returns: list[float], monthly_returns: list[float], final_nav: float
+) -> dict[str, float | None]:
+    """Calculate the minimal deterministic backtest metric set."""
+
+    if not daily_returns:
+        return {
+            "total_return": None,
+            "annualized_return": None,
+            "annualized_volatility": None,
+            "sharpe_ratio": None,
+            "max_drawdown": None,
+        }
+    series = pd.Series(daily_returns, dtype=float)
+    nav = (1.0 + series).cumprod()
+    annualized_return = final_nav ** (252.0 / len(series)) - 1.0
+    annualized_volatility = float(series.std(ddof=1) * math.sqrt(252))
+    sharpe_ratio = (
+        float(annualized_return / annualized_volatility)
+        if annualized_volatility > 0
+        else None
+    )
+    drawdown = nav / nav.cummax() - 1.0
+    return {
+        "total_return": float(final_nav - 1.0),
+        "annualized_return": float(annualized_return),
+        "annualized_volatility": annualized_volatility,
+        "sharpe_ratio": sharpe_ratio,
+        "max_drawdown": float(drawdown.min()),
+        "monthly_periods": float(len(monthly_returns)),
+    }
+
+
+def _validate_backtest_kernel_frame(frame: pd.DataFrame) -> dict[str, bool]:
+    """Validate the minimal backtest kernel output contract."""
+
+    allowed_types = {"daily_nav", "metric", "turnover", "diagnostic"}
+    if frame.empty:
+        return {
+            "non_empty": False,
+            "no_duplicate_business_keys": False,
+            "observation_type_allowed": False,
+            "metric_values_finite": False,
+            "quality_notes_json": False,
+        }
+    duplicate_count = int(
+        frame.duplicated(
+            [
+                "calendar_name",
+                "strategy_name",
+                "strategy_version",
+                "observation_type",
+                "observation_date",
+                "metric_name",
+            ]
+        ).sum()
+    )
+    metric_values = [
+        _nullable_float(value)
+        for value in frame[
+            frame["observation_type"]
+            .astype(str)
+            .isin({"daily_nav", "metric", "turnover"})
+        ]["metric_value"].tolist()
+    ]
+    return {
+        "non_empty": True,
+        "no_duplicate_business_keys": duplicate_count == 0,
+        "observation_type_allowed": set(
+            frame["observation_type"].astype(str).tolist()
+        ).issubset(allowed_types),
+        "metric_values_finite": all(value is not None for value in metric_values),
+        "quality_notes_json": all(
+            _is_json_text(value) for value in frame["quality_notes_json"]
         ),
     }
 

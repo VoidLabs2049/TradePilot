@@ -120,7 +120,29 @@ The workstream is **not** at strategy-complete state.
 
 The main unfinished parts are:
 
-### 1. Risk budget layer
+### 1. Backtest kernel acceptance fixture
+
+Minimal implementation completed.
+
+Completed:
+
+- `backtest-kernel-design.md` freeze
+- `derived.etf_aw_backtest_kernel` dataset registration
+- `derived.etf_aw_backtest_kernel.build` bootstrap profile
+- pure function for monthly weights + daily sleeve returns to net value
+- annualized return, volatility, Sharpe, maximum drawdown, and turnover metrics
+- equal-weight fixture over the frozen v1 sleeves
+- tests for complete equal-weight output, repeat upsert, missing sleeve weight, and duplicate weight rows
+
+Still needed before promotion beyond acceptance-fixture use:
+
+- tests for missing sleeve return on a trading day
+- tests for rebalance date with no matching trading day
+- optional drifted-weight turnover once target-weight drift is available
+
+This is not the full backtest evaluation layer. It should be implemented first so `risk_budget` and `target_weight` have an objective development-time acceptance fixture.
+
+### 2. Risk budget layer
 
 Not implemented yet.
 
@@ -129,10 +151,12 @@ Still needed:
 - `derived.etf_aw_risk_budget` schema
 - read model contract
 - rules-based `strategy_context -> sleeve risk budget` mapper
+- numerical base budget and regime delta vectors
+- `tilted_budget = normalize(base_budget + confidence_score * delta_budget)` semantics
 - degradation behavior for incomplete, stale, or unavailable contexts
-- tests for valid, partial, stale, and missing inputs
+- tests for valid, partial, stale, missing, insufficient-confidence, and macro-field-missing inputs
 
-### 2. Target weight layer
+### 3. Target weight layer
 
 Not implemented yet.
 
@@ -143,9 +167,11 @@ Still needed:
 - later simplified ERC only if the inverse-vol baseline is insufficient
 - covariance window and minimum-observation rules
 - explicit handling for cash sleeve low volatility
+- vol floor, covariance shrinkage, and singular covariance fallback
+- weight rounding before write-out, with no-trade band threshold greater than floating-point tolerance
 - explainability fields for budget, risk inputs, raw weights, constrained weights, and downgrade reasons
 
-### 3. Rebalance recommendation layer
+### 4. Rebalance recommendation layer
 
 Not implemented yet.
 
@@ -154,18 +180,20 @@ Still needed:
 - current-position input contract
 - turnover estimate
 - cost filter
+- no-trade band
 - minimum trade amount and ETF lot-size handling
 - cash buffer
 - paper rebalance plan
 
 This layer must not auto-submit orders.
 
-### 4. Backtest and baseline comparison
+### 5. Backtest evaluation and baseline comparison
 
 Not implemented yet.
 
 Still needed:
 
+- promotion from the small backtest kernel to a broader evaluation layer
 - monthly explainability table
 - equal-weight baseline
 - static inverse-vol baseline
@@ -173,7 +201,7 @@ Still needed:
 - cost and turnover assumptions
 - parameter perturbation checks
 
-### 5. Remaining Stage 02+ data validation
+### 6. Remaining Stage 02+ data validation
 
 Partially done.
 
@@ -185,7 +213,7 @@ Stage B-G created a usable data and context base. Still needed later:
 - optional overseas overlay review
 - deferred fields only if promoted
 
-### 6. Pre-development data-research closure
+### 7. Pre-development data-research closure
 
 Closed at research-note level.
 
@@ -212,9 +240,10 @@ Reason:
 - the asset boundary is frozen
 - the data base and context layers are implemented through Stage G
 - current Stage G intentionally stops before `target_weight` and `trade_action`
+- the minimal backtest kernel acceptance fixture now exists
 - the next missing strategy layer is risk budget generation
 
-This means the project can move from research/context assembly into the first explicit strategy calculation layer without reopening upstream scoping questions.
+This means the project can move from research/context assembly into the first explicit strategy calculation layer while keeping a deterministic acceptance fixture available. The full baseline comparison layer remains later.
 
 ---
 
@@ -226,8 +255,8 @@ When resuming, use this order:
 2. design `derived.etf_aw_risk_budget`
 3. implement a rules-based risk budget mapper
 4. design `derived.etf_aw_target_weight`
-5. implement budgeted inverse-vol MVP
-6. add monthly explainability table and baseline comparison
+5. implement budgeted inverse-vol MVP and verify it with the kernel
+6. add monthly explainability table and later baseline comparison
 7. only then consider simplified ERC or execution constraints
 
 ---
@@ -237,19 +266,20 @@ When resuming, use this order:
 If resuming later, the minimum file set to reload is:
 
 1. `../etf-all-weather-implementation/current-design.md`
-2. this file: `progress-status.md`
-3. `v1-canonical-field-list.md`
-4. `release-date-rules-v1-slow-fields.md`
-5. `stage-01-data-reliability-test-report.md`
-6. `../stage-b-ingestion-real-data-test-report.md`
-7. `../stage-c-data-backfill-report.md`
-8. `pre-development-gap-checklist.md`
-9. `etf-return-semantics-note.md`
-10. `monthly-rebalance-date-rule-note.md`
-11. `minimum-official-source-verification-note.md`
-12. `revision-risk-ranking-note.md`
-13. `bond-sleeve-suitability-signoff-511010.md`
-14. `developer-handoff-summary.md`
+2. `../etf-all-weather-implementation/backtest-kernel-design.md`
+3. this file: `progress-status.md`
+4. `v1-canonical-field-list.md`
+5. `release-date-rules-v1-slow-fields.md`
+6. `stage-01-data-reliability-test-report.md`
+7. `../stage-b-ingestion-real-data-test-report.md`
+8. `../stage-c-data-backfill-report.md`
+9. `pre-development-gap-checklist.md`
+10. `etf-return-semantics-note.md`
+11. `monthly-rebalance-date-rule-note.md`
+12. `minimum-official-source-verification-note.md`
+13. `revision-risk-ranking-note.md`
+14. `bond-sleeve-suitability-signoff-511010.md`
+15. `developer-handoff-summary.md`
 
 ---
 
