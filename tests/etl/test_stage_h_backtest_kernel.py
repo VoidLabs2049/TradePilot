@@ -149,6 +149,59 @@ class StageHBacktestKernelTests(unittest.TestCase):
         notes = json.loads(frame.iloc[0]["quality_notes_json"])
         self.assertIn("missing_sleeve_weight", notes["reasons"])
 
+    def test_missing_sleeve_return_blocks_pure_kernel(self) -> None:
+        rebalance = pd.DataFrame(
+            [
+                {
+                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "rebalance_date": date(2024, 1, 22),
+                }
+            ]
+        )
+        panel = self._sleeve_daily_frame(date(2024, 1, 22), date(2024, 1, 31))
+        panel = panel[
+            ~(
+                (panel["trade_date"] == date(2024, 1, 24))
+                & (panel["sleeve_code"] == "518850.SH")
+            )
+        ].copy()
+
+        frame = self.service._make_etf_aw_backtest_kernel_frame(
+            panel=panel,
+            rebalance=rebalance,
+            weights=self._equal_weights(date(2024, 1, 22)),
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+
+        self.assertEqual(set(frame["observation_type"]), {"diagnostic"})
+        notes = json.loads(frame.iloc[0]["quality_notes_json"])
+        self.assertIn("missing_sleeve_return", notes["reasons"])
+
+    def test_rebalance_date_without_matching_trade_date_blocks_pure_kernel(
+        self,
+    ) -> None:
+        rebalance = pd.DataFrame(
+            [
+                {
+                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "rebalance_date": date(2024, 1, 20),
+                }
+            ]
+        )
+
+        frame = self.service._make_etf_aw_backtest_kernel_frame(
+            panel=self._sleeve_daily_frame(date(2024, 1, 22), date(2024, 1, 31)),
+            rebalance=rebalance,
+            weights=self._equal_weights(date(2024, 1, 20)),
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+
+        self.assertEqual(set(frame["observation_type"]), {"diagnostic"})
+        notes = json.loads(frame.iloc[0]["quality_notes_json"])
+        self.assertIn("rebalance_date_without_trading_day", notes["reasons"])
+
     def _insert_rebalance(self, rebalance_date: date) -> None:
         self.conn.execute(
             """

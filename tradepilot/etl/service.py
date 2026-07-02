@@ -4303,6 +4303,27 @@ def _backtest_input_diagnostics(
         reasons.append("empty_rebalance_calendar")
     if weights.empty:
         reasons.append("empty_weights")
+    if not panel.empty and {"trade_date", "sleeve_code"}.issubset(panel.columns):
+        normalized_panel = panel.copy()
+        normalized_panel["trade_date"] = pd.to_datetime(
+            normalized_panel["trade_date"], errors="coerce"
+        ).dt.date
+        panel_codes_by_date = normalized_panel.groupby("trade_date")["sleeve_code"].agg(
+            lambda values: set(str(value) for value in values)
+        )
+        for codes in panel_codes_by_date.tolist():
+            if codes != set(_ETF_AW_SLEEVE_CODES):
+                reasons.append("missing_sleeve_return")
+                break
+        if not rebalance.empty and "rebalance_date" in rebalance.columns:
+            rebalance_dates = set(
+                pd.to_datetime(rebalance["rebalance_date"], errors="coerce")
+                .dt.date.dropna()
+                .tolist()
+            )
+            trade_dates = set(panel_codes_by_date.index.dropna().tolist())
+            if any(value not in trade_dates for value in rebalance_dates):
+                reasons.append("rebalance_date_without_trading_day")
     required_weight_columns = {
         "calendar_name",
         "rebalance_date",
