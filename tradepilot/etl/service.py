@@ -4200,16 +4200,21 @@ def _make_etf_aw_backtest_kernel_frame(
         for key, group in weights.groupby("rebalance_date")
     }
     effective_dates = sorted(weight_by_date)
+    effective_index = -1
     current_weight: dict[str, float] | None = None
     current_effective_date: date | None = None
     last_month: tuple[int, int] | None = None
     month_start_nav = nav
 
     for trade_date, row in returns.iterrows():
-        applicable = [value for value in effective_dates if value <= trade_date]
-        if not applicable:
+        while (
+            effective_index + 1 < len(effective_dates)
+            and effective_dates[effective_index + 1] <= trade_date
+        ):
+            effective_index += 1
+        if effective_index < 0:
             continue
-        effective_date = applicable[-1]
+        effective_date = effective_dates[effective_index]
         next_weight = weight_by_date[effective_date]
         if current_effective_date != effective_date:
             turnover = (

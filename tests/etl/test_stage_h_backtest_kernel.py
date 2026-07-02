@@ -89,6 +89,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
 
         frame = self._read_backtest_file(2024, 1)
         self.assertEqual(result["records_written"], len(frame))
+        self.assertEqual(result["records_inserted"], 0)
         self.assertFalse(
             frame.duplicated(
                 [
@@ -175,6 +176,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
         )
 
         self.assertEqual(set(frame["observation_type"]), {"diagnostic"})
+        self.assertEqual(len(frame), 1)
         notes = json.loads(frame.iloc[0]["quality_notes_json"])
         self.assertIn("missing_sleeve_return", notes["reasons"])
 
