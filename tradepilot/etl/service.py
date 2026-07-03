@@ -4207,6 +4207,14 @@ def _make_etf_aw_backtest_kernel_frame(
     month_start_nav = nav
 
     for trade_date, row in returns.iterrows():
+        month_key = (trade_date.year, trade_date.month)
+        if last_month is None:
+            last_month = month_key
+            month_start_nav = nav
+        elif month_key != last_month:
+            monthly_returns.append(nav / month_start_nav - 1.0)
+            month_start_nav = nav
+            last_month = month_key
         while (
             effective_index + 1 < len(effective_dates)
             and effective_dates[effective_index + 1] <= trade_date
@@ -4253,14 +4261,6 @@ def _make_etf_aw_backtest_kernel_frame(
         )
         nav *= 1.0 + portfolio_return
         return_values.append(portfolio_return)
-        month_key = (trade_date.year, trade_date.month)
-        if last_month is None:
-            last_month = month_key
-            month_start_nav = 1.0
-        elif month_key != last_month:
-            monthly_returns.append(nav / month_start_nav - 1.0)
-            month_start_nav = nav / (1.0 + portfolio_return)
-            last_month = month_key
         rows.append(
             _backtest_row(
                 calendar_name=calendar_name,
@@ -4432,6 +4432,7 @@ def _backtest_metric_values(
             "annualized_volatility": None,
             "sharpe_ratio": None,
             "max_drawdown": None,
+            "monthly_periods": None,
         }
     series = pd.Series(daily_returns, dtype=float)
     nav = (1.0 + series).cumprod()

@@ -193,6 +193,9 @@ Not implemented yet.
 
 Still needed:
 
+- `../etf-all-weather-implementation/backtest-evaluation-design.md`
+- Phase 1 read endpoint over existing `derived.etf_aw_backtest_kernel`
+- Phase 1 frontend display for single-strategy NAV, drawdown, KPI tiles, diagnostics, and monthly turnover
 - promotion from the small backtest kernel to a broader evaluation layer
 - monthly explainability table
 - equal-weight baseline
@@ -200,6 +203,7 @@ Still needed:
 - static risk-parity-like baseline
 - cost and turnover assumptions
 - parameter perturbation checks
+- Phase 2 daily effective-weight output for sleeve weight drift visualization
 
 ### 6. Remaining Stage 02+ data validation
 
@@ -252,12 +256,13 @@ This means the project can move from research/context assembly into the first ex
 When resuming, use this order:
 
 1. keep `../etf-all-weather-implementation/current-design.md` as the current design entry
-2. design `derived.etf_aw_risk_budget`
-3. implement a rules-based risk budget mapper
-4. design `derived.etf_aw_target_weight`
-5. implement budgeted inverse-vol MVP and verify it with the kernel
-6. add monthly explainability table and later baseline comparison
-7. only then consider simplified ERC or execution constraints
+2. freeze `../etf-all-weather-implementation/backtest-evaluation-design.md` so the PR comment's visualization requirements have a concrete owner
+3. design `derived.etf_aw_risk_budget`
+4. implement a rules-based risk budget mapper
+5. design `derived.etf_aw_target_weight`
+6. implement budgeted inverse-vol MVP and verify it with the kernel
+7. add monthly explainability table and later baseline comparison
+8. only then consider simplified ERC or execution constraints
 
 ---
 

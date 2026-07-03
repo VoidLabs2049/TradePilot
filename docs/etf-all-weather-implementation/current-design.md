@@ -489,13 +489,16 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 
 5. `backtest-evaluation-design.md`
 
-   只有在 `target-weight-design.md` 对应实现能通过前置回测内核验收后再写。
+   拆成两段推进。Phase 1 可在现有回测内核输出之上先定义 read endpoint 和单策略可视化；Phase 2 在 `target-weight-design.md` 对应实现能通过前置回测内核验收后，再做完整基线对标和评估层扩展。
 
    范围：
 
+   - 单策略净值、回撤、指标卡片和换手展示合同。
+   - diagnostic 行到前端降级横幅的映射。
    - 等权、静态 inverse-vol、静态风险平价基线。
    - 成本和换手假设。
    - 参数扰动。
+   - 日频有效权重输出。
    - 月度 explainability report。
    - Dashboard 净值展示边界。
 
@@ -529,13 +532,14 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 2. 更新旧 `progress-status.md`，避免文档状态继续停留在 “schema not done”。已完成。
 3. 新增并冻结 `backtest-kernel-design.md`。已完成。
 4. 实现前置回测内核，先用等权 fixture 跑通。已完成最小版本。
-5. 新增并冻结 `risk-budget-design.md`。
-6. 实现 `derived.etf_aw_risk_budget` schema、read model 和规则式 mapper。
-7. 新增并冻结 `target-weight-design.md`。
-8. 实现 `derived.etf_aw_target_weight` 和 budgeted inverse-vol MVP，并用前置回测内核验收。
-9. 增加 monthly explainability table 和后置 baseline comparison。
-10. 再评估是否引入 simplified ERC。
-11. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
+5. 新增并冻结 `backtest-evaluation-design.md`，先收口单策略可视化合同，完整基线对标留 Phase 2。
+6. 新增并冻结 `risk-budget-design.md`。
+7. 实现 `derived.etf_aw_risk_budget` schema、read model 和规则式 mapper。
+8. 新增并冻结 `target-weight-design.md`。
+9. 实现 `derived.etf_aw_target_weight` 和 budgeted inverse-vol MVP，并用前置回测内核验收。
+10. 增加 monthly explainability table 和后置 baseline comparison。
+11. 再评估是否引入 simplified ERC。
+12. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
 
 ## 非目标
 

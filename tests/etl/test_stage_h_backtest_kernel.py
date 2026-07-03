@@ -8,10 +8,12 @@ from tempfile import TemporaryDirectory
 import json
 import threading
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
 from tradepilot import db
+from tradepilot.etl import service as etl_service
 from tradepilot.etl.models import RunStatus
 from tradepilot.etl.service import ETLService
 
@@ -204,6 +206,55 @@ class StageHBacktestKernelTests(unittest.TestCase):
         notes = json.loads(frame.iloc[0]["quality_notes_json"])
         self.assertIn("rebalance_date_without_trading_day", notes["reasons"])
 
+    def test_monthly_returns_do_not_absorb_next_month_first_day(self) -> None:
+        rebalance = pd.DataFrame(
+            [
+                {
+                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "rebalance_date": date(2024, 1, 30),
+                }
+            ]
+        )
+        panel = self._sleeve_daily_frame_with_returns(
+            [
+                (date(2024, 1, 30), 0.01),
+                (date(2024, 1, 31), 0.02),
+                (date(2024, 2, 2), 0.03),
+            ]
+        )
+        captured: dict[str, list[float]] = {}
+        original_metric_values = etl_service._backtest_metric_values
+
+        def capture_metrics(
+            daily_returns: list[float],
+            monthly_returns: list[float],
+            final_nav: float,
+        ) -> dict[str, float | None]:
+            captured["monthly_returns"] = monthly_returns
+            return original_metric_values(daily_returns, monthly_returns, final_nav)
+
+        with patch(
+            "tradepilot.etl.service._backtest_metric_values",
+            side_effect=capture_metrics,
+        ):
+            self.service._make_etf_aw_backtest_kernel_frame(
+                panel=panel,
+                rebalance=rebalance,
+                weights=self._equal_weights(date(2024, 1, 30)),
+                start=date(2024, 1, 1),
+                end=date(2024, 2, 29),
+            )
+
+        self.assertEqual(len(captured["monthly_returns"]), 2)
+        self.assertAlmostEqual(captured["monthly_returns"][0], 1.01 * 1.02 - 1.0)
+        self.assertAlmostEqual(captured["monthly_returns"][1], 0.03)
+
+    def test_empty_backtest_metrics_keep_monthly_periods_key(self) -> None:
+        metrics = etl_service._backtest_metric_values([], [], 1.0)
+
+        self.assertIn("monthly_periods", metrics)
+        self.assertIsNone(metrics["monthly_periods"])
+
     def _insert_rebalance(self, rebalance_date: date) -> None:
         self.conn.execute(
             """
@@ -263,6 +314,44 @@ class StageHBacktestKernelTests(unittest.TestCase):
                         "amount": 1.0,
                         "source_name": "fixture",
                         "ingested_at": pd.Timestamp("2024-01-22"),
+                        "quality_status": "pass",
+                    }
+                )
+        return pd.DataFrame(rows)
+
+    def _sleeve_daily_frame_with_returns(
+        self, daily_returns: list[tuple[date, float]]
+    ) -> pd.DataFrame:
+        rows: list[dict] = []
+        codes = [
+            ("510300.SH", "equity_large"),
+            ("159845.SZ", "equity_small"),
+            ("511010.SH", "bond"),
+            ("518850.SH", "gold"),
+            ("159001.SZ", "cash"),
+        ]
+        for code, role in codes:
+            price = 10.0
+            for trade_date, daily_return in daily_returns:
+                price *= 1.0 + daily_return
+                rows.append(
+                    {
+                        "sleeve_code": code,
+                        "sleeve_role": role,
+                        "instrument_id": code,
+                        "trade_date": trade_date,
+                        "open": price,
+                        "high": price,
+                        "low": price,
+                        "close": price,
+                        "adj_factor": 1.0,
+                        "adj_close": price,
+                        "pct_chg": daily_return * 100,
+                        "adj_pct_chg": daily_return * 100,
+                        "volume": 1.0,
+                        "amount": 1.0,
+                        "source_name": "fixture",
+                        "ingested_at": pd.Timestamp("2024-01-30"),
                         "quality_status": "pass",
                     }
                 )
