@@ -201,6 +201,14 @@ strategy_context
 
 当前前端主要展示 snapshot 和 risk budget 只读观察结果；strategy context 后续可作为 insight-first 面板的输入。下一步不得继续扩展前端，除非后端 target weight 和 frozen backtest 合同已经稳定。
 
+后续前端清理方向：
+
+- 保留 `/etf-aw` 的只读定位，但清理视觉密度，让页面更像工作台而不是调试面板。
+- 将 snapshot、risk budget、未来 target weight 和 backtest report 按稳定后端合同分区展示，避免一个页面堆叠临时字段。
+- 统一状态、诊断、百分比和 caveat 展示组件，减少重复表格和长 JSON tooltip。
+- 删除或隐藏只服务开发排查的字段，把详细诊断下钻到 drawer 或折叠区。
+- 在 target weight 和 backtest 合同稳定前，不新增参数编辑、策略切换、回测触发或交易动作入口。
+
 ## 资料库吸收边界
 
 ### 直接吸收
@@ -634,7 +642,8 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 14. 增加 monthly explainability table 和后置 baseline comparison。
 15. 再评估是否引入 simplified ERC。
 16. 后端 target weight 和 backtest 合同稳定后，再补前端目标权重、净值或 Dashboard 面板。
-17. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
+17. 清理 ETF 全天候前端界面，保持只读、分区清晰、诊断可下钻，不把临时研究字段堆到主视图。
+18. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
 
 ## 非目标
 
