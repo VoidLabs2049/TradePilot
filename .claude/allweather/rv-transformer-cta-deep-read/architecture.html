@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RV_Transformer_CTA — 全模块架构图</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #c9d1d9; --dim: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --yellow: #d2991d; --orange: #db6d28;
+    --red: #f85149; --purple: #a371f7; --cyan: #39d2c0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, monospace; background: var(--bg); color: var(--text); line-height: 1.5; padding: 20px; }
+  h1 { font-size: 1.3em; text-align: center; color: var(--accent); margin-bottom: 4px; }
+  .subtitle { text-align: center; color: var(--dim); font-size: 0.8em; margin-bottom: 20px; }
+  .diagram { display: flex; flex-direction: column; gap: 14px; max-width: 1100px; margin: 0 auto; }
+  .layer { display: flex; align-items: stretch; gap: 10px; }
+  .layer-label { writing-mode: vertical-lr; font-size: 0.7em; color: var(--dim); letter-spacing: 2px; padding: 8px 4px; min-width: 24px; border-right: 2px solid var(--border); flex-shrink: 0; text-align: center; }
+  .layer-cards { display: flex; flex-wrap: wrap; gap: 8px; flex: 1; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; min-width: 160px; flex: 1 1 160px; }
+  .card:hover { border-color: var(--accent); }
+  .card .file { font-size: 0.7em; color: var(--dim); margin-bottom: 2px; font-family: 'SF Mono', monospace; }
+  .card .title { font-size: 0.85em; font-weight: 600; color: var(--accent); margin-bottom: 4px; }
+  .card .desc { font-size: 0.75em; color: var(--text); line-height: 1.4; }
+  .card.green { border-left: 3px solid var(--green); }
+  .card.yellow { border-left: 3px solid var(--yellow); }
+  .card.orange { border-left: 3px solid var(--orange); }
+  .arrow-row { display: flex; justify-content: center; align-items: center; font-size: 0.8em; color: var(--dim); padding: 1px 0; gap: 6px; }
+  .arrow { color: var(--green); font-weight: bold; }
+  .hl { display: inline-block; background: rgba(88,166,255,0.1); padding: 1px 4px; border-radius: 2px; font-size: 0.82em; }
+  .section-title { font-size: 0.78em; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; padding: 8px 0 4px; border-bottom: 1px solid var(--border); margin: 12px 0 6px; }
+  .insight-box { background: var(--surface); border: 1px solid var(--purple); border-radius: 6px; padding: 12px; margin-top: 16px; font-size: 0.8em; max-width: 1100px; margin-left: auto; margin-right: auto; }
+  .insight-box .ib-title { color: var(--purple); font-weight: 600; margin-bottom: 6px; }
+  .insight-box ul { list-style: none; }
+  .insight-box li { padding: 2px 0; }
+  .insight-box li::before { content: "▪ "; color: var(--purple); }
+  .legend { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin: 8px 0; font-size: 0.75em; }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+  .legend-dot.green { background: var(--green); }
+  .legend-dot.yellow { background: var(--yellow); }
+  .legend-dot.orange { background: var(--orange); }
+</style>
+</head>
+<body>
+
+<h1>RV_Transformer_CTA — 全模块架构</h1>
+<p class="subtitle">12 文件 · 7 层 · pretrain→finetune→live 三模式 &nbsp;|&nbsp; <span class="hl">绿色=可直接继承</span> <span class="hl" style="background:rgba(210,153,29,0.15)">黄色=改造复用</span> <span class="hl" style="background:rgba(219,109,40,0.15)">橙色=学习模式</span></p>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot green"></div> 可继承</div>
+  <div class="legend-item"><div class="legend-dot yellow"></div> 需改造</div>
+  <div class="legend-item"><div class="legend-dot orange"></div> 学模式</div>
+</div>
+
+<div class="diagram">
+
+  <!-- CONFIG -->
+  <div class="layer">
+    <div class="layer-label">CNF</div>
+    <div class="layer-cards">
+      <div class="card green">
+        <div class="file">config.py</div>
+        <div class="title">Dataclass 配置层</div>
+        <div class="desc">
+          ModelConfig(128d/8h/4layers) · TrainingConfig(lr=1e-4, mask=0.15, svd=1e-4) · TradingConfig(stop=-5%, prob≥0.6) · SystemConfig 聚合嵌套
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓</span></div>
+
+  <!-- DATA -->
+  <div class="layer">
+    <div class="layer-label">DATA</div>
+    <div class="layer-cards">
+      <div class="card orange">
+        <div class="file">data/stream_parser.py</div>
+        <div class="title">L2OrderBook · 34维特征</div>
+        <div class="desc">
+          5层深度→bid/ask prices+qty · WAP/mid/spread · <b>OFI</b>(订单流不平衡) · <b>RV</b>(已实现波动率) · trade_vol/imbal/vwap/cnt · 每层 imbalance
+        </div>
+      </div>
+      <div class="card orange">
+        <div class="file">data/feature_pipeline.py</div>
+        <div class="title">特征管线 + Dataset</div>
+        <div class="desc">
+          <b>在线标准化</b>: EMA(α=min(1/count,0.01)) · pretrain 返回(masked,orig,mask) · finetune 返回(seq,label) · label=RV_future&gt;IV_current
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓ 34d × 100步序列</span></div>
+
+  <!-- MODEL -->
+  <div class="layer">
+    <div class="layer-label">MDL</div>
+    <div class="layer-cards">
+      <div class="card orange">
+        <div class="file">models/transformer.py</div>
+        <div class="title">VolatilityTransformer</div>
+        <div class="desc">
+          Linear(34→128) → PosEnc(sin/cos) → <b>TransformerEncoder ×4</b>(8头,ff=512,drop=0.1)<br>
+          pretrain: Linear(128→34) 逐步重建 · finetune: Linear(128→2) last_token分类<br>
+          ~2.5M params
+        </div>
+      </div>
+      <div class="card orange">
+        <div class="file">models/regularization.py</div>
+        <div class="title">SVD L1 核范数正则</div>
+        <div class="desc">
+          Σ|svdvals(W)| + 1e-9 noise 防数值不稳定<br>
+          鼓励权重低秩=特征稀疏化 → 防过拟合
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row">
+    <span class="arrow">↙ pretrain: 掩码重建</span>
+    <span style="margin:0 24px;color:var(--dim)">|</span>
+    <span class="arrow">↘ finetune: IV方向分类</span>
+  </div>
+
+  <!-- TRAINING -->
+  <div class="layer">
+    <div class="layer-label">TRN</div>
+    <div class="layer-cards">
+      <div class="card yellow">
+        <div class="file">training/pretrain.py</div>
+        <div class="title">掩码自编码预训练</div>
+        <div class="desc">
+          15%随机mask → 重建被mask位置 → MSE(仅mask位) + SVD L1<br>
+          AdamW, lr=1e-4, 10 epochs · 学习订单簿底层结构
+        </div>
+      </div>
+      <div class="card yellow">
+        <div class="file">training/finetune.py</div>
+        <div class="title">分类微调</div>
+        <div class="desc">
+          加载encoder权重(跳过head) → CrossEntropy + SVD L1<br>
+          AdamW, lr=5e-5, 15 epochs · horizon=60步预测窗口
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓ 二分类: IV↑(1) vs IV↓(0)</span></div>
+
+  <!-- TRADING -->
+  <div class="layer">
+    <div class="layer-label">TRD</div>
+    <div class="layer-cards">
+      <div class="card green">
+        <div class="file">trading/executor.py</div>
+        <div class="title">AbstractTradingExecutor</div>
+        <div class="desc">
+          ABC抽象接口: execute/get_positions/get_value/cancel<br>
+          <b>Mock→Paper→Live 可插拔</b>
+        </div>
+      </div>
+      <div class="card orange">
+        <div class="file">trading/strategy.py</div>
+        <div class="title">波动率交易状态机</div>
+        <div class="desc">
+          pred=1 + prob≥0.6 → <b>buy Straddle</b>(做多IV)<br>
+          pred=0 + prob≥0.6 → <b>sell IronCondor</b>(做空IV)<br>
+          信号反转→平仓 · drawdown≤-5%→止损
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓</span></div>
+
+  <!-- PIPELINE -->
+  <div class="layer">
+    <div class="layer-label">PIPE</div>
+    <div class="layer-cards">
+      <div class="card yellow">
+        <div class="file">pipeline/realtime_engine.py</div>
+        <div class="title">RealtimeEngine · 事件驱动</div>
+        <div class="desc">
+          event_generator → for each event: depth→update OB · trade→record · 每1秒→extract features→normalize→Transformer→strategy<br>
+          <span class="hl">生成器模式 · 解耦数据源/模型/策略</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓</span></div>
+
+  <!-- MAIN + TESTS -->
+  <div class="layer">
+    <div class="layer-label">RUN</div>
+    <div class="layer-cards">
+      <div class="card yellow">
+        <div class="file">main.py</div>
+        <div class="title">CLI 三模式</div>
+        <div class="desc">
+          --mode pretrain|finetune|live · --data_path .npy · --pretrain/finetune_checkpoint<br>
+          live: mock feed (sin波IV + 随机trade) → 演示用
+        </div>
+      </div>
+      <div class="card green">
+        <div class="file">tests/test_system.py</div>
+        <div class="title">7 个单元测试</div>
+        <div class="desc">
+          config · L2OB特征(34维校验) · SVD正则化(backward) · Transformer形状(pretrain/finetune) · Dataset(pretrain/finetune) · 策略状态机(4路径) · 引擎端到端
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Data flow diagram -->
+  <div class="section-title">▸ 两阶段训练 + 实时推理数据流</div>
+  <div class="layer-cards" style="flex: 1;">
+    <div style="width: 100%;">
+      <svg viewBox="0 0 980 200" style="width: 100%; max-height: 200px; font-family: monospace; font-size: 11px;">
+        <defs><marker id="a" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#58a6ff"/></marker></defs>
+
+        <!-- Stage 1: Pretrain -->
+        <rect x="20" y="15" width="320" height="70" rx="6" fill="#161b22" stroke="#d2991d" stroke-width="1.2"/>
+        <text x="180" y="38" text-anchor="middle" fill="#d2991d" font-size="11" font-weight="600">Stage 1: 掩码自编码预训练</text>
+        <text x="180" y="55" text-anchor="middle" fill="#8b949e" font-size="9">原始序列 → 15%随机mask → Transformer重建 → MSE(仅mask位)</text>
+        <text x="180" y="72" text-anchor="middle" fill="#8b949e" font-size="9">学习: 订单簿特征的底层时序结构</text>
+
+        <line x1="340" y1="50" x2="375" y2="50" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#a)"/>
+
+        <!-- Stage 2: Finetune -->
+        <rect x="380" y="15" width="320" height="70" rx="6" fill="#161b22" stroke="#db6d28" stroke-width="1.2"/>
+        <text x="540" y="38" text-anchor="middle" fill="#db6d28" font-size="11" font-weight="600">Stage 2: 分类微调</text>
+        <text x="540" y="55" text-anchor="middle" fill="#8b949e" font-size="9">加载encoder权重 → 替换分类头 → 标签: future_RV &gt; IV?</text>
+        <text x="540" y="72" text-anchor="middle" fill="#8b949e" font-size="9">AdamW, lr=5e-5, 15 epochs, horizon=60步</text>
+
+        <line x1="700" y1="50" x2="735" y2="50" stroke="#58a6ff" stroke-width="1.2" marker-end="url(#a)"/>
+
+        <!-- Stage 3: Live -->
+        <rect x="740" y="15" width="220" height="70" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1.2"/>
+        <text x="850" y="38" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">Stage 3: 实时推理</text>
+        <text x="850" y="55" text-anchor="middle" fill="#8b949e" font-size="9">L2事件流→特征→Transformer→</text>
+        <text x="850" y="72" text-anchor="middle" fill="#8b949e" font-size="9">prob≥0.6?→Straddle/IronCondor</text>
+
+        <!-- Bottom: Data shapes -->
+        <rect x="60" y="110" width="880" height="80" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+        <text x="500" y="130" text-anchor="middle" fill="#39d2c0" font-size="10" font-weight="600">数据流形状变化</text>
+        <text x="500" y="148" text-anchor="middle" fill="#8b949e" font-size="9">(batch, 100, 34) 订单簿序列 → Linear(34→128) → Transformer Encoder(×4) → [pretrain](batch,100,34) 或 [finetune](batch,2)</text>
+        <text x="500" y="166" text-anchor="middle" fill="#8b949e" font-size="9">→ softmax → [prob_IV↑, prob_IV↓] → prob≥0.6 入场 → 止损-5% → 信号反转平仓</text>
+        <text x="500" y="184" text-anchor="middle" fill="#3fb950" font-size="9">Straddle: long gamma + long vega · Iron Condor: short gamma + short vega (delta中性, 纯vol)</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- vs comparison -->
+  <div class="section-title">▸ 与 all_weather_hedging 的关键差异</div>
+  <div class="layer-cards" style="flex: 1;">
+    <div style="width: 100%;">
+      <svg viewBox="0 0 980 140" style="width: 100%; max-height: 140px; font-family: monospace; font-size: 10px;">
+        <!-- Left: all_weather -->
+        <rect x="10" y="10" width="470" height="120" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+        <text x="245" y="30" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">all_weather_hedging</text>
+        <text x="245" y="48" text-anchor="middle" fill="#8b949e" font-size="9">Causal1DCNN(20K) · 单阶段监督 · 固定风险预算 · 无测试</text>
+        <text x="245" y="64" text-anchor="middle" fill="#8b949e" font-size="9">4维收益序列 · BS期权定价+DeepOTM对冲 · 有VaR/CVaR</text>
+        <text x="245" y="80" text-anchor="middle" fill="#8b949e" font-size="9">固定预算[0.4,0.3,0.15,0.15] · Newton风险平价</text>
+        <text x="245" y="100" text-anchor="middle" fill="#8b949e" font-size="9"><b>宏观配置方向 · 缺状态识别层</b></text>
+
+        <!-- Arrow -->
+        <text x="490" y="75" text-anchor="middle" fill="#58a6ff" font-size="14">⟷</text>
+        <text x="490" y="95" text-anchor="middle" fill="#58a6ff" font-size="8">共享管线骨架</text>
+
+        <!-- Right: rv_transformer -->
+        <rect x="500" y="10" width="470" height="120" rx="6" fill="#161b22" stroke="#d2991d" stroke-width="1"/>
+        <text x="735" y="30" text-anchor="middle" fill="#d2991d" font-size="11" font-weight="600">RV_Transformer_CTA</text>
+        <text x="735" y="48" text-anchor="middle" fill="#8b949e" font-size="9">Transformer(2.5M) · 预训练+微调 · 概率门控 · 7个测试</text>
+        <text x="735" y="64" text-anchor="middle" fill="#8b949e" font-size="9">34维L2订单簿 · Straddle/IronCondor策略 · 有SVD正则化</text>
+        <text x="735" y="80" text-anchor="middle" fill="#8b949e" font-size="9">prob≥0.6入场 · stop=-5% · AbstractTradingExecutor接口</text>
+        <text x="735" y="100" text-anchor="middle" fill="#8b949e" font-size="9"><b>波动率交易方向 · 缺宏观上下文</b></text>
+      </svg>
+    </div>
+  </div>
+
+</div>
+
+<div class="insight-box">
+  <div class="ib-title">▸ 5 个可迁移技术模式</div>
+  <ul>
+    <li><b>1. 预训练→微调两阶段范式</b> (pretrain.py + finetune.py) — 掩码自编码学底层结构，少量标签做分类。金融数据标签稀少的通用解决方案。</li>
+    <li><b>2. SVD L1 核范数正则化</b> (regularization.py:1-20) — 最小化 Σ|svdvals(W)| 鼓励权重低秩→特征稀疏化→防过拟合。高维金融模型标配。</li>
+    <li><b>3. AbstractTradingExecutor 抽象层</b> (executor.py:1-18) — ABC定义执行接口 → Mock/Paper/Live 可插拔后端。量化系统工程化标准做法。</li>
+    <li><b>4. L2订单簿34维特征工程</b> (stream_parser.py:113-142) — WAP/mid/spread/OFI/RV/trade_metrics/5层depth+imbalance。Microstructure模型的通用特征蓝图。</li>
+    <li><b>5. 概率门控交易</b> (strategy.py:27-42) — 置信度≥0.6才入场 + 止损-5%。用阈值防噪声，用止损控尾部。</li>
+  </ul>
+</div>
+
+</body>
+</html>

@@ -33,6 +33,9 @@ _ETF_AW_MARKET_FEATURES_SCHEMA_VERSION = "etf_aw_market_features_v1"
 _ETF_AW_STRATEGY_CONTEXT_DATASET = "derived.etf_aw_strategy_context"
 _ETF_AW_STRATEGY_CONTEXT_SCHEMA_VERSION = "etf_aw_strategy_context_v1"
 _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION = "etf_aw_strategy_context_contract_v1"
+_ETF_AW_RISK_BUDGET_DATASET = "derived.etf_aw_risk_budget"
+_ETF_AW_RISK_BUDGET_SCHEMA_VERSION = "etf_aw_risk_budget_v1"
+_ETF_AW_RISK_BUDGET_CONTRACT_VERSION = "etf_aw_risk_budget_contract_v1"
 _ETF_AW_MACRO_RATES_CONTEXT_SCHEMA_VERSION = "etf_aw_macro_rates_context_v1"
 _MACRO_SLOW_FIELDS_DATASET = "macro.slow_fields"
 _RATES_DAILY_RATES_DATASET = "rates.daily_rates"
@@ -205,6 +208,81 @@ def list_etf_aw_strategy_contexts(
         keep="last",
     )
     return [_strategy_context_contract(row) for _, row in latest.iterrows()]
+
+
+def get_latest_etf_aw_risk_budget(
+    as_of_date: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return the latest ETF all-weather risk budget at or before a date."""
+
+    frame = _read_etf_aw_risk_budget_partitions(lakehouse_root=lakehouse_root)
+    if frame.empty:
+        return None
+    frame = _normalize_risk_budget_frame(frame)
+    if as_of_date is not None and not frame.empty:
+        frame = frame[frame["rebalance_date"] <= as_of_date].copy()
+    if frame.empty:
+        return None
+    latest_date = max(frame["rebalance_date"].dropna().tolist())
+    latest = frame[frame["rebalance_date"] == latest_date].copy()
+    latest = _sort_latest_rows(latest)
+    latest = latest.drop_duplicates(
+        [
+            "calendar_name",
+            "rebalance_date",
+            "strategy_name",
+            "strategy_version",
+            "sleeve_role",
+        ],
+        keep="last",
+    )
+    for _, group in latest.groupby(
+        ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+        sort=True,
+    ):
+        return _risk_budget_contract(group)
+    return None
+
+
+def list_etf_aw_risk_budgets(
+    start: date,
+    end: date,
+    *,
+    lakehouse_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return ETF all-weather risk budgets in a rebalance-date window."""
+
+    if start > end:
+        start, end = end, start
+    frame = _read_etf_aw_risk_budget_partitions(
+        start=start,
+        end=end,
+        lakehouse_root=lakehouse_root,
+    )
+    if frame.empty:
+        return []
+    frame = _normalize_risk_budget_frame(frame)
+    frame = frame[frame["rebalance_date"].between(start, end, inclusive="both")]
+    frame = _sort_latest_rows(frame)
+    latest = frame.drop_duplicates(
+        [
+            "calendar_name",
+            "rebalance_date",
+            "strategy_name",
+            "strategy_version",
+            "sleeve_role",
+        ],
+        keep="last",
+    )
+    return [
+        _risk_budget_contract(group)
+        for _, group in latest.groupby(
+            ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+            sort=True,
+        )
+    ]
 
 
 def get_latest_etf_aw_market_features(
@@ -402,6 +480,32 @@ def _read_etf_aw_strategy_context_partitions(
     ):
         path = build_dataset_file_path(
             _ETF_AW_STRATEGY_CONTEXT_DATASET,
+            StorageZone.DERIVED,
+            [("year", year), ("month", f"{month:02d}")],
+            lakehouse_root=lakehouse_root,
+        )
+        if path.exists():
+            frames.append(pd.read_parquet(path))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _read_etf_aw_risk_budget_partitions(
+    start: date | None = None,
+    end: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for year, month in _dataset_months(
+        _ETF_AW_RISK_BUDGET_DATASET,
+        start,
+        end,
+        lakehouse_root=lakehouse_root,
+    ):
+        path = build_dataset_file_path(
+            _ETF_AW_RISK_BUDGET_DATASET,
             StorageZone.DERIVED,
             [("year", year), ("month", f"{month:02d}")],
             lakehouse_root=lakehouse_root,
@@ -635,6 +739,40 @@ def _normalize_strategy_context_frame(frame: pd.DataFrame) -> pd.DataFrame:
         & (
             normalized["contract_version"].astype(str)
             == _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION
+        )
+    ].copy()
+    return normalized
+
+
+def _normalize_risk_budget_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    required = {
+        "schema_version",
+        "contract_version",
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_role",
+        "base_budget",
+        "tilted_budget",
+        "budget_status",
+    }
+    if not required.issubset(frame.columns):
+        return pd.DataFrame()
+    normalized = frame.copy()
+    normalized["rebalance_date"] = _normalize_date_series(normalized["rebalance_date"])
+    for column in (
+        "source_strategy_context_rebalance_date",
+        "source_regime_rebalance_date",
+    ):
+        if column in normalized.columns:
+            normalized[column] = _normalize_date_series(normalized[column])
+    normalized = normalized.dropna(subset=["rebalance_date"])
+    normalized = normalized[
+        (normalized["schema_version"].astype(str) == _ETF_AW_RISK_BUDGET_SCHEMA_VERSION)
+        & (
+            normalized["contract_version"].astype(str)
+            == _ETF_AW_RISK_BUDGET_CONTRACT_VERSION
         )
     ].copy()
     return normalized
@@ -1164,6 +1302,49 @@ def _strategy_context_contract(row: pd.Series) -> dict[str, Any]:
         "source_macro_rates_rebalance_date": _date_text(
             row.get("source_macro_rates_rebalance_date")
         ),
+    }
+
+
+def _risk_budget_contract(frame: pd.DataFrame) -> dict[str, Any]:
+    ordered = frame.sort_values("sleeve_role")
+    first = ordered.iloc[0]
+    base_sum = float(ordered["base_budget"].astype(float).sum())
+    tilted_sum = float(ordered["tilted_budget"].astype(float).sum())
+    return {
+        "schema_version": _ETF_AW_RISK_BUDGET_SCHEMA_VERSION,
+        "contract_version": _ETF_AW_RISK_BUDGET_CONTRACT_VERSION,
+        "calendar_name": _optional_text(first.get("calendar_name")),
+        "rebalance_date": _date_text(first.get("rebalance_date")),
+        "strategy_name": _optional_text(first.get("strategy_name")),
+        "strategy_version": _optional_text(first.get("strategy_version")),
+        "market_regime_label": _optional_text(first.get("market_regime_label")),
+        "budget_status": _optional_text(first.get("budget_status")),
+        "budget_basis": _optional_text(first.get("budget_basis")),
+        "confidence_score": _optional_float(first.get("confidence_score")),
+        "effective_confidence_score": _optional_float(
+            first.get("effective_confidence_score")
+        ),
+        "base_budget_sum": round(base_sum, 6),
+        "tilted_budget_sum": round(tilted_sum, 6),
+        "budgets": [_risk_budget_sleeve_contract(row) for _, row in ordered.iterrows()],
+        "quality_notes": _quality_notes(first.get("quality_notes_json")),
+        "source_strategy_context_rebalance_date": _date_text(
+            first.get("source_strategy_context_rebalance_date")
+        ),
+        "source_regime_rebalance_date": _date_text(
+            first.get("source_regime_rebalance_date")
+        ),
+    }
+
+
+def _risk_budget_sleeve_contract(row: pd.Series) -> dict[str, Any]:
+    return {
+        "sleeve_role": _optional_text(row.get("sleeve_role")),
+        "base_budget": _optional_float(row.get("base_budget")),
+        "delta_budget": _optional_float(row.get("delta_budget")),
+        "tilted_budget": _optional_float(row.get("tilted_budget")),
+        "budget_status": _optional_text(row.get("budget_status")),
+        "quality_notes": _quality_notes(row.get("quality_notes_json")),
     }
 
 

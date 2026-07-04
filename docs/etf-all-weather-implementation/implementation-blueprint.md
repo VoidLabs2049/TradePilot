@@ -207,15 +207,19 @@ This is why the domestic adaptation should lean toward `growth x credit` with ma
 
 ## Practical Build Sequence
 
-### Step 1 — Notebook MVP
+### Step 1 — Backend CLI MVP
 
-Build one notebook that can:
+Build command-line entry points that can:
 - load sleeves
-- load and align macro features
+- fetch or refresh the latest local market/context data
+- load and align macro features when available
 - score regime
 - generate budgets
 - compute weights
-- run monthly backtest
+- run the monthly backtest kernel
+- write reproducible backtest artifacts
+
+The first implementation target should be backend scripts and deterministic datasets, not a frontend page. A notebook can still be useful for exploratory research, but it should not become the canonical production path.
 
 ### Step 2 — Explainability Table
 
@@ -232,11 +236,22 @@ If this table is not interpretable, the model is too opaque for this stage.
 
 Produce one report comparing v1 against the simple baselines.
 
-### Step 4 — Shadow Run
+### Step 4 — Frontend Read Model And Page
+
+Expose the stable backtest and recommendation outputs through read endpoints, then add a frontend page or Dashboard panel that displays:
+- latest context
+- risk budget
+- target weights
+- net value and drawdown
+- turnover and diagnostics
+
+Do this after the backend contracts are stable enough that the UI is not encoding temporary research assumptions.
+
+### Step 5 — Shadow Run
 
 Run monthly paper allocations with frozen decisions and post-mortem review.
 
-### Step 5 — Tiny Live Pilot
+### Step 6 — Tiny Live Pilot
 
 Only after shadow behavior is clean.
 

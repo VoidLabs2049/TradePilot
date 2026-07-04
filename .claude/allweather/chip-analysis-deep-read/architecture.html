@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>筹码分析与半日频调优 — 全模块架构图</title>
+<style>
+  :root { --bg:#0d1117; --surface:#161b22; --border:#30363d; --text:#c9d1d9; --dim:#8b949e; --accent:#58a6ff; --green:#3fb950; --yellow:#d2991d; --orange:#db6d28; --red:#f85149; --purple:#a371f7; --cyan:#39d2c0; }
+  *{margin:0;padding:0;box-sizing:border-box} body{font-family:-apple-system,BlinkMacSystemFont,monospace;background:var(--bg);color:var(--text);line-height:1.5;padding:20px}
+  h1{font-size:1.3em;text-align:center;color:var(--accent);margin-bottom:4px}
+  .sub{text-align:center;color:var(--dim);font-size:0.8em;margin-bottom:16px}
+  .diagram{display:flex;flex-direction:column;gap:12px;max-width:1100px;margin:0 auto}
+  .layer{display:flex;align-items:stretch;gap:8px}
+  .layer-label{writing-mode:vertical-lr;font-size:0.65em;color:var(--dim);letter-spacing:2px;padding:6px 2px;min-width:20px;border-right:2px solid var(--border);flex-shrink:0;text-align:center}
+  .layer-cards{display:flex;flex-wrap:wrap;gap:8px;flex:1}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 10px;min-width:150px;flex:1 1 150px;font-size:0.78em}
+  .card:hover{border-color:var(--accent)}
+  .card .file{font-size:0.7em;color:var(--dim);margin-bottom:1px;font-family:monospace}
+  .card .title{font-size:0.82em;font-weight:600;color:var(--accent);margin-bottom:3px}
+  .card .desc{color:var(--text);line-height:1.35}
+  .card.green{border-left:3px solid var(--green)}
+  .card.yellow{border-left:3px solid var(--yellow)}
+  .card.orange{border-left:3px solid var(--orange)}
+  .arrow-row{display:flex;justify-content:center;align-items:center;font-size:0.75em;color:var(--dim);padding:0;gap:4px}
+  .arrow{color:var(--green);font-weight:bold}
+  .hl{background:rgba(88,166,255,0.1);padding:1px 4px;border-radius:2px}
+  .section-title{font-size:0.75em;color:var(--dim);text-transform:uppercase;letter-spacing:1px;padding:6px 0 3px;border-bottom:1px solid var(--border);margin:8px 0 4px}
+  .insight-box{background:var(--surface);border:1px solid var(--purple);border-radius:6px;padding:12px;margin-top:12px;font-size:0.78em;max-width:1100px;margin-left:auto;margin-right:auto}
+  .insight-box .ib-title{color:var(--purple);font-weight:600;margin-bottom:5px}
+  .insight-box ul{list-style:none}.insight-box li{padding:2px 0}.insight-box li::before{content:"▪ ";color:var(--purple)}
+  .warn-box{background:rgba(248,81,73,0.08);border:1px solid var(--red);border-radius:6px;padding:10px;margin-top:8px;font-size:0.78em}
+  .warn-box .warn-title{color:var(--red);font-weight:600;margin-bottom:4px}
+  .stats{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:8px 0;font-size:0.75em}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:4px 10px;text-align:center}
+  .stat .val{color:var(--accent);font-size:1.1em;font-weight:600}
+  .stat .lbl{color:var(--dim);font-size:0.85em}
+</style>
+</head>
+<body>
+
+<h1>筹码分析与半日频调优 — CSI500 实盘交易系统</h1>
+<p class="sub">~2000 行代码 · 三专家 MWU · XtQuant/QMT 真实交易 · 五层风控 &nbsp;|&nbsp; <span class="hl">真实 A 股实盘生产系统</span></p>
+
+<div class="stats">
+  <div class="stat"><div class="val">CSI500</div><div class="lbl">成分股池</div></div>
+  <div class="stat"><div class="val">3</div><div class="lbl">专家模型</div></div>
+  <div class="stat"><div class="val">20</div><div class="lbl">优化Top-K</div></div>
+  <div class="stat"><div class="val">8只</div><div class="lbl">实盘上限</div></div>
+  <div class="stat"><div class="val">5层</div><div class="lbl">风控过滤</div></div>
+  <div class="stat"><div class="val">8%</div><div class="lbl">振幅阈值</div></div>
+</div>
+
+<div class="diagram">
+
+  <!-- THREE EXPERTS -->
+  <div class="section-title">▸ 三专家并行预测</div>
+  <div class="layer">
+    <div class="layer-label">E2E</div>
+    <div class="layer-cards">
+      <div class="card orange">
+        <div class="file">model_e2e.py + infra.py:107-123</div>
+        <div class="title">StockLLM · 收益预测</div>
+        <div class="desc">
+          20特征×10天窗口 · RMSNorm·SwiGLU·ModernBlock · 64d/2头/1层<br>
+          截面z-score标准化 → last_token → 预测收益<br>
+          <span class="hl">XGBoost因子+Transformer 混合特征</span>
+        </div>
+      </div>
+    </div>
+    <div class="layer-label">NLP</div>
+    <div class="layer-cards">
+      <div class="card orange">
+        <div class="file">infra.py:394-623</div>
+        <div class="title">NLPEngine · 舆情情绪</div>
+        <div class="desc">
+          akshare新闻 → sentence-transformers相似度 → 行业路由<br>
+          OpenAI API 情绪打分 · 公共新闻权重0.6 · 多级JSON缓存
+        </div>
+      </div>
+    </div>
+    <div class="layer-label">CHIP</div>
+    <div class="layer-cards">
+      <div class="card orange">
+        <div class="file">chip_tushare.py + infra.py:625-772</div>
+        <div class="title">ChipEngine · 筹码分析</div>
+        <div class="desc">
+          Tushare cyq_perf → concentration/winner_rate/cost_bias/profit_trend<br>
+          线性打分: 0.4×获利 + 0.3×集中 + 0.2×成本 + 0.1×趋势<br>
+          7日JSON缓存 · 失败fallback
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row">
+    <span class="arrow">↓ e2e_scores</span>
+    <span style="margin:0 20px"></span>
+    <span class="arrow">↓ nlp_scores</span>
+    <span style="margin:0 20px"></span>
+    <span class="arrow">↓ chip_scores</span>
+  </div>
+
+  <!-- MWU -->
+  <div class="layer">
+    <div class="layer-label">MWU</div>
+    <div class="layer-cards">
+      <div class="card green">
+        <div class="file">infra.py:774-964</div>
+        <div class="title">MWUManager · 动态权重融合</div>
+        <div class="desc">
+          <b>初始权重</b>: e2e/nlp/chip = 1/3 · <b>下限</b>: 0.05<br>
+          <b>Reward</b>: Top-20 平均次日收益 · w(t+1)=w(t)×(1+η×reward)<br>
+          <b>Fuse</b>: 各路z-score → 加权求和 · 持久化 mwu_state.json<br>
+          <span class="hl">MWU健康检查: 非零率/reward/dw 详细日志</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓ final_scores (融合分)</span></div>
+
+  <!-- OPTIMIZATION -->
+  <div class="layer">
+    <div class="layer-label">OPT</div>
+    <div class="layer-cards">
+      <div class="card green">
+        <div class="file">infra.py:979-1056</div>
+        <div class="title">CVXPY MILP 离散优化</div>
+        <div class="desc">
+          max Σ(lots×price×score) · s.t. lots≥0 integer<br>
+          Σ(lots×price)×100 ≤ cash×0.98 · 单只≤10%<br>
+          ECOS_BB/SCIPY 求解器 · 失败→等权fallback
+        </div>
+      </div>
+      <div class="card green">
+        <div class="file">trading_fees.py</div>
+        <div class="title">交易费用估算</div>
+        <div class="desc">
+          佣金万一·最低5元 · 卖出印花税0.05% · 买入过滤用
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓ raw_target (整数手数)</span></div>
+
+  <!-- RISK CONTROLS -->
+  <div class="section-title">▸ 五层风控过滤器链</div>
+  <div class="layer">
+    <div class="layer-label">RC</div>
+    <div class="layer-cards">
+      <div class="card orange">
+        <div class="file">infra.py:368-392</div>
+        <div class="title">① 振幅风控</div>
+        <div class="desc">
+          (high-low)/open &gt; 8% → 跳过该股买卖<br>
+          买卖前各自独立检查
+        </div>
+      </div>
+      <div class="card orange">
+        <div class="file">infra.py:1063-1120</div>
+        <div class="title">② 持仓上限</div>
+        <div class="desc">
+          M&gt;8只 → 清仓最低分K=M-8只<br>
+          保留股可增可减 · 不换新股
+        </div>
+      </div>
+      <div class="card orange">
+        <div class="file">infra.py:1122-1170</div>
+        <div class="title">③ 当日禁回购</div>
+        <div class="desc">
+          卖出过的股票当日不再净买入<br>
+          sold_today.json 跨进程持久化
+        </div>
+      </div>
+      <div class="card orange">
+        <div class="file">infra.py:1172-1237</div>
+        <div class="title">④ 卖出冷却</div>
+        <div class="desc">
+          N天内禁止再买 (当前N=0)<br>
+          sell_cooldown.json 记录卖出日
+        </div>
+      </div>
+      <div class="card orange">
+        <div class="file">infra.py:1239-1287</div>
+        <div class="title">⑤ 成本过滤</div>
+        <div class="desc">
+          融合分×期望边际 &lt; 佣金 → 取消买入<br>
+          不拦截卖出（降仓/风控优先）
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><span class="arrow">↓ target_pos (过滤后)</span></div>
+
+  <!-- EXECUTION -->
+  <div class="layer">
+    <div class="layer-label">EXEC</div>
+    <div class="layer-cards">
+      <div class="card green">
+        <div class="file">infra.py:1289-1354</div>
+        <div class="title">Execution · XtQuant 真实交易</div>
+        <div class="desc">
+          连接 QMT 券商通道 · 先卖后买<br>
+          FIX_PRICE限价单 · 每笔前检查tick有效性<br>
+          <span class="hl">全部操作日志写入 alpha_trader.log</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CHIP ENHANCEMENT -->
+  <div class="section-title">▸ 筹码增强路线子项目 (P0-P4)</div>
+  <div class="layer">
+    <div class="layer-label">enh</div>
+    <div class="layer-cards">
+      <div class="card yellow">
+        <div class="file">筹码增强路线/P0 data_specs/</div>
+        <div class="title">P0 规格冻结 ✅</div>
+        <div class="desc">数据字典·窗口阈值·缺失策略·叙事对照·资金流接口</div>
+      </div>
+      <div class="card yellow">
+        <div class="file">筹码增强路线/P1 scripts/</div>
+        <div class="title">P1 多期筹码趋势 ✅</div>
+        <div class="desc">chip_hist_offline.py · 集中度变化率·winner_rate delta</div>
+      </div>
+      <div class="card yellow">
+        <div class="file">筹码增强路线/P2 flow_tushare.py</div>
+        <div class="title">P2 资金流 ✅</div>
+        <div class="desc">Tushare moneyflow · net_mf_amount · 批量离线</div>
+      </div>
+      <div class="card yellow">
+        <div class="file">筹码增强路线/P3 resonance_offline.py</div>
+        <div class="title">P3 E2E共振 ✅</div>
+        <div class="desc">合并P1+P2+E2E → z-score共振分 · batch_offline_pipeline</div>
+      </div>
+      <div class="card orange">
+        <div class="file">筹码增强路线/P4 post_fuse_gate.py</div>
+        <div class="title">P4 MWU接入 🔒</div>
+        <div class="desc">恒等占位 · 待P3验收通过 · SpearmanIC+70%批次+并行10天</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Full data flow SVG -->
+  <div class="section-title">▸ 完整信号→执行数据流</div>
+  <div style="width:100%">
+    <svg viewBox="0 0 1050 280" style="width:100%;max-height:280px;font-family:monospace;font-size:10px">
+      <defs><marker id="a" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#58a6ff"/></marker></defs>
+
+      <!-- Data Sources -->
+      <rect x="10" y="10" width="180" height="55" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+      <text x="100" y="30" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">数据源</text>
+      <text x="100" y="46" text-anchor="middle" fill="#8b949e" font-size="8">Tushare · XtQuant · akshare · OpenAI</text>
+      <text x="100" y="58" text-anchor="middle" fill="#8b949e" font-size="8">CSI500 成分股 (~500只)</text>
+
+      <line x1="190" y1="38" x2="220" y2="20" stroke="#58a6ff" stroke-width="1" marker-end="url(#a)"/>
+      <line x1="190" y1="38" x2="220" y2="55" stroke="#58a6ff" stroke-width="1" marker-end="url(#a)"/>
+      <line x1="190" y1="38" x2="220" y2="90" stroke="#58a6ff" stroke-width="1" marker-end="url(#a)"/>
+
+      <!-- Three Experts -->
+      <rect x="225" y="5" width="200" height="30" rx="4" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="325" y="25" text-anchor="middle" fill="#58a6ff" font-size="9">E2E: StockLLM Transformer</text>
+
+      <rect x="225" y="40" width="200" height="30" rx="4" fill="#161b22" stroke="#d2991d" stroke-width="1"/>
+      <text x="325" y="60" text-anchor="middle" fill="#d2991d" font-size="9">NLP: 舆情情绪打分</text>
+
+      <rect x="225" y="75" width="200" height="30" rx="4" fill="#161b22" stroke="#db6d28" stroke-width="1"/>
+      <text x="325" y="95" text-anchor="middle" fill="#db6d28" font-size="9">Chip: 筹码分布评定</text>
+
+      <!-- MWU arrows -->
+      <line x1="425" y1="20" x2="470" y2="40" stroke="#58a6ff" stroke-width="1" marker-end="url(#a)"/>
+      <line x1="425" y1="55" x2="470" y2="55" stroke="#58a6ff" stroke-width="1" marker-end="url(#a)"/>
+      <line x1="425" y1="90" x2="470" y2="70" stroke="#58a6ff" stroke-width="1" marker-end="url(#a)"/>
+
+      <!-- MWU -->
+      <rect x="475" y="15" width="180" height="55" rx="5" fill="#161b22" stroke="#a371f7" stroke-width="1.5"/>
+      <text x="565" y="35" text-anchor="middle" fill="#a371f7" font-size="10" font-weight="600">MWU 动态权重</text>
+      <text x="565" y="50" text-anchor="middle" fill="#8b949e" font-size="8">w(t+1)=w(t)×(1+η×Top20ret)</text>
+      <text x="565" y="63" text-anchor="middle" fill="#8b949e" font-size="8">下限0.05 · z-score fuse</text>
+
+      <line x1="655" y1="43" x2="700" y2="43" stroke="#58a6ff" stroke-width="1" marker-end="url(#a)"/>
+
+      <!-- CVXPY -->
+      <rect x="705" y="15" width="170" height="55" rx="5" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+      <text x="790" y="35" text-anchor="middle" fill="#3fb950" font-size="10" font-weight="600">CVXPY MILP</text>
+      <text x="790" y="50" text-anchor="middle" fill="#8b949e" font-size="8">离散手数 · 单只≤10%</text>
+      <text x="790" y="63" text-anchor="middle" fill="#8b949e" font-size="8">现金≤98% · ECOS_BB</text>
+
+      <line x1="875" y1="43" x2="910" y2="43" stroke="#58a6ff" stroke-width="1" marker-end="url(#a)"/>
+
+      <!-- Risk -->
+      <rect x="915" y="5" width="125" height="76" rx="5" fill="#161b22" stroke="#f85149" stroke-width="1"/>
+      <text x="977" y="22" text-anchor="middle" fill="#f85149" font-size="9" font-weight="600">五层风控</text>
+      <text x="977" y="36" text-anchor="middle" fill="#8b949e" font-size="7">①振幅8% ②持仓≤8</text>
+      <text x="977" y="48" text-anchor="middle" fill="#8b949e" font-size="7">③禁回购 ④冷却期</text>
+      <text x="977" y="60" text-anchor="middle" fill="#8b949e" font-size="7">⑤成本过滤</text>
+      <text x="977" y="74" text-anchor="middle" fill="#8b949e" font-size="7">先卖后买·实时tick</text>
+
+      <!-- Bottom: Timeline + Data shapes -->
+      <rect x="10" y="120" width="1030" height="150" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+      <text x="525" y="140" text-anchor="middle" fill="#39d2c0" font-size="11" font-weight="600">每日执行时序</text>
+
+      <!-- Timeline -->
+      <line x1="60" y1="160" x2="990" y2="160" stroke="#30363d" stroke-width="1"/>
+      <circle cx="60" cy="160" r="4" fill="#58a6ff"/>
+      <circle cx="220" cy="160" r="4" fill="#58a6ff"/>
+      <circle cx="370" cy="160" r="4" fill="#58a6ff"/>
+      <circle cx="520" cy="160" r="4" fill="#58a6ff"/>
+      <circle cx="680" cy="160" r="4" fill="#58a6ff"/>
+      <circle cx="840" cy="160" r="4" fill="#58a6ff"/>
+      <circle cx="990" cy="160" r="4" fill="#58a6ff"/>
+
+      <text x="60" y="180" text-anchor="middle" fill="#8b949e" font-size="8">①加载MWU状态</text>
+      <text x="220" y="180" text-anchor="middle" fill="#8b949e" font-size="8">②三专家并行预测</text>
+      <text x="370" y="180" text-anchor="middle" fill="#8b949e" font-size="8">③MWU权重融合</text>
+      <text x="520" y="180" text-anchor="middle" fill="#8b949e" font-size="8">④CVXPY组合优化</text>
+      <text x="680" y="180" text-anchor="middle" fill="#8b949e" font-size="8">⑤五层风控过滤</text>
+      <text x="840" y="180" text-anchor="middle" fill="#8b949e" font-size="8">⑥先卖后买执行</text>
+      <text x="990" y="180" text-anchor="middle" fill="#8b949e" font-size="8">⑦store predictions</text>
+
+      <line x1="60" y1="200" x2="60" y2="190" stroke="#30363d" stroke-width="0.5"/>
+      <line x1="220" y1="200" x2="220" y2="190" stroke="#30363d" stroke-width="0.5"/>
+      <line x1="370" y1="200" x2="370" y2="190" stroke="#30363d" stroke-width="0.5"/>
+      <line x1="520" y1="200" x2="520" y2="190" stroke="#30363d" stroke-width="0.5"/>
+      <line x1="680" y1="200" x2="680" y2="190" stroke="#30363d" stroke-width="0.5"/>
+      <line x1="840" y1="200" x2="840" y2="190" stroke="#30363d" stroke-width="0.5"/>
+      <line x1="990" y1="200" x2="990" y2="190" stroke="#30363d" stroke-width="0.5"/>
+
+      <text x="525" y="215" text-anchor="middle" fill="#8b949e" font-size="8">E2E: [500S, 10T, 20F] → NLP: embedding+LLM → Chip: cyq_perf API → MWU: TopK ret reward → CVXPY: integer lots → XtQuant: order_stock</text>
+      <text x="525" y="232" text-anchor="middle" fill="#8b949e" font-size="8">日志: alpha_trader.log · 状态: mwu_state.json + chip_cache.json + news_cache.json + sold_today.json</text>
+      <text x="525" y="250" text-anchor="middle" fill="#3fb950" font-size="9"><b>真实 A 股实盘 · CSI500 · XtQuant/QMT 券商 · ~5万资金 · 20只候选·8只上限 · 半日频调仓</b></text>
+      <text x="525" y="265" text-anchor="middle" fill="#f85149" font-size="8">⚠ config中有Tushare Token和OpenAI Key明文，建议用环境变量覆盖</text>
+    </svg>
+  </div>
+
+</div>
+
+<div class="insight-box">
+  <div class="ib-title">▸ 8 个可迁移技术/工程模式</div>
+  <ul>
+    <li><b>1. 三专家 MWU 动态权重</b> — Top-K收益做reward，动态调整信任度。多信号融合的通用范式。</li>
+    <li><b>2. CVXPY MILP 离散优化</b> — 整数手数 + 单只上限 + 现金缓冲。A股100股倍数的标准解法。</li>
+    <li><b>3. 五层风控过滤器链</b> — 振幅→持仓上限→禁回购→冷却→成本。不是单一止损，而是多层防御。</li>
+    <li><b>4. 公共新闻行业路由</b> — embedding相似度 + 行业映射 + 权重折扣。NLP信号质量控制。</li>
+    <li><b>5. 筹码分析量化落地</b> — Tushare cyq_perf → 集中度/获利比/成本偏离。筹码理论的工程实现。</li>
+    <li><b>6. MWU 健康检查日志</b> — 非零率/reward/dw 详细诊断。防止黑箱的工程纪律。</li>
+    <li><b>7. 卖出冷却 + 当日禁回购</b> — 制度性防频繁交易。A股 T+1 最佳实践。</li>
+    <li><b>8. P0-P4 分阶段增强路线</b> — 规格冻结→离线验证→准入评审→主链接入。大系统迭代的标准方法论。</li>
+  </ul>
+</div>
+
+<div class="warn-box">
+  <div class="warn-title">⚠ 需要关注的问题</div>
+  <ul style="list-style:none;padding:0;margin:0;font-size:0.82em">
+    <li>▪ 筹码集中度系数为负（-0.30），与"单峰密集=重仓"建议相反 — 可能是有意设计或需要验证</li>
+    <li>▪ Tushare Token 和 OpenAI Key 明文在 config 中 — 需脱敏/环境变量</li>
+    <li>▪ infra.py 1428行单文件 — 需模块化拆分</li>
+    <li>▪ NLP 依赖外部 OpenAI API — 成本+延迟+稳定性单点风险</li>
+    <li>▪ 无单元测试 — 相比 RV_Transformer 有7个测试</li>
+  </ul>
+</div>
+
+</body>
+</html>

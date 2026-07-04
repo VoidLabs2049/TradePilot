@@ -54,6 +54,7 @@ _DERIVED_DATASET_COVERAGE = {
     "derived.etf_aw_regime_score": (StorageZone.DERIVED, "rebalance_date"),
     "derived.etf_aw_market_features": (StorageZone.DERIVED, "rebalance_date"),
     "derived.etf_aw_strategy_context": (StorageZone.DERIVED, "rebalance_date"),
+    "derived.etf_aw_risk_budget": (StorageZone.DERIVED, "rebalance_date"),
 }
 _DERIVED_PROFILES = (
     "reference.rebalance_calendar.monthly_post_20",
@@ -62,6 +63,7 @@ _DERIVED_PROFILES = (
     "derived.etf_aw_regime_score.build",
     "derived.etf_aw_market_features.build",
     "derived.etf_aw_strategy_context.build",
+    "derived.etf_aw_risk_budget.build",
 )
 _SLEEVE_PROFILE = "reference.etf_aw_sleeves.frozen_v1"
 _CALENDAR_DATASET = "reference.trading_calendar"

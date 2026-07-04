@@ -1,0 +1,634 @@
+# ETF 全天候当前设计文档
+
+## 定位
+
+`.claude/allweather/` 定位为 **ETF 全天候设计资料库**。
+
+它的职责是保存外部项目 deep-read、公式说明、阶段性判断和可迁移工程经验。它不是 TradePilot 的运行时代码、不是当前实现的验收清单，也不直接决定后续开发顺序。
+
+正式实现以本仓库已经落地的 ETL、read model、workflow、Dashboard 合同为准。资料库只在以下场景作为参考输入：
+
+- 判断哪些外部模块值得吸收。
+- 解释风险平价、动态风险预算、实盘约束等设计来源。
+- 约束复杂模型的引入顺序，避免过早把 CNN、Transformer、期权对冲接入主链。
+
+## 当前结论
+
+TradePilot ETF 全天候不是 ETF 涨跌预测器，而是低频风险配置系统。
+
+当前主线应保持为：
+
+```text
+冻结 sleeve universe
+-> adjustment-aware ETF 日频面板
+-> 月度 rebalance snapshot
+-> 市场状态/宏观利率上下文
+-> 策略上下文
+-> 后续风险预算与组合建议
+-> Dashboard / workflow 展示
+```
+
+`.claude/allweather/` 资料库补充的核心判断是：
+
+```text
+状态识别 -> 动态风险预算 -> 风险平价权重 -> 实盘约束
+```
+
+这条链应作为下一阶段策略计算层的设计方向，但不能覆盖当前已经完成的数据和上下文基座。
+
+## 最新开发规划吸收
+
+当前 ETF 全天候实现应按“后端基础框架先行，前端体验后置”的节奏推进。
+
+MVP 的日常工作流是：
+
+```text
+每日数据获取
+-> 更新 ETF / 指数 / 宏观与利率上下文
+-> 月度调仓日生成风险预算和组合权重
+-> 回测内核和评估报表验证历史表现
+-> 用户根据结果进行人工交易判断
+```
+
+因此近期工程重点不是新增复杂模型，而是把后端命令行能力补齐：
+
+- 数据获取和本地落库可重复运行。
+- 风险预算、目标权重和回测可通过命令行脚本独立触发。
+- 回测结果能产出净值、回撤、换手、指标和诊断报表。
+- 前端页面先消费稳定 read model；不要在权重合同未稳定前提前做复杂交互。
+
+模型策略上，V1 继续使用规则式状态映射、风险预算和 budgeted inverse-vol。机器学习、期货、期权、港股、美股和更完整宏观数据属于后续扩展方向，只能在当前股票/ETF 数据链路、回测纪律和风险预算估计稳定后逐步纳入。
+
+## Frozen Artifact 主线
+
+ETF 全天候后续策略层必须采用 frozen artifact 流程：
+
+```text
+strategy_context
+-> derived.etf_aw_risk_budget
+-> health check
+-> derived.etf_aw_target_weight
+-> health check
+-> backtest kernel / evaluation report
+```
+
+回测只能消费已经写出的风险预算和目标权重 artifact。回测内核和评估层不得在运行过程中重新估计 regime、重新生成 risk budget、重新优化 target weight 或动态搜索参数。
+
+如果需要比较不同预算规则、协方差窗口或优化器参数，必须先生成不同 `strategy_name` / `strategy_version` 的独立 artifact，再分别进入同一个回测内核。这样每条净值曲线都能追溯到固定输入，避免把研究选参隐藏在回测循环里。
+
+## 已有进度
+
+### Stage B：真实数据接入切片
+
+已完成 Tushare 真实数据接入验证，覆盖：
+
+- `reference.instruments`
+- `reference.trading_calendar`
+- `market.etf_daily`
+- `market.index_daily`
+- raw Parquet 落地
+- normalized Parquet 分区重写与去重
+- dependency preflight、validation gating、watermark advancement
+
+关键结果记录在 `docs/stage-b-ingestion-real-data-test-report.md`。
+
+### Stage C：ETF 全天候 v1 数据基座
+
+已完成本地回补：
+
+- `reference.trading_calendar.full_history`
+- `reference.rebalance_calendar.monthly_post_20`
+- `reference.etf_aw_sleeves.frozen_v1`
+- `market.etf_daily`
+- `market.etf_adj_factor`
+- `derived.etf_aw_sleeve_daily`
+
+当前 v1 frozen sleeves：
+
+| Role | Code | 用途 |
+| --- | --- | --- |
+| `equity_large` | `510300.SH` | 大盘权益 |
+| `equity_small` | `159845.SZ` | 小盘权益 |
+| `bond` | `511010.SH` | 债券防御 |
+| `gold` | `518850.SH` | 黄金/压力对冲 |
+| `cash` | `159001.SZ` | 现金/中性缓冲 |
+
+`derived.etf_aw_sleeve_daily` 使用 adjustment-aware 语义。ETF daily `volume` 继承 Tushare `fund_daily` 的 `vol` 单位：手；`amount` 单位：千元人民币，不在 derived 层做单位转换。
+
+关键结果记录在 `docs/stage-c-data-backfill-report.md`。
+
+### Stage D：月度调仓快照
+
+已实现 `derived.etf_aw_rebalance_snapshot.build` 和 read model：
+
+- 每个 rebalance date 生成 5 个 sleeve 行。
+- 输出 1M/3M/6M 收益、3M 波动、6M 回撤、数据状态和诊断信息。
+- read model 输出 `etf_aw_snapshot_v1` / `etf_aw_snapshot_contract_v1`。
+
+该层是 Dashboard 当前 ETF 全天候面板的主要数据来源。
+
+### Stage E：市场侧状态评分
+
+已实现 `derived.etf_aw_regime_score.build`：
+
+- 只使用 rebalance snapshot 中的市场表现指标。
+- 输出 `market_regime_label`、`market_score`、`confidence_score`、`scoring_status`。
+- 支持 `risk_on`、`hedge_bid`、`defensive`、`mixed`、`insufficient_data` 等市场状态。
+- 因为仍是 market-only scoring，置信度有上限，不能被解释为完整宏观 regime。
+
+这是当前“状态识别”的第一版，不是最终的动态风险预算引擎。
+
+### Stage F：宏观/利率上下文
+
+已实现宏观和利率数据上下文的 read model 能力，涉及：
+
+- `macro.slow_fields`
+- `rates.daily_rates`
+- `rates.lpr`
+- `rates.gov_curve_points`
+- `get_latest_etf_aw_macro_rates_context`
+- `list_etf_aw_macro_rates_contexts`
+
+该层把 PMI、SHIBOR、LPR、国债收益率曲线等字段汇总成 point-in-time 上下文，并保留缺失字段、陈旧字段、来源 caveat、修订 caveat。
+
+### Stage G：策略上下文
+
+已实现：
+
+- `derived.etf_aw_market_features.build`
+- `derived.etf_aw_strategy_context.build`
+- `get_latest_etf_aw_market_features`
+- `get_latest_etf_aw_strategy_context`
+
+策略上下文目前只做上下文汇总和 readiness 判断，不输出：
+
+- `target_weight`
+- `trade_action`
+- `order_instruction`
+
+这是正确边界。当前系统已经能把市场快照、市场状态和宏观/利率上下文拼成 research-ready 或 degraded context，但还没有进入正式组合权重和交易建议层。
+
+### Workflow / Dashboard
+
+后端 workflow 已暴露 ETF 全天候上下文：
+
+- `get_latest_etf_aw_context`
+- `get_latest_etf_aw_regime_context`
+- `get_latest_etf_aw_strategy_context`
+
+前端 Dashboard 已展示 ETF 全天候 snapshot 表，字段包括 sleeve、代码、1M/3M/6M 收益、3M 波动、6M 回撤、状态和诊断。
+
+当前前端主要展示 snapshot；strategy context 后续可作为 insight-first 面板的输入。
+
+## 资料库吸收边界
+
+### 直接吸收
+
+来自 `.claude/allweather/allweather-hedging-deep-read/`：
+
+- 风险平价求解器思想。
+- VaR/CVaR/MRC/RC 风险指标。
+- 清晰 schema 和 pipeline 分层。
+
+这些应进入后续 `risk_budget -> target_weight` 计算层。
+
+### 改造后吸收
+
+来自 `.claude/allweather/chip-analysis-deep-read/`：
+
+- 整数手数约束。
+- 交易成本过滤。
+- 换手限制。
+- 现金缓冲。
+- 风控过滤器链。
+- MWU 多专家融合思想。
+
+这些只应在权重建议稳定后进入执行约束层，不应提前污染当前上下文层。
+
+来自 `.claude/allweather/rv-transformer-cta-deep-read/`：
+
+- `Mock/Paper/Live` 执行接口思想。
+- 概率门控。
+- 测试结构。
+
+这些适合未来 shadow / live pilot 阶段，不属于当前 research context 的必需项。
+
+### 暂缓吸收
+
+以下内容暂不进入 v1 主链：
+
+- CNN 直接做配置决策。
+- Transformer / L2 订单簿模型。
+- 个股级期权对冲。
+- “预测偏差 -> 逆向交易”实验。
+- 在合成数据上优化的参数。
+
+原因是当前系统的主要缺口不是模型复杂度，而是可解释状态识别、动态风险预算、组合权重验证和实盘约束。
+
+## 目标架构
+
+### 已落地层
+
+```text
+Tushare / project ETL
+-> raw / normalized lakehouse
+-> canonical DuckDB metadata
+-> derived.etf_aw_sleeve_daily
+-> derived.etf_aw_rebalance_snapshot
+-> derived.etf_aw_regime_score
+-> derived.etf_aw_market_features
+-> derived.etf_aw_strategy_context
+-> workflow context
+-> Dashboard snapshot panel
+```
+
+### 下一阶段新增层
+
+```text
+strategy_context
+-> backtest kernel acceptance fixture
+-> regime/budget mapper
+-> covariance estimator
+-> budgeted risk parity or inverse-vol engine
+-> target sleeve weights
+-> rebalance threshold and cost filter
+-> explainability table
+-> shadow recommendation record
+```
+
+新增层必须保留两个硬边界：
+
+1. `strategy_context` 是输入上下文，不应包含目标权重或交易动作。
+2. `target_weight` 和 `trade_action` 必须来自后续明确命名的数据集，不能混入现有 Stage G 合同。
+3. 回测需要拆成前置内核和后置评估层；前置内核只作为 `risk_budget` / `target_weight` 的开发期验收夹具，不承载完整策略评估叙事。
+
+## V1 策略计算设计
+
+### 输入
+
+第一版策略计算只依赖已经落地或明确可落地的数据：
+
+- `derived.etf_aw_rebalance_snapshot`
+- `derived.etf_aw_regime_score`
+- `derived.etf_aw_strategy_context`
+- `derived.etf_aw_sleeve_daily`
+
+宏观/利率字段可用于上下文和置信度校正，但在未完成充分验证前，不应单独触发大幅仓位切换。
+
+### 回测内核验收夹具
+
+在实现 `derived.etf_aw_risk_budget` 前，应先冻结一个小型回测内核设计。
+
+该内核的输入只包括：
+
+- 给定的月度权重序列。
+- `derived.etf_aw_sleeve_daily` 的 adjustment-aware 日频收益。
+- `reference.rebalance_calendar.monthly_post_20` 的调仓日历。
+
+该内核输出：
+
+- 净值曲线。
+- 年化收益、年化波动、Sharpe、最大回撤。
+- 月度换手。
+- 可复现实验诊断。
+
+该内核必须是纯函数验收夹具，不包含：
+
+- regime 评分。
+- risk budget 生成。
+- target weight 生成。
+- 参数搜索。
+- Dashboard 展示。
+- 自动交易建议。
+
+完整的 baseline 对标、成本假设、参数扰动和前端净值展示仍留在后置回测评估层。前置内核只解决一个问题：让后续预算映射、权重稳定性和换手行为有客观、可复现的开发期判据。
+
+### 状态到预算
+
+V1 先使用规则映射，不使用机器学习分类器。
+
+建议输出：
+
+- `budget_status`
+- `budget_basis`
+- `base_risk_budget`
+- `tilted_risk_budget`
+- `confidence_score`
+- `budget_notes`
+
+市场状态初始映射应克制：
+
+| Market regime | Base budget | Tilt direction |
+| --- | --- | --- |
+| `risk_on` | 中性预算 | 适度提高权益风险预算，降低现金/防御预算 |
+| `hedge_bid` | 中性预算 | 提高黄金和现金/防御预算，压低权益预算 |
+| `defensive` | 中性预算 | 提高债券和现金预算，压低权益预算 |
+| `mixed` | 中性预算 | 接近中性预算 |
+| `insufficient_data` | 保守中性预算 | 不做主动 tilt |
+
+`risk-budget-design.md` 必须把定性方向落成数值向量。初始规则固定为：
+
+```text
+tilted_budget = normalize(base_budget + confidence_score * delta_budget)
+```
+
+其中：
+
+- `base_budget` 是每个 sleeve 的中性风险预算，合计为 1。
+- `delta_budget` 是按 market regime 固定的预算偏移向量，合计为 0。
+- `confidence_score` 只控制偏移幅度，不直接决定极端仓位。
+- 降级状态必须回落到中性或保守中性预算，不能用缺失宏观字段放大偏移。
+
+### 协方差估计
+
+V1 使用 `derived.etf_aw_sleeve_daily` 的 adjusted return：
+
+- 默认窗口、最小观测数和缺失比例阈值必须在 `target-weight-design.md` 里固定。
+- 样本不足、协方差奇异、现金 sleeve 零波动、单 sleeve 数据缺失需要独立降级用例。
+- V1 必须定义 vol floor 和协方差收缩规则，避免低波动 sleeve 权重发散。
+- 降级需区分整体降级和单 sleeve 降级，并写入 explainability 字段。
+
+资料库里的 CNN vol/corr/tail 只能作为未来增强，不进入 V1。
+
+### 权重引擎
+
+优先级：
+
+1. budgeted inverse-vol approximation
+2. simplified ERC / risk parity
+3. later: learnable ERC
+
+V1 输出必须包含 explainability：
+
+- 输入预算。
+- 输入波动率/协方差摘要。
+- 原始目标权重。
+- 约束后目标权重。
+- 降级原因。
+
+权重写出前需要固定数值精度，建议保留 6 位小数。no-trade band 阈值必须明显大于浮点容差，避免上月与本月尾差触发伪调仓。
+
+### 实盘约束
+
+权重稳定前只做纸面约束设计，不生成真实订单。
+
+后续执行约束包括：
+
+- 单 sleeve 上限。
+- no-trade band。
+- 最小交易金额。
+- ETF 最小交易单位。
+- 现金缓冲。
+- 换手上限。
+- 交易成本过滤。
+- 折溢价/流动性异常过滤。
+
+这些约束来自 `.claude/allweather/` 对 chip-analysis 的工程纪律总结，但 TradePilot 需要重新实现，不能复制外部项目的交易系统假设。
+
+## 数据合同建议
+
+下一阶段建议新增独立 derived 数据集，而不是扩展 Stage G：
+
+### `derived.etf_aw_risk_budget`
+
+粒度：
+
+```text
+calendar_name + rebalance_date + strategy_name + sleeve_role
+```
+
+核心字段：
+
+- `schema_version`
+- `calendar_name`
+- `rebalance_date`
+- `strategy_name`
+- `sleeve_role`
+- `base_budget`
+- `tilted_budget`
+- `confidence_score`
+- `budget_status`
+- `budget_basis`
+- `quality_notes_json`
+- `source_strategy_context_rebalance_date`
+- `ingested_at`
+
+### `derived.etf_aw_target_weight`
+
+粒度：
+
+```text
+calendar_name + rebalance_date + strategy_name + sleeve_code
+```
+
+核心字段：
+
+- `schema_version`
+- `contract_version`
+- `calendar_name`
+- `rebalance_date`
+- `effective_date`
+- `strategy_name`
+- `sleeve_code`
+- `sleeve_role`
+- `raw_target_weight`
+- `constrained_target_weight`
+- `current_weight`
+- `target_weight_status`
+- `optimizer_name`
+- `optimizer_basis`
+- `turnover_estimate`
+- `quality_notes_json`
+- `source_risk_budget_rebalance_date`
+- `source_snapshot_rebalance_date`
+- `ingested_at`
+
+交易建议应再单独建模，例如 `derived.etf_aw_rebalance_plan`，避免把权重和订单混在一起。
+
+## 阶段设计文档
+
+后续阶段需要单独设计文档。原因是 Stage B-G 已经形成稳定上下文合同，后续每一层都会引入新的业务语义和验证责任；如果继续把所有细节塞进总设计文档，会把状态识别、风险预算、权重优化、交易约束和回测纪律混在一起。
+
+总设计文档只保留方向、边界和阶段顺序。每个后续阶段在实现前先冻结一份独立设计文档。
+
+### 必需文档
+
+1. `etf-aw-cli-design.md`
+
+   范围：
+
+   - ETF 全天候后端命令行主线。
+   - `sync-data`、`build-risk-budget`、`health-check`、`build-target-weight`、`backtest-kernel`、`backtest-report` 命令边界。
+   - 每个命令的输入、输出、失败条件和 frozen artifact 规则。
+   - CLI 层最小测试要求。
+
+   非范围：
+
+   - 前端页面。
+   - 自动交易。
+   - 新策略参数搜索。
+
+2. `backtest-kernel-design.md`
+
+   范围：
+
+   - 给定权重序列到净值曲线的纯函数接口。
+   - 日频收益、月度调仓日历和权重生效日规则。
+   - Sharpe、最大回撤、换手等最小指标。
+   - 等权权重 fixture 先跑通。
+   - 单元测试和 deterministic fixture 边界。
+
+   非范围：
+
+   - 策略权重生成。
+   - baseline comparison pack。
+   - 成本模型。
+   - 参数扰动。
+   - Dashboard 展示。
+
+3. `risk-budget-design.md`
+
+   范围：
+
+   - `derived.etf_aw_risk_budget` schema。
+   - read model contract。
+   - `strategy_context -> sleeve risk budget` 映射规则。
+   - base budget 与 tilted budget。
+   - regime `delta_budget` 数值向量和 normalize 规则。
+   - confidence 只控制偏移幅度的规则。
+   - 样本不足、宏观字段缺失、置信度不足时的保守回落规则。
+   - `complete`、`partial`、`stale`、`missing`、`unavailable` 降级行为。
+   - 单元测试和 fixture 边界。
+
+   非范围：
+
+   - 目标权重。
+   - 交易建议。
+   - 订单或执行约束。
+
+4. `target-weight-design.md`
+
+   范围：
+
+   - `derived.etf_aw_target_weight` schema。
+   - budgeted inverse-vol MVP。
+   - simplified ERC 是否值得引入的判断标准。
+   - 协方差窗口、最小样本数、缺失数据处理。
+   - vol floor、协方差收缩、奇异矩阵和 cash sleeve 低波动处理。
+   - 权重数值精度、no-trade band 和阈值大于浮点容差的规则。
+   - raw target weight、constrained target weight、降级原因和 explainability 字段。
+   - target weight 健康检查清单，至少覆盖权重合计、非负权重、单 sleeve 上限、缺失 sleeve、重复 business key、异常换手、低波动 sleeve 权重发散、no-trade band 尾差、来源 risk budget 未通过健康检查等场景。
+   - 使用前置回测内核检查权重稳定性、换手和基础指标。
+
+   非范围：
+
+   - 自动下单。
+   - 当前持仓驱动的交易计划。
+   - 实盘 broker / QMT / XtQuant 接口。
+
+   初始健康检查要求：
+
+   - FAIL：每个 rebalance date 不是 5 个 sleeve。
+   - FAIL：`raw_target_weight` 或 `constrained_target_weight` 合计不等于 `1`，容忍浮点误差不超过 `1e-6`。
+   - FAIL：任一权重为负数、非数值或超过 V1 单 sleeve 上限。
+   - FAIL：来源 `derived.etf_aw_risk_budget` 缺失、未通过健康检查或 business key 不唯一。
+   - FAIL：协方差样本不足、奇异矩阵、cash sleeve 低波动未触发降级却输出主动权重。
+   - WARN：月度换手超过阈值，但仍在 V1 允许范围内。
+   - WARN：no-trade band 内的尾差触发了伪调仓。
+   - WARN：单 sleeve 因 vol floor 或缺失数据被降级。
+   - WARN：连续多个 rebalance date 的 target weight 完全不变，需要人工确认是中性回落还是计算未更新。
+
+### 延后文档
+
+5. `rebalance-plan-design.md`
+
+   只有在 `target-weight-design.md` 对应实现稳定后再写。
+
+   范围：
+
+   - 当前持仓输入。
+   - 目标权重到 paper rebalance plan。
+   - 换手估算。
+   - 成本过滤。
+   - no-trade band。
+   - 最小交易金额和 ETF 最小交易单位。
+   - 现金缓冲。
+   - 不自动下单的人工确认边界。
+
+6. `backtest-evaluation-design.md`
+
+   拆成两段推进。Phase 1 可在现有回测内核输出之上先定义 read endpoint 和单策略可视化；Phase 2 在 `target-weight-design.md` 对应实现能通过前置回测内核验收后，再做完整基线对标和评估层扩展。
+
+   范围：
+
+   - 单策略净值、回撤、指标卡片和换手展示合同。
+   - diagnostic 行到前端降级横幅的映射。
+   - 等权、静态 inverse-vol、静态风险平价基线。
+   - 成本和换手假设。
+   - 参数扰动。
+   - 日频有效权重输出。
+   - 月度 explainability report。
+   - Dashboard 净值展示边界。
+
+7. `shadow-run-design.md`
+
+   只有在 rebalance plan 能稳定生成后再写。
+
+   范围：
+
+   - 月度 freeze 流程。
+   - forward observation。
+   - post-mortem 模板。
+   - Dashboard / workflow insight 展示边界。
+
+## 验证标准
+
+任何策略计算层进入 Dashboard 或 workflow insight 前，至少满足：
+
+- 不改变 Stage B-G 已有合同。
+- 能在无外部网络的测试 fixture 中构造 deterministic 输入。
+- 对 `complete`、`partial`、`stale`、`missing`、`unavailable` 均有降级行为。
+- 输出不能包含未来数据。
+- 前置回测内核能用等权 fixture 跑出确定性净值、指标和换手。
+- 输出可解释表能逐月说明状态、预算、权重和降级原因。
+- `target_weight` 至少通过前置回测内核检查换手没有异常爆发。
+- 后置评估层再与等权、静态 inverse-vol、静态风险平价做 baseline 对比，并纳入成本估算。
+
+## 近期执行顺序
+
+1. 冻结本文档为当前设计入口。
+2. 更新旧 `progress-status.md`，避免文档状态继续停留在 “schema not done”。已完成。
+3. 新增并冻结 `backtest-kernel-design.md`。已完成。
+4. 实现前置回测内核，先用等权 fixture 跑通。已完成最小版本。
+5. 新增并冻结 `backtest-evaluation-design.md`，先收口命令行报表 MVP 和单策略可视化合同，完整基线对标留 Phase 2。
+6. 新增并冻结 `etf-aw-cli-design.md`。已完成。
+7. 新增并冻结 `risk-budget-design.md`。
+8. 继续推进风险预算估计：实现 `derived.etf_aw_risk_budget` schema、read model、规则式 mapper、健康检查和降级测试。
+9. 新增并冻结 `target-weight-design.md`。
+10. 实现 `derived.etf_aw_target_weight` 和 budgeted inverse-vol MVP，并用前置回测内核验收。
+11. 按 `etf-aw-cli-design.md` 接入 `build-risk-budget`、`health-check risk-budget`、`build-target-weight`、`health-check target-weight`、`backtest-kernel`、`backtest-report`。
+12. 增加后端命令行回测报表，覆盖净值、回撤、指标、换手和 diagnostics。
+13. 增加 monthly explainability table 和后置 baseline comparison。
+14. 再评估是否引入 simplified ERC。
+15. 后端合同稳定后，再补前端页面或 Dashboard 面板。
+16. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
+
+## 非目标
+
+当前阶段不做：
+
+- 自动实盘下单。
+- 个股选择。
+- 高频交易。
+- 全机器学习状态分类。
+- 期权对冲。
+- CTA / 海外 / 商品 sleeve 扩展。
+- 对 `.claude/allweather/` 外部项目代码的直接搬运。
+
+## 设计原则
+
+1. 先让每月决策可解释，再追求优化器复杂度。
+2. 先保证 point-in-time 数据纪律，再谈回测收益。
+3. 先输出上下文和建议，再输出交易动作。
+4. 资料库提供判断材料，仓库代码和测试提供完成标准。
+5. ETF 全天候 v1 的成功信号是稳定、可审计、低频、可降级，不是模型新颖。

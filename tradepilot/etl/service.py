@@ -74,6 +74,16 @@ _ETF_AW_STRATEGY_CONTEXT_PROFILE = "derived.etf_aw_strategy_context.build"
 _ETF_AW_STRATEGY_CONTEXT_DATASET = "derived.etf_aw_strategy_context"
 _ETF_AW_STRATEGY_CONTEXT_SCHEMA_VERSION = "etf_aw_strategy_context_v1"
 _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION = "etf_aw_strategy_context_contract_v1"
+_ETF_AW_RISK_BUDGET_PROFILE = "derived.etf_aw_risk_budget.build"
+_ETF_AW_RISK_BUDGET_DATASET = "derived.etf_aw_risk_budget"
+_ETF_AW_RISK_BUDGET_SCHEMA_VERSION = "etf_aw_risk_budget_v1"
+_ETF_AW_RISK_BUDGET_CONTRACT_VERSION = "etf_aw_risk_budget_contract_v1"
+_ETF_AW_RISK_BUDGET_STRATEGY_VERSION = "risk_budget_v1"
+_ETF_AW_BACKTEST_KERNEL_PROFILE = "derived.etf_aw_backtest_kernel.build"
+_ETF_AW_BACKTEST_KERNEL_DATASET = "derived.etf_aw_backtest_kernel"
+_ETF_AW_BACKTEST_KERNEL_SCHEMA_VERSION = "etf_aw_backtest_kernel_v1"
+_ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME = "equal_weight_fixture"
+_ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION = "fixture_v1"
 _ETF_AW_STRATEGY_NAME = "etf_aw_v1"
 _ETF_AW_STRATEGY_VERSION = "stage_g_v1"
 _ETF_AW_SLEEVE_DAILY_RETURN_LOOKBACK_DAYS = 31
@@ -141,6 +151,57 @@ _ETF_AW_CONTEXT_BASES = {
     "market_only",
     "market_plus_rates",
     "market_plus_macro_rates",
+}
+_ETF_AW_RISK_BUDGET_STATUSES = {
+    "complete",
+    "partial",
+    "stale",
+    "missing",
+    "unavailable",
+}
+_ETF_AW_RISK_BUDGET_BASE = {
+    "equity_large": 0.20,
+    "equity_small": 0.20,
+    "bond": 0.20,
+    "gold": 0.20,
+    "cash": 0.20,
+}
+_ETF_AW_RISK_BUDGET_DELTAS = {
+    "risk_on": {
+        "equity_large": 0.05,
+        "equity_small": 0.05,
+        "bond": -0.02,
+        "gold": -0.03,
+        "cash": -0.05,
+    },
+    "hedge_bid": {
+        "equity_large": -0.04,
+        "equity_small": -0.05,
+        "bond": 0.02,
+        "gold": 0.05,
+        "cash": 0.02,
+    },
+    "defensive": {
+        "equity_large": -0.05,
+        "equity_small": -0.05,
+        "bond": 0.05,
+        "gold": 0.01,
+        "cash": 0.04,
+    },
+    "mixed": {
+        "equity_large": 0.0,
+        "equity_small": 0.0,
+        "bond": 0.0,
+        "gold": 0.0,
+        "cash": 0.0,
+    },
+    "insufficient_data": {
+        "equity_large": 0.0,
+        "equity_small": 0.0,
+        "bond": 0.0,
+        "gold": 0.0,
+        "cash": 0.0,
+    },
 }
 _ETF_AW_MACRO_RATES_CONTEXT_STATUSES = {
     "complete",
@@ -450,6 +511,16 @@ class ETLService:
             )
         if profile_name == _ETF_AW_STRATEGY_CONTEXT_PROFILE:
             return self._build_etf_aw_strategy_context(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        if profile_name == _ETF_AW_RISK_BUDGET_PROFILE:
+            return self._build_etf_aw_risk_budget(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        if profile_name == _ETF_AW_BACKTEST_KERNEL_PROFILE:
+            return self._build_etf_aw_backtest_kernel(
                 start or _TRADING_CALENDAR_HISTORY_START,
                 end or date.today(),
             )
@@ -903,6 +974,10 @@ class ETLService:
                 merged["effective_date"] = pd.to_datetime(
                     merged["effective_date"], errors="coerce"
                 )
+            if "observation_date" in merged.columns:
+                merged["observation_date"] = pd.to_datetime(
+                    merged["observation_date"], errors="coerce"
+                )
             for column in sort_columns:
                 if isinstance(merged[column].dtype, pd.CategoricalDtype):
                     merged[column] = merged[column].astype(str)
@@ -930,6 +1005,10 @@ class ETLService:
             if "effective_date" in merged.columns:
                 merged["effective_date"] = pd.to_datetime(
                     merged["effective_date"], errors="coerce"
+                ).dt.date
+            if "observation_date" in merged.columns:
+                merged["observation_date"] = pd.to_datetime(
+                    merged["observation_date"], errors="coerce"
                 ).dt.date
             write_result = write_dataset_parquet(
                 merged,
@@ -2172,6 +2251,208 @@ class ETLService:
             partition_date_column="rebalance_date",
         )
 
+    def _build_etf_aw_risk_budget(self, start: date, end: date) -> dict:
+        start, end = _ordered_dates(start, end)
+        context = self._read_partitioned_dataset(
+            _ETF_AW_STRATEGY_CONTEXT_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        if context.empty:
+            return {
+                "profile_name": _ETF_AW_RISK_BUDGET_PROFILE,
+                "dataset_name": _ETF_AW_RISK_BUDGET_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather strategy context is missing",
+            }
+        regime = self._read_partitioned_dataset(
+            _ETF_AW_REGIME_SCORE_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        budget = self._make_etf_aw_risk_budget_frame(context, regime)
+        if budget.empty:
+            return {
+                "profile_name": _ETF_AW_RISK_BUDGET_PROFILE,
+                "dataset_name": _ETF_AW_RISK_BUDGET_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather risk budget has no valid rebalance keys",
+            }
+        validation = _validate_risk_budget_frame(budget)
+        if not all(validation.values()):
+            return {
+                "profile_name": _ETF_AW_RISK_BUDGET_PROFILE,
+                "dataset_name": _ETF_AW_RISK_BUDGET_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "validation": validation,
+                "error_message": "ETF all-weather risk budget validation failed",
+            }
+        write_result = self._write_etf_aw_risk_budget(budget)
+        return {
+            "profile_name": _ETF_AW_RISK_BUDGET_PROFILE,
+            "dataset_name": _ETF_AW_RISK_BUDGET_DATASET,
+            "status": RunStatus.SUCCESS.value,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "records_written": write_result.records_written,
+            "records_inserted": write_result.records_inserted,
+            "records_updated": write_result.records_updated,
+            "partitions_written": write_result.partitions_written,
+            "storage_paths": write_result.storage_paths,
+            "validation": validation,
+            "budget_status_counts": _value_counts_dict(budget["budget_status"]),
+        }
+
+    def _make_etf_aw_risk_budget_frame(
+        self, strategy_context: pd.DataFrame, regime: pd.DataFrame
+    ) -> pd.DataFrame:
+        return _make_etf_aw_risk_budget_frame(strategy_context, regime)
+
+    def _write_etf_aw_risk_budget(
+        self, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=_ETF_AW_RISK_BUDGET_DATASET,
+            zone=StorageZone.DERIVED,
+            canonical=canonical,
+            key_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+                "sleeve_role",
+            ),
+            sort_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+                "sleeve_role",
+                "ingested_at",
+            ),
+            partition_date_column="rebalance_date",
+        )
+
+    def _build_etf_aw_backtest_kernel(self, start: date, end: date) -> dict:
+        start, end = _ordered_dates(start, end)
+        rebalance = self._read_rebalance_calendar(start, end)
+        if rebalance.empty:
+            return {
+                "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
+                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "canonical rebalance calendar is missing",
+            }
+        panel = self._read_partitioned_dataset(
+            "derived.etf_aw_sleeve_daily",
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        if panel.empty:
+            return {
+                "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
+                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "derived sleeve daily panel is missing",
+            }
+        weights = _equal_weight_backtest_fixture(rebalance)
+        backtest = self._make_etf_aw_backtest_kernel_frame(
+            panel=panel,
+            rebalance=rebalance,
+            weights=weights,
+            start=start,
+            end=end,
+        )
+        validation = _validate_backtest_kernel_frame(backtest)
+        if not all(validation.values()):
+            return {
+                "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
+                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "validation": validation,
+                "error_message": "ETF all-weather backtest kernel validation failed",
+            }
+        write_result = self._write_etf_aw_backtest_kernel(backtest)
+        return {
+            "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
+            "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
+            "status": RunStatus.SUCCESS.value,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "records_written": write_result.records_written,
+            "records_inserted": write_result.records_inserted,
+            "records_updated": write_result.records_updated,
+            "partitions_written": write_result.partitions_written,
+            "storage_paths": write_result.storage_paths,
+            "validation": validation,
+            "observation_type_counts": _value_counts_dict(backtest["observation_type"]),
+        }
+
+    def _make_etf_aw_backtest_kernel_frame(
+        self,
+        *,
+        panel: pd.DataFrame,
+        rebalance: pd.DataFrame,
+        weights: pd.DataFrame,
+        start: date,
+        end: date,
+    ) -> pd.DataFrame:
+        return _make_etf_aw_backtest_kernel_frame(
+            panel=panel,
+            rebalance=rebalance,
+            weights=weights,
+            start=start,
+            end=end,
+        )
+
+    def _write_etf_aw_backtest_kernel(
+        self, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=_ETF_AW_BACKTEST_KERNEL_DATASET,
+            zone=StorageZone.DERIVED,
+            canonical=canonical,
+            key_columns=(
+                "calendar_name",
+                "strategy_name",
+                "strategy_version",
+                "observation_type",
+                "observation_date",
+                "metric_name",
+            ),
+            sort_columns=(
+                "calendar_name",
+                "strategy_name",
+                "strategy_version",
+                "observation_type",
+                "observation_date",
+                "metric_name",
+                "ingested_at",
+            ),
+            partition_date_column="observation_date",
+        )
+
     def _bootstrap_rebalance_calendar_monthly_post_20(
         self, start: date, end: date
     ) -> dict:
@@ -2617,6 +2898,10 @@ def _business_keys(frame: pd.DataFrame, key_columns: tuple[str, ...]) -> set[tup
     if "rebalance_date" in key_frame.columns:
         key_frame["rebalance_date"] = pd.to_datetime(
             key_frame["rebalance_date"], errors="coerce"
+        ).dt.date
+    if "observation_date" in key_frame.columns:
+        key_frame["observation_date"] = pd.to_datetime(
+            key_frame["observation_date"], errors="coerce"
         ).dt.date
     return {
         tuple(str(value) if isinstance(value, str) else value for value in row)
@@ -3986,6 +4271,720 @@ def _validate_strategy_context_frame(frame: pd.DataFrame) -> dict[str, bool]:
             for _, row in frame[
                 frame["macro_rates_context_status"].astype(str) != "complete"
             ].iterrows()
+        ),
+    }
+
+
+def _make_etf_aw_risk_budget_frame(
+    strategy_context: pd.DataFrame, regime: pd.DataFrame
+) -> pd.DataFrame:
+    """Build V1 sleeve risk budgets from strategy context and regime rows."""
+
+    if strategy_context.empty:
+        return pd.DataFrame()
+    context = _normalize_rebalance_date_frame(strategy_context)
+    context = context.dropna(subset=["calendar_name", "rebalance_date"])
+    if context.empty:
+        return pd.DataFrame()
+    context = context.sort_values(["rebalance_date", "ingested_at"])
+    context = context.drop_duplicates(
+        ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+        keep="last",
+    )
+    regime_by_key = _latest_regime_by_key(regime)
+    rows: list[dict[str, Any]] = []
+    ingested_at = _utc_now()
+    for _, context_row in context.iterrows():
+        key = (str(context_row["calendar_name"]), context_row["rebalance_date"])
+        rows.extend(
+            _risk_budget_rows(
+                context_row=context_row,
+                regime_row=regime_by_key.get(key),
+                ingested_at=ingested_at,
+            )
+        )
+    return pd.DataFrame(rows)
+
+
+def _risk_budget_rows(
+    *,
+    context_row: pd.Series,
+    regime_row: pd.Series | None,
+    ingested_at: datetime,
+) -> list[dict[str, Any]]:
+    rebalance_date = context_row["rebalance_date"]
+    context_status = str(context_row.get("context_status") or "unavailable")
+    readiness = str(context_row.get("readiness_level") or "not_ready")
+    macro_status = str(context_row.get("macro_rates_context_status") or "unavailable")
+    market_label = _optional_text(context_row.get("market_regime_label"))
+    if regime_row is not None:
+        market_label = (
+            _optional_text(regime_row.get("market_regime_label")) or market_label
+        )
+    regime_status = (
+        str(regime_row.get("scoring_status") or "unavailable")
+        if regime_row is not None
+        else "missing"
+    )
+    raw_confidence = _risk_budget_raw_confidence(context_row, regime_row)
+    source_context_date = _series_date(context_row.get("rebalance_date"))
+    source_regime_date = (
+        _series_date(regime_row.get("rebalance_date"))
+        if regime_row is not None
+        else None
+    )
+    budget_status, effective_confidence, basis, reasons = _risk_budget_decision(
+        context_status=context_status,
+        readiness_level=readiness,
+        regime_status=regime_status,
+        market_label=market_label,
+        confidence_score=raw_confidence,
+        rebalance_date=rebalance_date,
+        source_context_date=source_context_date,
+        source_regime_date=source_regime_date,
+    )
+    delta = _ETF_AW_RISK_BUDGET_DELTAS.get(
+        market_label or "insufficient_data",
+        _ETF_AW_RISK_BUDGET_DELTAS["insufficient_data"],
+    )
+    raw_budget = {
+        role: _ETF_AW_RISK_BUDGET_BASE[role] + effective_confidence * delta[role]
+        for role in _ETF_AW_REQUIRED_ROLES
+    }
+    if min(raw_budget.values()) < 0.05:
+        budget_status = "partial"
+        basis = "degraded_neutral_budget"
+        effective_confidence = 0.0
+        raw_budget = dict(_ETF_AW_RISK_BUDGET_BASE)
+        reasons.append("raw_budget_floor_breach")
+    total = sum(raw_budget.values())
+    tilted = {role: round(value / total, 6) for role, value in raw_budget.items()}
+    notes = {
+        "reasons": sorted(set(reasons)),
+        "source_context_status": context_status,
+        "source_readiness_level": readiness,
+        "source_regime_status": regime_status,
+        "raw_confidence_score": raw_confidence,
+        "effective_confidence_score": effective_confidence,
+        "raw_budget_min": min(raw_budget.values()),
+        "delta_budget_sum": round(sum(delta.values()), 12),
+        "tilted_budget_sum": round(sum(tilted.values()), 6),
+        "macro_rates_context_status": macro_status,
+        "caveats": _risk_budget_caveats(context_row),
+    }
+    common = {
+        "schema_version": _ETF_AW_RISK_BUDGET_SCHEMA_VERSION,
+        "contract_version": _ETF_AW_RISK_BUDGET_CONTRACT_VERSION,
+        "calendar_name": str(context_row["calendar_name"]),
+        "rebalance_date": rebalance_date,
+        "strategy_name": _ETF_AW_STRATEGY_NAME,
+        "strategy_version": _ETF_AW_RISK_BUDGET_STRATEGY_VERSION,
+        "confidence_score": raw_confidence,
+        "effective_confidence_score": effective_confidence,
+        "market_regime_label": market_label or "insufficient_data",
+        "budget_status": budget_status,
+        "budget_basis": basis,
+        "quality_notes_json": json.dumps(notes, sort_keys=True),
+        "source_strategy_context_rebalance_date": source_context_date,
+        "source_regime_rebalance_date": source_regime_date,
+        "ingested_at": ingested_at,
+    }
+    return [
+        {
+            **common,
+            "sleeve_role": role,
+            "base_budget": round(_ETF_AW_RISK_BUDGET_BASE[role], 6),
+            "delta_budget": round(delta[role], 6),
+            "tilted_budget": tilted[role],
+        }
+        for role in sorted(_ETF_AW_REQUIRED_ROLES)
+    ]
+
+
+def _risk_budget_decision(
+    *,
+    context_status: str,
+    readiness_level: str,
+    regime_status: str,
+    market_label: str | None,
+    confidence_score: float | None,
+    rebalance_date: date,
+    source_context_date: date | None,
+    source_regime_date: date | None,
+) -> tuple[str, float, str, list[str]]:
+    reasons: list[str] = []
+    if source_context_date is not None and source_context_date > rebalance_date:
+        return (
+            "unavailable",
+            0.0,
+            "unavailable_neutral_budget",
+            ["source_context_after_rebalance_date"],
+        )
+    if source_regime_date is not None and source_regime_date > rebalance_date:
+        return (
+            "unavailable",
+            0.0,
+            "unavailable_neutral_budget",
+            ["source_regime_after_rebalance_date"],
+        )
+    if context_status == "missing":
+        return (
+            "missing",
+            0.0,
+            "unavailable_neutral_budget",
+            ["strategy_context_missing"],
+        )
+    if context_status == "stale":
+        return "stale", 0.0, "degraded_neutral_budget", ["strategy_context_stale"]
+    if context_status == "unavailable":
+        return (
+            "unavailable",
+            0.0,
+            "unavailable_neutral_budget",
+            ["strategy_context_unavailable"],
+        )
+    confidence_cap = 0.70
+    budget_status = "complete"
+    if context_status == "partial" or readiness_level == "degraded_research":
+        budget_status = "partial"
+        confidence_cap = 0.35
+        reasons.append("strategy_context_partial")
+    if regime_status == "missing":
+        return "unavailable", 0.0, "unavailable_neutral_budget", ["regime_missing"]
+    if regime_status == "stale":
+        return "stale", 0.0, "degraded_neutral_budget", ["regime_stale"]
+    if regime_status == "unavailable":
+        return "partial", 0.0, "degraded_neutral_budget", ["regime_insufficient_data"]
+    if regime_status == "partial":
+        budget_status = "partial"
+        confidence_cap = min(confidence_cap, 0.35)
+        reasons.append("regime_partial")
+    if market_label == "insufficient_data":
+        return (
+            "partial",
+            0.0,
+            "degraded_neutral_budget",
+            [
+                *reasons,
+                "regime_insufficient_data",
+            ],
+        )
+    if market_label not in _ETF_AW_RISK_BUDGET_DELTAS:
+        return (
+            "unavailable",
+            0.0,
+            "unavailable_neutral_budget",
+            [
+                *reasons,
+                "unsupported_regime_label",
+            ],
+        )
+    if confidence_score is None or confidence_score < 0.25:
+        return (
+            "partial",
+            0.0,
+            "degraded_neutral_budget",
+            [
+                *reasons,
+                "low_or_missing_confidence",
+            ],
+        )
+    effective = _clamp(float(confidence_score), 0.0, confidence_cap)
+    basis = "market_regime_tilt" if effective > 0.0 else "neutral_equal_risk_budget"
+    return budget_status, effective, basis, reasons
+
+
+def _risk_budget_raw_confidence(
+    context_row: pd.Series, regime_row: pd.Series | None
+) -> float | None:
+    if regime_row is not None:
+        value = _nullable_float(regime_row.get("confidence_score"))
+        if value is not None:
+            return value
+    return _nullable_float(context_row.get("market_confidence_score"))
+
+
+def _risk_budget_caveats(context_row: pd.Series) -> list[dict[str, Any]]:
+    caveats: list[dict[str, Any]] = []
+    for column in ("source_caveats_json", "revision_caveats_json"):
+        value = context_row.get(column)
+        if not _is_json_text(value):
+            continue
+        loaded = json.loads(value)
+        if isinstance(loaded, list):
+            caveats.extend(item for item in loaded if isinstance(item, dict))
+    return caveats
+
+
+def _series_date(value: object) -> date | None:
+    parsed = pd.to_datetime(value, errors="coerce")
+    return None if pd.isna(parsed) else parsed.date()
+
+
+def _validate_risk_budget_frame(frame: pd.DataFrame) -> dict[str, bool]:
+    """Validate the ETF all-weather risk budget contract."""
+
+    if frame.empty:
+        return {
+            "non_empty": False,
+            "no_duplicate_business_keys": False,
+            "five_roles_per_rebalance_date": False,
+            "budget_sums_valid": False,
+            "status_values_allowed": False,
+            "quality_notes_json": False,
+            "forbidden_fields_absent": False,
+            "point_in_time_sources": False,
+        }
+    key_columns = [
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_role",
+    ]
+    forbidden_fields = {
+        column
+        for column in frame.columns
+        if column
+        in {
+            "target_weight",
+            "raw_target_weight",
+            "constrained_target_weight",
+            "trade_action",
+            "order_instruction",
+            "rebalance_instruction",
+        }
+    }
+    grouped = frame.groupby(
+        ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+        dropna=False,
+    )
+    budget_sums = grouped.agg(
+        base_sum=("base_budget", "sum"),
+        delta_sum=("delta_budget", "sum"),
+        tilted_sum=("tilted_budget", "sum"),
+    )
+    source_context_dates = pd.to_datetime(
+        frame["source_strategy_context_rebalance_date"], errors="coerce"
+    ).dt.date
+    source_regime_dates = pd.to_datetime(
+        frame["source_regime_rebalance_date"], errors="coerce"
+    ).dt.date
+    rebalance_dates = pd.to_datetime(frame["rebalance_date"], errors="coerce").dt.date
+    return {
+        "non_empty": True,
+        "no_duplicate_business_keys": int(frame.duplicated(key_columns).sum()) == 0,
+        "five_roles_per_rebalance_date": all(
+            set(group["sleeve_role"].astype(str)) == _ETF_AW_REQUIRED_ROLES
+            and len(group) == len(_ETF_AW_REQUIRED_ROLES)
+            for _, group in grouped
+        ),
+        "budget_sums_valid": all(
+            abs(row["base_sum"] - 1.0) <= 1e-6
+            and abs(row["delta_sum"]) <= 1e-6
+            and abs(row["tilted_sum"] - 1.0) <= 1e-6
+            for _, row in budget_sums.iterrows()
+        )
+        and bool((frame[["base_budget", "tilted_budget"]] >= 0).all().all()),
+        "status_values_allowed": set(frame["budget_status"].astype(str)).issubset(
+            _ETF_AW_RISK_BUDGET_STATUSES
+        ),
+        "quality_notes_json": all(
+            _is_json_text(value) for value in frame["quality_notes_json"]
+        ),
+        "forbidden_fields_absent": not forbidden_fields,
+        "point_in_time_sources": all(
+            (
+                pd.isna(source_context)
+                or pd.isna(rebalance)
+                or source_context <= rebalance
+            )
+            and (
+                pd.isna(source_regime)
+                or pd.isna(rebalance)
+                or source_regime <= rebalance
+            )
+            for source_context, source_regime, rebalance in zip(
+                source_context_dates, source_regime_dates, rebalance_dates, strict=True
+            )
+        ),
+    }
+
+
+def _equal_weight_backtest_fixture(rebalance: pd.DataFrame) -> pd.DataFrame:
+    """Return equal monthly weights for the frozen v1 ETF sleeves."""
+
+    rebalance = _normalize_rebalance_date_frame(rebalance)
+    rows: list[dict[str, Any]] = []
+    weight = 1.0 / len(_ETF_AW_SLEEVE_CODES)
+    for _, row in rebalance.dropna(subset=["rebalance_date"]).iterrows():
+        for sleeve_code in _ETF_AW_SLEEVE_CODES:
+            rows.append(
+                {
+                    "calendar_name": str(row["calendar_name"]),
+                    "rebalance_date": row["rebalance_date"],
+                    "sleeve_code": sleeve_code,
+                    "target_weight": weight,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _make_etf_aw_backtest_kernel_frame(
+    *,
+    panel: pd.DataFrame,
+    rebalance: pd.DataFrame,
+    weights: pd.DataFrame,
+    start: date,
+    end: date,
+) -> pd.DataFrame:
+    """Build daily NAV, metric, and turnover rows for supplied monthly weights."""
+
+    ingested_at = _utc_now()
+    diagnostics = _backtest_input_diagnostics(panel, rebalance, weights)
+    if diagnostics["blocking"]:
+        return _backtest_diagnostic_rows(
+            diagnostics=diagnostics,
+            start=start,
+            ingested_at=ingested_at,
+        )
+
+    panel = panel.copy()
+    panel["trade_date"] = pd.to_datetime(panel["trade_date"], errors="coerce").dt.date
+    panel = panel[
+        panel["trade_date"].between(start, end, inclusive="both")
+        & panel["sleeve_code"].astype(str).isin(_ETF_AW_SLEEVE_CODES)
+    ].copy()
+    panel["daily_return"] = panel["adj_pct_chg"].apply(_nullable_float)
+    panel["daily_return"] = panel["daily_return"].fillna(0.0) / 100.0
+    returns = (
+        panel.pivot_table(
+            index="trade_date",
+            columns="sleeve_code",
+            values="daily_return",
+            aggfunc="last",
+        )
+        .sort_index()
+        .dropna(how="all")
+    )
+    if returns.empty:
+        return _backtest_diagnostic_rows(
+            diagnostics={"blocking": True, "reasons": ["no_daily_returns"]},
+            start=start,
+            ingested_at=ingested_at,
+        )
+
+    weights = weights.copy()
+    weights["rebalance_date"] = pd.to_datetime(
+        weights["rebalance_date"], errors="coerce"
+    ).dt.date
+    rows: list[dict[str, Any]] = []
+    nav = 1.0
+    previous_target: dict[str, float] | None = None
+    monthly_returns: list[float] = []
+    return_values: list[float] = []
+    calendar_name = str(weights["calendar_name"].dropna().iloc[0])
+
+    weight_by_date = {
+        key: group.set_index("sleeve_code")["target_weight"].astype(float).to_dict()
+        for key, group in weights.groupby("rebalance_date")
+    }
+    effective_dates = sorted(weight_by_date)
+    effective_index = -1
+    current_weight: dict[str, float] | None = None
+    current_effective_date: date | None = None
+    last_month: tuple[int, int] | None = None
+    month_start_nav = nav
+
+    for trade_date, row in returns.iterrows():
+        month_key = (trade_date.year, trade_date.month)
+        if last_month is None:
+            last_month = month_key
+            month_start_nav = nav
+        elif month_key != last_month:
+            monthly_returns.append(nav / month_start_nav - 1.0)
+            month_start_nav = nav
+            last_month = month_key
+        while (
+            effective_index + 1 < len(effective_dates)
+            and effective_dates[effective_index + 1] <= trade_date
+        ):
+            effective_index += 1
+        if effective_index < 0:
+            continue
+        effective_date = effective_dates[effective_index]
+        next_weight = weight_by_date[effective_date]
+        if current_effective_date != effective_date:
+            turnover = (
+                0.0
+                if previous_target is None
+                else 0.5
+                * sum(
+                    abs(next_weight.get(code, 0.0) - previous_target.get(code, 0.0))
+                    for code in _ETF_AW_SLEEVE_CODES
+                )
+            )
+            rows.append(
+                _backtest_row(
+                    calendar_name=calendar_name,
+                    observation_type="turnover",
+                    observation_date=trade_date,
+                    metric_name="monthly_turnover",
+                    metric_value=turnover,
+                    net_value=None,
+                    portfolio_return=None,
+                    quality_notes={
+                        "rebalance_date": effective_date.isoformat(),
+                        "turnover_basis": "previous_target_weight",
+                    },
+                    ingested_at=ingested_at,
+                )
+            )
+            current_weight = next_weight
+            current_effective_date = effective_date
+            previous_target = dict(next_weight)
+        portfolio_return = float(
+            sum(
+                current_weight.get(code, 0.0) * float(row.get(code, 0.0))
+                for code in _ETF_AW_SLEEVE_CODES
+            )
+        )
+        nav *= 1.0 + portfolio_return
+        return_values.append(portfolio_return)
+        rows.append(
+            _backtest_row(
+                calendar_name=calendar_name,
+                observation_type="daily_nav",
+                observation_date=trade_date,
+                metric_name="net_value",
+                metric_value=nav,
+                net_value=nav,
+                portfolio_return=portfolio_return,
+                quality_notes={"effective_rebalance_date": effective_date.isoformat()},
+                ingested_at=ingested_at,
+            )
+        )
+    if last_month is not None:
+        monthly_returns.append(nav / month_start_nav - 1.0)
+
+    metric_values = _backtest_metric_values(return_values, monthly_returns, nav)
+    metric_date = max(returns.index)
+    for metric_name, metric_value in metric_values.items():
+        rows.append(
+            _backtest_row(
+                calendar_name=calendar_name,
+                observation_type="metric",
+                observation_date=metric_date,
+                metric_name=metric_name,
+                metric_value=metric_value,
+                net_value=None,
+                portfolio_return=None,
+                quality_notes=diagnostics,
+                ingested_at=ingested_at,
+            )
+        )
+    return pd.DataFrame(rows)
+
+
+def _backtest_input_diagnostics(
+    panel: pd.DataFrame, rebalance: pd.DataFrame, weights: pd.DataFrame
+) -> dict[str, Any]:
+    """Return blocking diagnostics for the backtest kernel inputs."""
+
+    reasons: list[str] = []
+    if panel.empty:
+        reasons.append("empty_panel")
+    if rebalance.empty:
+        reasons.append("empty_rebalance_calendar")
+    if weights.empty:
+        reasons.append("empty_weights")
+    if not panel.empty and {"trade_date", "sleeve_code"}.issubset(panel.columns):
+        normalized_panel = panel.copy()
+        normalized_panel["trade_date"] = pd.to_datetime(
+            normalized_panel["trade_date"], errors="coerce"
+        ).dt.date
+        panel_codes_by_date = normalized_panel.groupby("trade_date")["sleeve_code"].agg(
+            lambda values: set(str(value) for value in values)
+        )
+        for codes in panel_codes_by_date.tolist():
+            if codes != set(_ETF_AW_SLEEVE_CODES):
+                reasons.append("missing_sleeve_return")
+                break
+        if not rebalance.empty and "rebalance_date" in rebalance.columns:
+            rebalance_dates = set(
+                pd.to_datetime(rebalance["rebalance_date"], errors="coerce")
+                .dt.date.dropna()
+                .tolist()
+            )
+            trade_dates = set(panel_codes_by_date.index.dropna().tolist())
+            if any(value not in trade_dates for value in rebalance_dates):
+                reasons.append("rebalance_date_without_trading_day")
+    required_weight_columns = {
+        "calendar_name",
+        "rebalance_date",
+        "sleeve_code",
+        "target_weight",
+    }
+    missing_columns = sorted(required_weight_columns - set(weights.columns))
+    if missing_columns:
+        reasons.append("missing_weight_columns")
+    if not missing_columns and not weights.empty:
+        normalized = weights.copy()
+        normalized["rebalance_date"] = pd.to_datetime(
+            normalized["rebalance_date"], errors="coerce"
+        ).dt.date
+        duplicates = int(
+            normalized.duplicated(
+                ["calendar_name", "rebalance_date", "sleeve_code"]
+            ).sum()
+        )
+        if duplicates:
+            reasons.append("duplicate_weight_rows")
+        for _, group in normalized.groupby(["calendar_name", "rebalance_date"]):
+            codes = set(group["sleeve_code"].astype(str).tolist())
+            if codes != set(_ETF_AW_SLEEVE_CODES):
+                reasons.append("missing_sleeve_weight")
+                break
+            weight_sum = group["target_weight"].astype(float).sum()
+            if abs(weight_sum - 1.0) > 1e-6:
+                reasons.append("weight_sum_not_one")
+                break
+    return {
+        "blocking": bool(reasons),
+        "reasons": sorted(set(reasons)),
+    }
+
+
+def _backtest_diagnostic_rows(
+    *,
+    diagnostics: dict[str, Any],
+    start: date,
+    ingested_at: datetime,
+) -> pd.DataFrame:
+    """Return a validation-visible diagnostic row for blocked kernel inputs."""
+
+    return pd.DataFrame(
+        [
+            _backtest_row(
+                calendar_name=_REBALANCE_CALENDAR_NAME,
+                observation_type="diagnostic",
+                observation_date=start,
+                metric_name="input_validation",
+                metric_value=None,
+                net_value=None,
+                portfolio_return=None,
+                quality_notes=diagnostics,
+                ingested_at=ingested_at,
+            )
+        ]
+    )
+
+
+def _backtest_row(
+    *,
+    calendar_name: str,
+    observation_type: str,
+    observation_date: date,
+    metric_name: str,
+    metric_value: float | None,
+    net_value: float | None,
+    portfolio_return: float | None,
+    quality_notes: dict[str, Any],
+    ingested_at: datetime,
+) -> dict[str, Any]:
+    """Return one normalized backtest kernel observation row."""
+
+    return {
+        "schema_version": _ETF_AW_BACKTEST_KERNEL_SCHEMA_VERSION,
+        "calendar_name": calendar_name,
+        "strategy_name": _ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME,
+        "strategy_version": _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION,
+        "observation_type": observation_type,
+        "observation_date": observation_date,
+        "metric_name": metric_name,
+        "metric_value": metric_value,
+        "net_value": net_value,
+        "portfolio_return": portfolio_return,
+        "quality_notes_json": json.dumps(quality_notes, sort_keys=True),
+        "ingested_at": ingested_at,
+    }
+
+
+def _backtest_metric_values(
+    daily_returns: list[float], monthly_returns: list[float], final_nav: float
+) -> dict[str, float | None]:
+    """Calculate the minimal deterministic backtest metric set."""
+
+    if not daily_returns:
+        return {
+            "total_return": None,
+            "annualized_return": None,
+            "annualized_volatility": None,
+            "sharpe_ratio": None,
+            "max_drawdown": None,
+            "monthly_periods": None,
+        }
+    series = pd.Series(daily_returns, dtype=float)
+    nav = (1.0 + series).cumprod()
+    annualized_return = final_nav ** (252.0 / len(series)) - 1.0
+    annualized_volatility = float(series.std(ddof=1) * math.sqrt(252))
+    sharpe_ratio = (
+        float(annualized_return / annualized_volatility)
+        if annualized_volatility > 0
+        else None
+    )
+    drawdown = nav / nav.cummax() - 1.0
+    return {
+        "total_return": float(final_nav - 1.0),
+        "annualized_return": float(annualized_return),
+        "annualized_volatility": annualized_volatility,
+        "sharpe_ratio": sharpe_ratio,
+        "max_drawdown": float(drawdown.min()),
+        "monthly_periods": float(len(monthly_returns)),
+    }
+
+
+def _validate_backtest_kernel_frame(frame: pd.DataFrame) -> dict[str, bool]:
+    """Validate the minimal backtest kernel output contract."""
+
+    allowed_types = {"daily_nav", "metric", "turnover", "diagnostic"}
+    if frame.empty:
+        return {
+            "non_empty": False,
+            "no_duplicate_business_keys": False,
+            "observation_type_allowed": False,
+            "metric_values_finite": False,
+            "quality_notes_json": False,
+        }
+    duplicate_count = int(
+        frame.duplicated(
+            [
+                "calendar_name",
+                "strategy_name",
+                "strategy_version",
+                "observation_type",
+                "observation_date",
+                "metric_name",
+            ]
+        ).sum()
+    )
+    metric_values = [
+        _nullable_float(value)
+        for value in frame[
+            frame["observation_type"]
+            .astype(str)
+            .isin({"daily_nav", "metric", "turnover"})
+        ]["metric_value"].tolist()
+    ]
+    return {
+        "non_empty": True,
+        "no_duplicate_business_keys": duplicate_count == 0,
+        "observation_type_allowed": set(
+            frame["observation_type"].astype(str).tolist()
+        ).issubset(allowed_types),
+        "metric_values_finite": all(value is not None for value in metric_values),
+        "quality_notes_json": all(
+            _is_json_text(value) for value in frame["quality_notes_json"]
         ),
     }
 

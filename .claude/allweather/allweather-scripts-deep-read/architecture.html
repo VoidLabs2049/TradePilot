@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>model.py & stable_prefix_tuning.py — 双脚本架构</title>
+<style>
+  :root{--bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#c9d1d9;--dim:#8b949e;--accent:#58a6ff;--green:#3fb950;--yellow:#d2991d;--orange:#db6d28;--red:#f85149;--purple:#a371f7;--cyan:#39d2c0}
+  *{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,monospace;background:var(--bg);color:var(--text);line-height:1.5;padding:20px}
+  h1{font-size:1.3em;text-align:center;color:var(--accent);margin-bottom:4px}
+  .sub{text-align:center;color:var(--dim);font-size:0.8em;margin-bottom:20px}
+  .two-col{display:flex;gap:20px;max-width:1100px;margin:0 auto;flex-wrap:wrap}
+  .col{flex:1;min-width:400px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px}
+  .col h2{font-size:1em;color:var(--accent);margin-bottom:8px;display:flex;align-items:center;gap:8px}
+  .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:0.7em}
+  .badge.green{background:rgba(63,185,80,0.15);color:var(--green)}
+  .badge.purple{background:rgba(163,113,247,0.15);color:var(--purple)}
+  .flow{font-size:0.8em;color:var(--dim);line-height:1.8;margin:8px 0}
+  .flow span{color:var(--accent)}
+  .card-sm{background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:4px;padding:6px 10px;margin:4px 0;font-size:0.78em}
+  .card-sm .label{color:var(--dim);font-size:0.85em}
+  .card-sm .val{color:var(--accent)}
+  .section-title{font-size:0.78em;color:var(--dim);text-transform:uppercase;letter-spacing:1px;padding:8px 0 4px;border-bottom:1px solid var(--border);margin:12px 0 6px}
+  .insight-box{background:var(--surface);border:1px solid var(--purple);border-radius:6px;padding:12px;margin-top:16px;font-size:0.8em;max-width:1100px;margin-left:auto;margin-right:auto}
+  .insight-box .ib-title{color:var(--purple);font-weight:600;margin-bottom:5px}
+  .insight-box ul{list-style:none}.insight-box li{padding:2px 0}.insight-box li::before{content:"▪ ";color:var(--purple)}
+</style>
+</head>
+<body>
+
+<h1>model.py & stable_prefix_tuning.py</h1>
+<p class="sub">两个独立实验脚本 · 同一作者 · 探索行为金融 + 大模型稳定微调</p>
+
+<div class="two-col">
+  <!-- LEFT: model.py -->
+  <div class="col">
+    <h2><span class="badge green">量化策略</span> model.py — 行为经济学逆向交易</h2>
+
+    <div class="section-title">数据流</div>
+    <div class="flow">
+      <span>Yahoo Finance</span> → DOGE-USD + GC=F(Gold) + NQ=F(Nasdaq) + ^VIX
+    </div>
+
+    <div class="section-title">特征工程 (8个)</div>
+    <div class="card-sm"><span class="label">技术面</span> <span class="val">Dist_SMA20 · Mom_5 · RSI · ATR · Intraday_Ret · Gap</span></div>
+    <div class="card-sm"><span class="label">宏观</span> <span class="val">NQ_Ret_Prev · VIX_Ret_Prev</span></div>
+
+    <div class="section-title">核心策略</div>
+    <div class="card-sm" style="border-left:3px solid var(--red)">
+      <span class="label">核心假设</span> <span class="val">市场存在 confirmation bias → RF 学到的是"大众共识" → 取反 = Alpha</span>
+    </div>
+    <svg viewBox="0 0 420 80" style="width:100%;max-height:80px;font-family:monospace;font-size:9px;margin:6px 0">
+      <rect x="10" y="15" width="120" height="50" rx="4" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="70" y="35" text-anchor="middle" fill="#58a6ff" font-size="8">RF预测次日方向</text>
+      <text x="70" y="50" text-anchor="middle" fill="#8b949e" font-size="7">180天窗口·20天再训练</text>
+      <line x1="130" y1="40" x2="155" y2="40" stroke="#58a6ff" stroke-width="1" marker-end="url(#a)"/>
+      <rect x="160" y="5" width="100" height="70" rx="4" fill="#161b22" stroke="#f85149" stroke-width="1"/>
+      <text x="210" y="22" text-anchor="middle" fill="#f85149" font-size="8" font-weight="600">逆向操作</text>
+      <text x="210" y="36" text-anchor="middle" fill="#db6d28" font-size="7">prob≥0.55 → SHORT</text>
+      <text x="210" y="48" text-anchor="middle" fill="#3fb950" font-size="7">prob≤0.45 → LONG</text>
+      <text x="210" y="60" text-anchor="middle" fill="#d2991d" font-size="7">else → GOLD避险</text>
+      <text x="210" y="72" text-anchor="middle" fill="#8b949e" font-size="7">止损-15% · ATR杠杆</text>
+    </svg>
+
+    <div class="section-title">风控</div>
+    <div class="flow">
+      止损 -15% · 仓位 max(3×, 10%/ATR) · 手续费 0.04%/trade · 黄金避险备选
+    </div>
+
+    <div class="section-title">评估指标</div>
+    <div class="flow">
+      Sharpe · Sortino · Calmar · MaxDD · WinRate · AnnualReturn → CSV导出 + matplotlib图表
+    </div>
+
+    <div class="section-title">模型参数</div>
+    <div class="card-sm"><span class="val">RandomForestClassifier</span>: n_estimators=100, max_depth=2, min_samples_leaf=20 — 极浅，故意欠拟合</div>
+
+    <div class="section-title" style="color:var(--purple)">▸ 可迁移模式</div>
+    <div class="card-sm" style="border-left:3px solid var(--purple)"><b>"预测偏差→逆向交易"框架</b> — 不预测价格，预测市场情绪偏差然后反向操作。行为金融学的工程落地模板。</div>
+  </div>
+
+  <!-- RIGHT: stable_prefix_tuning.py -->
+  <div class="col">
+    <h2><span class="badge purple">ML实验</span> stable_prefix_tuning.py — Prefix Tuning 稳定性</h2>
+
+    <div class="section-title">任务</div>
+    <div class="flow">GLUE SST-2 情感分类 · 只训练 <span>10个虚拟token</span> (640参数) · Qwen3-0.6B 全冻结</div>
+
+    <div class="section-title">4种对比方案</div>
+    <table style="width:100%;font-size:0.75em;border-collapse:collapse;margin:6px 0">
+      <tr style="color:var(--dim)"><td style="padding:3px 6px;border-bottom:1px solid var(--border)">#</td><td style="padding:3px 6px;border-bottom:1px solid var(--border)">方案</td><td style="padding:3px 6px;border-bottom:1px solid var(--border)">技术</td></tr>
+      <tr><td style="padding:3px 6px;color:var(--dim)">1</td><td style="padding:3px 6px">Raw Prefix</td><td style="padding:3px 6px;color:var(--dim);font-size:0.9em">直接优化embedding (baseline)</td></tr>
+      <tr><td style="padding:3px 6px;color:var(--dim)">2</td><td style="padding:3px 6px">MLP Reparam</td><td style="padding:3px 6px;color:var(--dim);font-size:0.9em">MLP(64→128→64) 间接参数化</td></tr>
+      <tr><td style="padding:3px 6px;color:var(--dim)">3</td><td style="padding:3px 6px">Raw + SAM</td><td style="padding:3px 6px;color:var(--green);font-size:0.9em"><b>手写SAM</b>: first_step→second_step 找平坦最小值</td></tr>
+      <tr><td style="padding:3px 6px;color:var(--dim)">4</td><td style="padding:3px 6px">Raw + Hessian</td><td style="padding:3px 6px;color:var(--green);font-size:0.9em"><b>手写HVP</b>: Hutchinson's trace 估计 + 曲率惩罚</td></tr>
+    </table>
+
+    <div class="section-title">SAM 优化器 (手写, 22行)</div>
+    <div class="card-sm" style="border-left:3px solid var(--green)">
+      <span class="val">first_step</span>: 梯度上升 → 最差扰动点<br>
+      <span class="val">second_step</span>: 回到原位 → 用扰动梯度更新 → 寻找平坦极小值
+    </div>
+
+    <div class="section-title">Hessian Trace Penalty (手写, 12行)</div>
+    <div class="card-sm" style="border-left:3px solid var(--green)">
+      Hutchinson's estimator: <span class="val">v ~ N(0,I) → Hv = ∇(∇L·v) → trace ≈ Σ h·v</span><br>
+      不需要完整 Hessian 矩阵的无偏估计
+    </div>
+
+    <div class="section-title">Prefix Tuning 结构</div>
+    <svg viewBox="0 0 420 55" style="width:100%;max-height:55px;font-family:monospace;font-size:9px;margin:6px 0">
+      <rect x="10" y="10" width="80" height="35" rx="4" fill="#161b22" stroke="#a371f7" stroke-width="1"/>
+      <text x="50" y="32" text-anchor="middle" fill="#a371f7" font-size="7">[P₁..P₁₀]</text>
+      <text x="95" y="32" fill="#8b949e" font-size="9">+</text>
+      <rect x="105" y="10" width="120" height="35" rx="4" fill="#161b22" stroke="#58a6ff" stroke-width="1"/>
+      <text x="165" y="32" text-anchor="middle" fill="#58a6ff" font-size="7">Sentence: ...</text>
+      <line x1="225" y1="28" x2="255" y2="28" stroke="#58a6ff" stroke-width="1" marker-end="url(#a)"/>
+      <rect x="260" y="10" width="60" height="35" rx="4" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+      <text x="290" y="32" text-anchor="middle" fill="#3fb950" font-size="7">Qwen3</text>
+      <text x="325" y="18" fill="var(--dim)" font-size="6">frozen</text>
+      <line x1="320" y1="28" x2="350" y2="28" stroke="#58a6ff" stroke-width="1" marker-end="url(#a)"/>
+      <text x="380" y="32" fill="#8b949e" font-size="7">Pos/Neg</text>
+    </svg>
+
+    <div class="section-title">局限</div>
+    <div class="card-sm" style="border-left:3px solid var(--orange)">仅比较训练loss · 无验证精度 · 3epochs偏少 · rho/alpha是magic number</div>
+
+    <div class="section-title" style="color:var(--purple)">▸ 可迁移模式</div>
+    <div class="card-sm" style="border-left:3px solid var(--purple)"><b>SAM优化器(22行)</b> + <b>Hessian Trace Penalty(12行)</b> — 两个可直接嵌入金融模型训练的防过拟合组件。特别适合小样本金融场景。</div>
+  </div>
+</div>
+
+<div class="insight-box">
+  <div class="ib-title">▸ 4 个可迁移技术模式</div>
+  <ul>
+    <li><b>1. "预测偏差→逆向交易"框架</b> (model.py:138-162) — 不预测价格，预测 market sentiment bias 然后反向操作。羊群效应市场的工程落地。</li>
+    <li><b>2. ATR 动态仓位管理</b> (model.py:155) — leverage = min(3, 10%/ATR)。波动大→降杠杆，波动小→加杠杆。简单有效。</li>
+    <li><b>3. SAM 优化器最小实现</b> (stable_prefix_tuning.py:98-131) — 22行手写，first_step/second_step 两步梯度法。嵌入任意 PyTorch pipeline。</li>
+    <li><b>4. Hessian Trace Penalty</b> (stable_prefix_tuning.py:133-144) — Hutchinson's estimator 无需完整 Hessian 的曲率正则化。小样本金融模型泛化提升。</li>
+  </ul>
+</div>
+
+</body>
+</html>
