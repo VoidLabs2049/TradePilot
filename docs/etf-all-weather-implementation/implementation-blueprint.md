@@ -247,6 +247,8 @@ Expose the stable backtest and recommendation outputs through read endpoints, th
 
 Do this after the backend contracts are stable enough that the UI is not encoding temporary research assumptions.
 
+Current exception: a small read-only risk budget page now exists to inspect the generated `derived.etf_aw_risk_budget` artifact. Treat it as an observability panel, not as the main frontend milestone. Do not extend it into target weight, backtest, parameter tuning, or trade-action workflows until the backend `derived.etf_aw_target_weight` and frozen backtest contracts are implemented and verified.
+
 ### Step 5 — Shadow Run
 
 Run monthly paper allocations with frozen decisions and post-mortem review.
