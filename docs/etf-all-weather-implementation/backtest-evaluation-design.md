@@ -11,6 +11,23 @@
 
 ## 阶段边界
 
+### Phase 0：命令行报表 MVP
+
+Phase 0 先服务后端开发和研究验证，不依赖前端页面。
+
+输入：
+
+- `derived.etf_aw_backtest_kernel`
+- `observation_type` 包含 `daily_nav`、`metric`、`turnover`、`diagnostic`
+
+输出：
+
+- 本地可复现回测报表。
+- 净值、回撤、年化收益、年化波动、Sharpe、最大回撤和换手摘要。
+- 输入数据诊断和降级原因。
+
+Phase 0 不新增策略逻辑、不做自动交易建议、不要求 Dashboard 展示。报表格式可以先保持简单，但必须能被命令行脚本稳定生成，并在测试 fixture 中复现。
+
 ### Phase 1：单策略展示
 
 Phase 1 只读取现有内核输出，不扩展策略逻辑。

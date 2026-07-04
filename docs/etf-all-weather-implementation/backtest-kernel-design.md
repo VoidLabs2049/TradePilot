@@ -33,6 +33,8 @@
 - regime 评分。
 - risk budget 映射。
 - target weight 优化。
+- 参数估计或参数搜索。
+- 根据回测表现动态修改预算、权重或优化器配置。
 - baseline comparison pack。
 - 交易成本模型。
 - 参数扰动。
@@ -40,6 +42,8 @@
 - 交易建议生成。
 
 这些内容分别属于 `risk-budget-design.md`、`target-weight-design.md` 和后续的 `backtest-evaluation-design.md`。
+
+回测内核只能消费已经生成并冻结的月度权重序列。不同风险预算规则、协方差窗口或优化器参数必须先生成独立 `strategy_name` / `strategy_version` artifact，再进入同一个内核对比；不得在回测循环内部一边评估一边生成或调整策略输入。
 
 ## 接口边界
 

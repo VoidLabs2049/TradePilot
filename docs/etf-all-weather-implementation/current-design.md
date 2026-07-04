@@ -36,6 +36,46 @@ TradePilot ETF 全天候不是 ETF 涨跌预测器，而是低频风险配置系
 
 这条链应作为下一阶段策略计算层的设计方向，但不能覆盖当前已经完成的数据和上下文基座。
 
+## 最新开发规划吸收
+
+当前 ETF 全天候实现应按“后端基础框架先行，前端体验后置”的节奏推进。
+
+MVP 的日常工作流是：
+
+```text
+每日数据获取
+-> 更新 ETF / 指数 / 宏观与利率上下文
+-> 月度调仓日生成风险预算和组合权重
+-> 回测内核和评估报表验证历史表现
+-> 用户根据结果进行人工交易判断
+```
+
+因此近期工程重点不是新增复杂模型，而是把后端命令行能力补齐：
+
+- 数据获取和本地落库可重复运行。
+- 风险预算、目标权重和回测可通过命令行脚本独立触发。
+- 回测结果能产出净值、回撤、换手、指标和诊断报表。
+- 前端页面先消费稳定 read model；不要在权重合同未稳定前提前做复杂交互。
+
+模型策略上，V1 继续使用规则式状态映射、风险预算和 budgeted inverse-vol。机器学习、期货、期权、港股、美股和更完整宏观数据属于后续扩展方向，只能在当前股票/ETF 数据链路、回测纪律和风险预算估计稳定后逐步纳入。
+
+## Frozen Artifact 主线
+
+ETF 全天候后续策略层必须采用 frozen artifact 流程：
+
+```text
+strategy_context
+-> derived.etf_aw_risk_budget
+-> health check
+-> derived.etf_aw_target_weight
+-> health check
+-> backtest kernel / evaluation report
+```
+
+回测只能消费已经写出的风险预算和目标权重 artifact。回测内核和评估层不得在运行过程中重新估计 regime、重新生成 risk budget、重新优化 target weight 或动态搜索参数。
+
+如果需要比较不同预算规则、协方差窗口或优化器参数，必须先生成不同 `strategy_name` / `strategy_version` 的独立 artifact，再分别进入同一个回测内核。这样每条净值曲线都能追溯到固定输入，避免把研究选参隐藏在回测循环里。
+
 ## 已有进度
 
 ### Stage B：真实数据接入切片
@@ -413,7 +453,22 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 
 ### 必需文档
 
-1. `backtest-kernel-design.md`
+1. `etf-aw-cli-design.md`
+
+   范围：
+
+   - ETF 全天候后端命令行主线。
+   - `sync-data`、`build-risk-budget`、`health-check`、`build-target-weight`、`backtest-kernel`、`backtest-report` 命令边界。
+   - 每个命令的输入、输出、失败条件和 frozen artifact 规则。
+   - CLI 层最小测试要求。
+
+   非范围：
+
+   - 前端页面。
+   - 自动交易。
+   - 新策略参数搜索。
+
+2. `backtest-kernel-design.md`
 
    范围：
 
@@ -431,7 +486,7 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - 参数扰动。
    - Dashboard 展示。
 
-2. `risk-budget-design.md`
+3. `risk-budget-design.md`
 
    范围：
 
@@ -451,7 +506,7 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - 交易建议。
    - 订单或执行约束。
 
-3. `target-weight-design.md`
+4. `target-weight-design.md`
 
    范围：
 
@@ -462,6 +517,7 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - vol floor、协方差收缩、奇异矩阵和 cash sleeve 低波动处理。
    - 权重数值精度、no-trade band 和阈值大于浮点容差的规则。
    - raw target weight、constrained target weight、降级原因和 explainability 字段。
+   - target weight 健康检查清单，至少覆盖权重合计、非负权重、单 sleeve 上限、缺失 sleeve、重复 business key、异常换手、低波动 sleeve 权重发散、no-trade band 尾差、来源 risk budget 未通过健康检查等场景。
    - 使用前置回测内核检查权重稳定性、换手和基础指标。
 
    非范围：
@@ -470,9 +526,21 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - 当前持仓驱动的交易计划。
    - 实盘 broker / QMT / XtQuant 接口。
 
+   初始健康检查要求：
+
+   - FAIL：每个 rebalance date 不是 5 个 sleeve。
+   - FAIL：`raw_target_weight` 或 `constrained_target_weight` 合计不等于 `1`，容忍浮点误差不超过 `1e-6`。
+   - FAIL：任一权重为负数、非数值或超过 V1 单 sleeve 上限。
+   - FAIL：来源 `derived.etf_aw_risk_budget` 缺失、未通过健康检查或 business key 不唯一。
+   - FAIL：协方差样本不足、奇异矩阵、cash sleeve 低波动未触发降级却输出主动权重。
+   - WARN：月度换手超过阈值，但仍在 V1 允许范围内。
+   - WARN：no-trade band 内的尾差触发了伪调仓。
+   - WARN：单 sleeve 因 vol floor 或缺失数据被降级。
+   - WARN：连续多个 rebalance date 的 target weight 完全不变，需要人工确认是中性回落还是计算未更新。
+
 ### 延后文档
 
-4. `rebalance-plan-design.md`
+5. `rebalance-plan-design.md`
 
    只有在 `target-weight-design.md` 对应实现稳定后再写。
 
@@ -487,7 +555,7 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - 现金缓冲。
    - 不自动下单的人工确认边界。
 
-5. `backtest-evaluation-design.md`
+6. `backtest-evaluation-design.md`
 
    拆成两段推进。Phase 1 可在现有回测内核输出之上先定义 read endpoint 和单策略可视化；Phase 2 在 `target-weight-design.md` 对应实现能通过前置回测内核验收后，再做完整基线对标和评估层扩展。
 
@@ -502,7 +570,7 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - 月度 explainability report。
    - Dashboard 净值展示边界。
 
-6. `shadow-run-design.md`
+7. `shadow-run-design.md`
 
    只有在 rebalance plan 能稳定生成后再写。
 
@@ -532,14 +600,18 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 2. 更新旧 `progress-status.md`，避免文档状态继续停留在 “schema not done”。已完成。
 3. 新增并冻结 `backtest-kernel-design.md`。已完成。
 4. 实现前置回测内核，先用等权 fixture 跑通。已完成最小版本。
-5. 新增并冻结 `backtest-evaluation-design.md`，先收口单策略可视化合同，完整基线对标留 Phase 2。
-6. 新增并冻结 `risk-budget-design.md`。
-7. 实现 `derived.etf_aw_risk_budget` schema、read model 和规则式 mapper。
-8. 新增并冻结 `target-weight-design.md`。
-9. 实现 `derived.etf_aw_target_weight` 和 budgeted inverse-vol MVP，并用前置回测内核验收。
-10. 增加 monthly explainability table 和后置 baseline comparison。
-11. 再评估是否引入 simplified ERC。
-12. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
+5. 新增并冻结 `backtest-evaluation-design.md`，先收口命令行报表 MVP 和单策略可视化合同，完整基线对标留 Phase 2。
+6. 新增并冻结 `etf-aw-cli-design.md`。已完成。
+7. 新增并冻结 `risk-budget-design.md`。
+8. 继续推进风险预算估计：实现 `derived.etf_aw_risk_budget` schema、read model、规则式 mapper、健康检查和降级测试。
+9. 新增并冻结 `target-weight-design.md`。
+10. 实现 `derived.etf_aw_target_weight` 和 budgeted inverse-vol MVP，并用前置回测内核验收。
+11. 按 `etf-aw-cli-design.md` 接入 `build-risk-budget`、`health-check risk-budget`、`build-target-weight`、`health-check target-weight`、`backtest-kernel`、`backtest-report`。
+12. 增加后端命令行回测报表，覆盖净值、回撤、指标、换手和 diagnostics。
+13. 增加 monthly explainability table 和后置 baseline comparison。
+14. 再评估是否引入 simplified ERC。
+15. 后端合同稳定后，再补前端页面或 Dashboard 面板。
+16. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
 
 ## 非目标
 
