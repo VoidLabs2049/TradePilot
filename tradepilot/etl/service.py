@@ -2286,6 +2286,7 @@ class ETLService:
                 "records_written": 0,
                 "error_message": "ETF all-weather risk budget has no valid rebalance keys",
             }
+        health_findings = _risk_budget_health_findings(budget)
         validation = _validate_risk_budget_frame(budget)
         if not all(validation.values()):
             return {
@@ -2296,6 +2297,7 @@ class ETLService:
                 "requested_end": end.isoformat(),
                 "records_written": 0,
                 "validation": validation,
+                "health_findings": health_findings,
                 "error_message": "ETF all-weather risk budget validation failed",
             }
         write_result = self._write_etf_aw_risk_budget(budget)
@@ -2311,6 +2313,7 @@ class ETLService:
             "partitions_written": write_result.partitions_written,
             "storage_paths": write_result.storage_paths,
             "validation": validation,
+            "health_findings": health_findings,
             "budget_status_counts": _value_counts_dict(budget["budget_status"]),
         }
 
@@ -4608,6 +4611,211 @@ def _validate_risk_budget_frame(frame: pd.DataFrame) -> dict[str, bool]:
                 source_context_dates, source_regime_dates, rebalance_dates, strict=True
             )
         ),
+    }
+
+
+def _risk_budget_health_findings(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    """Return row-level health findings for risk budget write validation."""
+
+    if frame.empty:
+        return [
+            _risk_budget_finding(
+                "FAIL",
+                "non_empty",
+                None,
+                None,
+                "risk budget output is empty",
+            )
+        ]
+    required_columns = {
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_role",
+        "base_budget",
+        "delta_budget",
+        "tilted_budget",
+        "budget_status",
+        "budget_basis",
+        "market_regime_label",
+        "quality_notes_json",
+        "source_strategy_context_rebalance_date",
+        "source_regime_rebalance_date",
+    }
+    missing_columns = sorted(required_columns - set(frame.columns))
+    if missing_columns:
+        return [
+            _risk_budget_finding(
+                "FAIL",
+                "required_columns_present",
+                None,
+                None,
+                f"missing required columns: {', '.join(missing_columns)}",
+            )
+        ]
+
+    findings: list[dict[str, Any]] = []
+    key_columns = [
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_role",
+    ]
+    duplicated = frame[frame.duplicated(key_columns, keep=False)]
+    for _, row in duplicated.iterrows():
+        findings.append(
+            _risk_budget_finding(
+                "FAIL",
+                "no_duplicate_business_keys",
+                row["rebalance_date"],
+                row["sleeve_role"],
+                "duplicate risk budget business key",
+            )
+        )
+
+    forbidden_fields = sorted(
+        set(frame.columns)
+        & {
+            "target_weight",
+            "raw_target_weight",
+            "constrained_target_weight",
+            "trade_action",
+            "order_instruction",
+            "rebalance_instruction",
+        }
+    )
+    if forbidden_fields:
+        findings.append(
+            _risk_budget_finding(
+                "FAIL",
+                "forbidden_fields_absent",
+                None,
+                None,
+                f"forbidden output fields present: {', '.join(forbidden_fields)}",
+            )
+        )
+
+    grouped = frame.groupby(
+        ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+        dropna=False,
+    )
+    for _, group in grouped:
+        rebalance_date = group.iloc[0]["rebalance_date"]
+        roles = set(group["sleeve_role"].astype(str))
+        if roles != _ETF_AW_REQUIRED_ROLES or len(group) != len(_ETF_AW_REQUIRED_ROLES):
+            findings.append(
+                _risk_budget_finding(
+                    "FAIL",
+                    "five_roles_per_rebalance_date",
+                    rebalance_date,
+                    None,
+                    "risk budget must output exactly five frozen sleeve roles",
+                )
+            )
+        base = pd.to_numeric(group["base_budget"], errors="coerce")
+        delta = pd.to_numeric(group["delta_budget"], errors="coerce")
+        tilted = pd.to_numeric(group["tilted_budget"], errors="coerce")
+        if (
+            base.isna().any()
+            or tilted.isna().any()
+            or bool((base < 0).any())
+            or bool((tilted < 0).any())
+            or abs(float(base.sum()) - 1.0) > 1e-6
+            or abs(float(delta.sum())) > 1e-6
+            or abs(float(tilted.sum()) - 1.0) > 1e-6
+        ):
+            findings.append(
+                _risk_budget_finding(
+                    "FAIL",
+                    "budget_sums_valid",
+                    rebalance_date,
+                    None,
+                    "base, delta, and tilted budgets violate sum or numeric checks",
+                )
+            )
+
+    invalid_statuses = (
+        set(frame["budget_status"].astype(str)) - _ETF_AW_RISK_BUDGET_STATUSES
+    )
+    if invalid_statuses:
+        findings.append(
+            _risk_budget_finding(
+                "FAIL",
+                "status_values_allowed",
+                None,
+                None,
+                f"invalid budget_status values: {', '.join(sorted(invalid_statuses))}",
+            )
+        )
+    for _, row in frame.iterrows():
+        if not _is_json_text(row["quality_notes_json"]):
+            findings.append(
+                _risk_budget_finding(
+                    "FAIL",
+                    "quality_notes_json",
+                    row["rebalance_date"],
+                    row["sleeve_role"],
+                    "quality_notes_json is not valid JSON",
+                )
+            )
+        if (
+            str(row["budget_basis"]) == "market_regime_tilt"
+            and str(row["market_regime_label"]) not in _ETF_AW_RISK_BUDGET_DELTAS
+        ):
+            findings.append(
+                _risk_budget_finding(
+                    "FAIL",
+                    "market_regime_label_allowed_for_tilt",
+                    row["rebalance_date"],
+                    row["sleeve_role"],
+                    "active risk budget tilt uses an unsupported regime label",
+                )
+            )
+    source_context_dates = pd.to_datetime(
+        frame["source_strategy_context_rebalance_date"], errors="coerce"
+    ).dt.date
+    source_regime_dates = pd.to_datetime(
+        frame["source_regime_rebalance_date"], errors="coerce"
+    ).dt.date
+    rebalance_dates = pd.to_datetime(frame["rebalance_date"], errors="coerce").dt.date
+    for row, source_context, source_regime, rebalance in zip(
+        frame.to_dict("records"),
+        source_context_dates,
+        source_regime_dates,
+        rebalance_dates,
+        strict=True,
+    ):
+        if (not pd.isna(source_context) and source_context > rebalance) or (
+            not pd.isna(source_regime) and source_regime > rebalance
+        ):
+            findings.append(
+                _risk_budget_finding(
+                    "FAIL",
+                    "point_in_time_sources",
+                    row["rebalance_date"],
+                    row["sleeve_role"],
+                    "source context or regime date is after rebalance_date",
+                )
+            )
+    return findings
+
+
+def _risk_budget_finding(
+    level: str,
+    check_name: str,
+    rebalance_date: object,
+    sleeve_role: object,
+    message: str,
+) -> dict[str, Any]:
+    parsed_date = _series_date(rebalance_date)
+    return {
+        "level": level,
+        "check_name": check_name,
+        "rebalance_date": parsed_date.isoformat() if parsed_date is not None else None,
+        "sleeve_role": None if pd.isna(sleeve_role) else str(sleeve_role),
+        "message": message,
     }
 
 

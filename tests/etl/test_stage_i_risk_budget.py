@@ -109,6 +109,34 @@ class StageIRiskBudgetTests(unittest.TestCase):
 
         self.assertFalse(validation["point_in_time_sources"])
 
+    def test_budget_sum_failure_returns_health_finding(self) -> None:
+        frame = self.service._make_etf_aw_risk_budget_frame(
+            pd.DataFrame(
+                [self._context_row(date(2024, 7, 22), "complete", "research_ready")]
+            ),
+            pd.DataFrame([self._regime_row(date(2024, 7, 22), "risk_on", 0.60)]),
+        )
+        frame.loc[frame["sleeve_role"] == "cash", "tilted_budget"] = 0.30
+
+        from tradepilot.etl import service as etl_service
+
+        validation = etl_service._validate_risk_budget_frame(frame)
+        findings = etl_service._risk_budget_health_findings(frame)
+
+        self.assertFalse(validation["budget_sums_valid"])
+        self.assertIn(
+            {
+                "level": "FAIL",
+                "check_name": "budget_sums_valid",
+                "rebalance_date": "2024-07-22",
+                "sleeve_role": None,
+                "message": (
+                    "base, delta, and tilted budgets violate sum or numeric checks"
+                ),
+            },
+            findings,
+        )
+
     def test_risk_budget_read_models_return_latest_grouped_contract(self) -> None:
         self._write_strategy_context(
             self._context_row(date(2024, 7, 22), "complete", "research_ready")
