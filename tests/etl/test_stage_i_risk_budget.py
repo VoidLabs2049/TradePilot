@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 import json
 import threading
 import unittest
+from unittest.mock import patch
 
 import duckdb
 import pandas as pd
@@ -67,6 +68,10 @@ class StageIRiskBudgetTests(unittest.TestCase):
         self.assertTrue(all(result["validation"].values()))
         frame = self._read_budget_file(2024, 7)
         self.assertEqual(len(frame), 5)
+        self.assertEqual(
+            frame["sleeve_role"].tolist(),
+            ["equity_large", "equity_small", "bond", "gold", "cash"],
+        )
         self.assertAlmostEqual(float(frame["tilted_budget"].sum()), 1.0, places=6)
         by_role = frame.set_index("sleeve_role")
         self.assertEqual(by_role.loc["equity_large", "tilted_budget"], 0.235)
@@ -135,6 +140,34 @@ class StageIRiskBudgetTests(unittest.TestCase):
                 ),
             },
             findings,
+        )
+
+    def test_health_failures_block_write(self) -> None:
+        self._write_strategy_context(
+            self._context_row(date(2024, 7, 22), "complete", "research_ready")
+        )
+        frame = self.service._make_etf_aw_risk_budget_frame(
+            pd.DataFrame(
+                [self._context_row(date(2024, 7, 22), "complete", "research_ready")]
+            ),
+            pd.DataFrame([self._regime_row(date(2024, 7, 22), "risk_on", 0.60)]),
+        )
+        frame["target_weight"] = frame["tilted_budget"]
+
+        with patch.object(
+            self.service, "_make_etf_aw_risk_budget_frame", return_value=frame
+        ):
+            result = self.service.run_bootstrap(
+                "derived.etf_aw_risk_budget.build",
+                start=date(2024, 7, 1),
+                end=date(2024, 7, 31),
+            )
+
+        self.assertEqual(result["status"], RunStatus.FAILED.value)
+        self.assertEqual(result["records_written"], 0)
+        self.assertFalse(result["validation"]["forbidden_fields_absent"])
+        self.assertTrue(
+            any(item["level"] == "FAIL" for item in result["health_findings"])
         )
 
     def test_risk_budget_read_models_return_latest_grouped_contract(self) -> None:

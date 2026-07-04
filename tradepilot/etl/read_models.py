@@ -36,6 +36,13 @@ _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION = "etf_aw_strategy_context_contract_v1
 _ETF_AW_RISK_BUDGET_DATASET = "derived.etf_aw_risk_budget"
 _ETF_AW_RISK_BUDGET_SCHEMA_VERSION = "etf_aw_risk_budget_v1"
 _ETF_AW_RISK_BUDGET_CONTRACT_VERSION = "etf_aw_risk_budget_contract_v1"
+_ETF_AW_RISK_BUDGET_ROLE_ORDER = (
+    "equity_large",
+    "equity_small",
+    "bond",
+    "gold",
+    "cash",
+)
 _ETF_AW_MACRO_RATES_CONTEXT_SCHEMA_VERSION = "etf_aw_macro_rates_context_v1"
 _MACRO_SLOW_FIELDS_DATASET = "macro.slow_fields"
 _RATES_DAILY_RATES_DATASET = "rates.daily_rates"
@@ -1306,7 +1313,11 @@ def _strategy_context_contract(row: pd.Series) -> dict[str, Any]:
 
 
 def _risk_budget_contract(frame: pd.DataFrame) -> dict[str, Any]:
-    ordered = frame.sort_values("sleeve_role")
+    ordered = frame.copy()
+    ordered["sleeve_role_order"] = ordered["sleeve_role"].map(
+        {role: index for index, role in enumerate(_ETF_AW_RISK_BUDGET_ROLE_ORDER)}
+    )
+    ordered = ordered.sort_values(["sleeve_role_order", "sleeve_role"])
     first = ordered.iloc[0]
     base_sum = float(ordered["base_budget"].astype(float).sum())
     tilted_sum = float(ordered["tilted_budget"].astype(float).sum())

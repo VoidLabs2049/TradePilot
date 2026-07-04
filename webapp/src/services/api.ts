@@ -122,6 +122,35 @@ export interface EtfAwSnapshotContext {
   sleeves: EtfAwSleeveSnapshot[];
 }
 
+export interface EtfAwRiskBudgetSleeve {
+  sleeve_role: string;
+  base_budget?: number | null;
+  delta_budget?: number | null;
+  tilted_budget?: number | null;
+  budget_status?: string | null;
+  quality_notes?: Record<string, any>;
+}
+
+export interface EtfAwRiskBudget {
+  schema_version: string;
+  contract_version: string;
+  calendar_name?: string | null;
+  rebalance_date?: string | null;
+  strategy_name?: string | null;
+  strategy_version?: string | null;
+  market_regime_label?: string | null;
+  budget_status?: string | null;
+  budget_basis?: string | null;
+  confidence_score?: number | null;
+  effective_confidence_score?: number | null;
+  base_budget_sum?: number | null;
+  tilted_budget_sum?: number | null;
+  budgets: EtfAwRiskBudgetSleeve[];
+  quality_notes?: Record<string, any>;
+  source_strategy_context_rebalance_date?: string | null;
+  source_regime_rebalance_date?: string | null;
+}
+
 export interface InsightMetric {
   label: string;
   value: string | number | null;
@@ -210,6 +239,8 @@ export const getLatestWorkflowContext = (phase: WorkflowPhase) =>
   fetchJson<WorkflowContextPayload | null>(`/workflow/context/latest?phase=${phase}`);
 export const getLatestEtfAwContext = (asOfDate?: string) =>
   fetchJson<EtfAwSnapshotContext | null>(`/workflow/etf-aw/latest${asOfDate ? `?as_of_date=${encodeURIComponent(asOfDate)}` : ""}`);
+export const getLatestEtfAwRiskBudget = (asOfDate?: string) =>
+  fetchJson<EtfAwRiskBudget | null>(`/workflow/etf-aw/risk-budget/latest${asOfDate ? `?as_of_date=${encodeURIComponent(asOfDate)}` : ""}`);
 export const getLatestWorkflowInsight = (phase: WorkflowPhase, producer = "the_one") =>
   fetchJson<WorkflowInsightResponse>(`/workflow/insight/latest?phase=${phase}&producer=${encodeURIComponent(producer)}`);
 export const upsertWorkflowInsight = (data: WorkflowInsightUpsertRequest) =>

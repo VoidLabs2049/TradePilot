@@ -226,7 +226,8 @@ _ETF_AW_FORBIDDEN_STRATEGY_FIELD_TOKENS = {
     "buy_list",
     "sell_list",
 }
-_ETF_AW_REQUIRED_ROLES = {"equity_large", "equity_small", "bond", "gold", "cash"}
+_ETF_AW_ROLE_ORDER = ("equity_large", "equity_small", "bond", "gold", "cash")
+_ETF_AW_REQUIRED_ROLES = set(_ETF_AW_ROLE_ORDER)
 _ETF_AW_DIRECTION_RULES = {
     # Return thresholds are decimal returns, e.g. 0.015 means 1.5%.
     "return_1m": (0.015, -0.015, 0.25),
@@ -981,11 +982,22 @@ class ETLService:
             for column in sort_columns:
                 if isinstance(merged[column].dtype, pd.CategoricalDtype):
                     merged[column] = merged[column].astype(str)
+            sort_by = list(sort_columns)
+            if dataset_name == _ETF_AW_RISK_BUDGET_DATASET:
+                merged["_sleeve_role_order"] = merged["sleeve_role"].map(
+                    {role: index for index, role in enumerate(_ETF_AW_ROLE_ORDER)}
+                )
+                sort_by = [
+                    "_sleeve_role_order" if column == "sleeve_role" else column
+                    for column in sort_by
+                ]
             merged = (
-                merged.sort_values(list(sort_columns))
+                merged.sort_values(sort_by)
                 .drop_duplicates(list(key_columns), keep="last")
                 .reset_index(drop=True)
             )
+            if "_sleeve_role_order" in merged.columns:
+                merged = merged.drop(columns=["_sleeve_role_order"])
             if "trade_date" in merged.columns:
                 merged["trade_date"] = pd.to_datetime(
                     merged["trade_date"], errors="coerce"
@@ -2287,8 +2299,11 @@ class ETLService:
                 "error_message": "ETF all-weather risk budget has no valid rebalance keys",
             }
         health_findings = _risk_budget_health_findings(budget)
+        has_blocking_findings = any(
+            str(finding.get("level")) == "FAIL" for finding in health_findings
+        )
         validation = _validate_risk_budget_frame(budget)
-        if not all(validation.values()):
+        if has_blocking_findings or not all(validation.values()):
             return {
                 "profile_name": _ETF_AW_RISK_BUDGET_PROFILE,
                 "dataset_name": _ETF_AW_RISK_BUDGET_DATASET,
@@ -4352,7 +4367,7 @@ def _risk_budget_rows(
     )
     raw_budget = {
         role: _ETF_AW_RISK_BUDGET_BASE[role] + effective_confidence * delta[role]
-        for role in _ETF_AW_REQUIRED_ROLES
+        for role in _ETF_AW_ROLE_ORDER
     }
     if min(raw_budget.values()) < 0.05:
         budget_status = "partial"
@@ -4400,7 +4415,7 @@ def _risk_budget_rows(
             "delta_budget": round(delta[role], 6),
             "tilted_budget": tilted[role],
         }
-        for role in sorted(_ETF_AW_REQUIRED_ROLES)
+        for role in _ETF_AW_ROLE_ORDER
     ]
 
 
