@@ -386,6 +386,38 @@ def build_derived_etf_aw_strategy_context_dataset() -> DatasetDefinition:
     )
 
 
+def build_derived_etf_aw_risk_budget_dataset() -> DatasetDefinition:
+    """Return the ETF all-weather risk budget dataset definition."""
+
+    return DatasetDefinition(
+        dataset_name="derived.etf_aw_risk_budget",
+        category=DatasetCategory.DERIVED,
+        grain="calendar_rebalance_strategy_sleeve_role",
+        primary_source="derived",
+        storage_zone=StorageZone.DERIVED,
+        partition_strategy="year_month",
+        canonical_schema_name="etf_aw_risk_budget_v1",
+        timing_semantics=(
+            "Monthly sleeve risk budget derived from frozen strategy context and "
+            "market-only regime score. It emits no target weights, trade actions, "
+            "or order instructions."
+        ),
+        validation_rule_names=[
+            "risk_budget.duplicate_business_key",
+            "risk_budget.five_roles_per_rebalance_date",
+            "risk_budget.budget_sums",
+            "risk_budget.status_allowed",
+            "risk_budget.no_target_or_trade_fields",
+            "risk_budget.point_in_time_sources",
+            "risk_budget.quality_notes_json",
+        ],
+        dependencies=[
+            "derived.etf_aw_strategy_context",
+            "derived.etf_aw_regime_score",
+        ],
+    )
+
+
 def build_derived_etf_aw_backtest_kernel_dataset() -> DatasetDefinition:
     """Return the ETF all-weather minimal backtest kernel definition."""
 
@@ -604,6 +636,7 @@ def build_stage_b_datasets() -> list[DatasetDefinition]:
         build_derived_etf_aw_regime_score_dataset(),
         build_derived_etf_aw_market_features_dataset(),
         build_derived_etf_aw_strategy_context_dataset(),
+        build_derived_etf_aw_risk_budget_dataset(),
         build_derived_etf_aw_backtest_kernel_dataset(),
         build_macro_slow_fields_dataset(),
         build_rates_daily_rates_dataset(),

@@ -74,6 +74,11 @@ _ETF_AW_STRATEGY_CONTEXT_PROFILE = "derived.etf_aw_strategy_context.build"
 _ETF_AW_STRATEGY_CONTEXT_DATASET = "derived.etf_aw_strategy_context"
 _ETF_AW_STRATEGY_CONTEXT_SCHEMA_VERSION = "etf_aw_strategy_context_v1"
 _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION = "etf_aw_strategy_context_contract_v1"
+_ETF_AW_RISK_BUDGET_PROFILE = "derived.etf_aw_risk_budget.build"
+_ETF_AW_RISK_BUDGET_DATASET = "derived.etf_aw_risk_budget"
+_ETF_AW_RISK_BUDGET_SCHEMA_VERSION = "etf_aw_risk_budget_v1"
+_ETF_AW_RISK_BUDGET_CONTRACT_VERSION = "etf_aw_risk_budget_contract_v1"
+_ETF_AW_RISK_BUDGET_STRATEGY_VERSION = "risk_budget_v1"
 _ETF_AW_BACKTEST_KERNEL_PROFILE = "derived.etf_aw_backtest_kernel.build"
 _ETF_AW_BACKTEST_KERNEL_DATASET = "derived.etf_aw_backtest_kernel"
 _ETF_AW_BACKTEST_KERNEL_SCHEMA_VERSION = "etf_aw_backtest_kernel_v1"
@@ -146,6 +151,57 @@ _ETF_AW_CONTEXT_BASES = {
     "market_only",
     "market_plus_rates",
     "market_plus_macro_rates",
+}
+_ETF_AW_RISK_BUDGET_STATUSES = {
+    "complete",
+    "partial",
+    "stale",
+    "missing",
+    "unavailable",
+}
+_ETF_AW_RISK_BUDGET_BASE = {
+    "equity_large": 0.20,
+    "equity_small": 0.20,
+    "bond": 0.20,
+    "gold": 0.20,
+    "cash": 0.20,
+}
+_ETF_AW_RISK_BUDGET_DELTAS = {
+    "risk_on": {
+        "equity_large": 0.05,
+        "equity_small": 0.05,
+        "bond": -0.02,
+        "gold": -0.03,
+        "cash": -0.05,
+    },
+    "hedge_bid": {
+        "equity_large": -0.04,
+        "equity_small": -0.05,
+        "bond": 0.02,
+        "gold": 0.05,
+        "cash": 0.02,
+    },
+    "defensive": {
+        "equity_large": -0.05,
+        "equity_small": -0.05,
+        "bond": 0.05,
+        "gold": 0.01,
+        "cash": 0.04,
+    },
+    "mixed": {
+        "equity_large": 0.0,
+        "equity_small": 0.0,
+        "bond": 0.0,
+        "gold": 0.0,
+        "cash": 0.0,
+    },
+    "insufficient_data": {
+        "equity_large": 0.0,
+        "equity_small": 0.0,
+        "bond": 0.0,
+        "gold": 0.0,
+        "cash": 0.0,
+    },
 }
 _ETF_AW_MACRO_RATES_CONTEXT_STATUSES = {
     "complete",
@@ -455,6 +511,11 @@ class ETLService:
             )
         if profile_name == _ETF_AW_STRATEGY_CONTEXT_PROFILE:
             return self._build_etf_aw_strategy_context(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        if profile_name == _ETF_AW_RISK_BUDGET_PROFILE:
+            return self._build_etf_aw_risk_budget(
                 start or _TRADING_CALENDAR_HISTORY_START,
                 end or date.today(),
             )
@@ -2185,6 +2246,99 @@ class ETLService:
                 "rebalance_date",
                 "strategy_name",
                 "strategy_version",
+                "ingested_at",
+            ),
+            partition_date_column="rebalance_date",
+        )
+
+    def _build_etf_aw_risk_budget(self, start: date, end: date) -> dict:
+        start, end = _ordered_dates(start, end)
+        context = self._read_partitioned_dataset(
+            _ETF_AW_STRATEGY_CONTEXT_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        if context.empty:
+            return {
+                "profile_name": _ETF_AW_RISK_BUDGET_PROFILE,
+                "dataset_name": _ETF_AW_RISK_BUDGET_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather strategy context is missing",
+            }
+        regime = self._read_partitioned_dataset(
+            _ETF_AW_REGIME_SCORE_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        budget = self._make_etf_aw_risk_budget_frame(context, regime)
+        if budget.empty:
+            return {
+                "profile_name": _ETF_AW_RISK_BUDGET_PROFILE,
+                "dataset_name": _ETF_AW_RISK_BUDGET_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather risk budget has no valid rebalance keys",
+            }
+        validation = _validate_risk_budget_frame(budget)
+        if not all(validation.values()):
+            return {
+                "profile_name": _ETF_AW_RISK_BUDGET_PROFILE,
+                "dataset_name": _ETF_AW_RISK_BUDGET_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "validation": validation,
+                "error_message": "ETF all-weather risk budget validation failed",
+            }
+        write_result = self._write_etf_aw_risk_budget(budget)
+        return {
+            "profile_name": _ETF_AW_RISK_BUDGET_PROFILE,
+            "dataset_name": _ETF_AW_RISK_BUDGET_DATASET,
+            "status": RunStatus.SUCCESS.value,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "records_written": write_result.records_written,
+            "records_inserted": write_result.records_inserted,
+            "records_updated": write_result.records_updated,
+            "partitions_written": write_result.partitions_written,
+            "storage_paths": write_result.storage_paths,
+            "validation": validation,
+            "budget_status_counts": _value_counts_dict(budget["budget_status"]),
+        }
+
+    def _make_etf_aw_risk_budget_frame(
+        self, strategy_context: pd.DataFrame, regime: pd.DataFrame
+    ) -> pd.DataFrame:
+        return _make_etf_aw_risk_budget_frame(strategy_context, regime)
+
+    def _write_etf_aw_risk_budget(
+        self, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=_ETF_AW_RISK_BUDGET_DATASET,
+            zone=StorageZone.DERIVED,
+            canonical=canonical,
+            key_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+                "sleeve_role",
+            ),
+            sort_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+                "sleeve_role",
                 "ingested_at",
             ),
             partition_date_column="rebalance_date",
@@ -4117,6 +4271,342 @@ def _validate_strategy_context_frame(frame: pd.DataFrame) -> dict[str, bool]:
             for _, row in frame[
                 frame["macro_rates_context_status"].astype(str) != "complete"
             ].iterrows()
+        ),
+    }
+
+
+def _make_etf_aw_risk_budget_frame(
+    strategy_context: pd.DataFrame, regime: pd.DataFrame
+) -> pd.DataFrame:
+    """Build V1 sleeve risk budgets from strategy context and regime rows."""
+
+    if strategy_context.empty:
+        return pd.DataFrame()
+    context = _normalize_rebalance_date_frame(strategy_context)
+    context = context.dropna(subset=["calendar_name", "rebalance_date"])
+    if context.empty:
+        return pd.DataFrame()
+    context = context.sort_values(["rebalance_date", "ingested_at"])
+    context = context.drop_duplicates(
+        ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+        keep="last",
+    )
+    regime_by_key = _latest_regime_by_key(regime)
+    rows: list[dict[str, Any]] = []
+    ingested_at = _utc_now()
+    for _, context_row in context.iterrows():
+        key = (str(context_row["calendar_name"]), context_row["rebalance_date"])
+        rows.extend(
+            _risk_budget_rows(
+                context_row=context_row,
+                regime_row=regime_by_key.get(key),
+                ingested_at=ingested_at,
+            )
+        )
+    return pd.DataFrame(rows)
+
+
+def _risk_budget_rows(
+    *,
+    context_row: pd.Series,
+    regime_row: pd.Series | None,
+    ingested_at: datetime,
+) -> list[dict[str, Any]]:
+    rebalance_date = context_row["rebalance_date"]
+    context_status = str(context_row.get("context_status") or "unavailable")
+    readiness = str(context_row.get("readiness_level") or "not_ready")
+    macro_status = str(context_row.get("macro_rates_context_status") or "unavailable")
+    market_label = _optional_text(context_row.get("market_regime_label"))
+    if regime_row is not None:
+        market_label = (
+            _optional_text(regime_row.get("market_regime_label")) or market_label
+        )
+    regime_status = (
+        str(regime_row.get("scoring_status") or "unavailable")
+        if regime_row is not None
+        else "missing"
+    )
+    raw_confidence = _risk_budget_raw_confidence(context_row, regime_row)
+    source_context_date = _series_date(context_row.get("rebalance_date"))
+    source_regime_date = (
+        _series_date(regime_row.get("rebalance_date"))
+        if regime_row is not None
+        else None
+    )
+    budget_status, effective_confidence, basis, reasons = _risk_budget_decision(
+        context_status=context_status,
+        readiness_level=readiness,
+        regime_status=regime_status,
+        market_label=market_label,
+        confidence_score=raw_confidence,
+        rebalance_date=rebalance_date,
+        source_context_date=source_context_date,
+        source_regime_date=source_regime_date,
+    )
+    delta = _ETF_AW_RISK_BUDGET_DELTAS.get(
+        market_label or "insufficient_data",
+        _ETF_AW_RISK_BUDGET_DELTAS["insufficient_data"],
+    )
+    raw_budget = {
+        role: _ETF_AW_RISK_BUDGET_BASE[role] + effective_confidence * delta[role]
+        for role in _ETF_AW_REQUIRED_ROLES
+    }
+    if min(raw_budget.values()) < 0.05:
+        budget_status = "partial"
+        basis = "degraded_neutral_budget"
+        effective_confidence = 0.0
+        raw_budget = dict(_ETF_AW_RISK_BUDGET_BASE)
+        reasons.append("raw_budget_floor_breach")
+    total = sum(raw_budget.values())
+    tilted = {role: round(value / total, 6) for role, value in raw_budget.items()}
+    notes = {
+        "reasons": sorted(set(reasons)),
+        "source_context_status": context_status,
+        "source_readiness_level": readiness,
+        "source_regime_status": regime_status,
+        "raw_confidence_score": raw_confidence,
+        "effective_confidence_score": effective_confidence,
+        "raw_budget_min": min(raw_budget.values()),
+        "delta_budget_sum": round(sum(delta.values()), 12),
+        "tilted_budget_sum": round(sum(tilted.values()), 6),
+        "macro_rates_context_status": macro_status,
+        "caveats": _risk_budget_caveats(context_row),
+    }
+    common = {
+        "schema_version": _ETF_AW_RISK_BUDGET_SCHEMA_VERSION,
+        "contract_version": _ETF_AW_RISK_BUDGET_CONTRACT_VERSION,
+        "calendar_name": str(context_row["calendar_name"]),
+        "rebalance_date": rebalance_date,
+        "strategy_name": _ETF_AW_STRATEGY_NAME,
+        "strategy_version": _ETF_AW_RISK_BUDGET_STRATEGY_VERSION,
+        "confidence_score": raw_confidence,
+        "effective_confidence_score": effective_confidence,
+        "market_regime_label": market_label or "insufficient_data",
+        "budget_status": budget_status,
+        "budget_basis": basis,
+        "quality_notes_json": json.dumps(notes, sort_keys=True),
+        "source_strategy_context_rebalance_date": source_context_date,
+        "source_regime_rebalance_date": source_regime_date,
+        "ingested_at": ingested_at,
+    }
+    return [
+        {
+            **common,
+            "sleeve_role": role,
+            "base_budget": round(_ETF_AW_RISK_BUDGET_BASE[role], 6),
+            "delta_budget": round(delta[role], 6),
+            "tilted_budget": tilted[role],
+        }
+        for role in sorted(_ETF_AW_REQUIRED_ROLES)
+    ]
+
+
+def _risk_budget_decision(
+    *,
+    context_status: str,
+    readiness_level: str,
+    regime_status: str,
+    market_label: str | None,
+    confidence_score: float | None,
+    rebalance_date: date,
+    source_context_date: date | None,
+    source_regime_date: date | None,
+) -> tuple[str, float, str, list[str]]:
+    reasons: list[str] = []
+    if source_context_date is not None and source_context_date > rebalance_date:
+        return (
+            "unavailable",
+            0.0,
+            "unavailable_neutral_budget",
+            ["source_context_after_rebalance_date"],
+        )
+    if source_regime_date is not None and source_regime_date > rebalance_date:
+        return (
+            "unavailable",
+            0.0,
+            "unavailable_neutral_budget",
+            ["source_regime_after_rebalance_date"],
+        )
+    if context_status == "missing":
+        return (
+            "missing",
+            0.0,
+            "unavailable_neutral_budget",
+            ["strategy_context_missing"],
+        )
+    if context_status == "stale":
+        return "stale", 0.0, "degraded_neutral_budget", ["strategy_context_stale"]
+    if context_status == "unavailable":
+        return (
+            "unavailable",
+            0.0,
+            "unavailable_neutral_budget",
+            ["strategy_context_unavailable"],
+        )
+    confidence_cap = 0.70
+    budget_status = "complete"
+    if context_status == "partial" or readiness_level == "degraded_research":
+        budget_status = "partial"
+        confidence_cap = 0.35
+        reasons.append("strategy_context_partial")
+    if regime_status == "missing":
+        return "unavailable", 0.0, "unavailable_neutral_budget", ["regime_missing"]
+    if regime_status == "stale":
+        return "stale", 0.0, "degraded_neutral_budget", ["regime_stale"]
+    if regime_status == "unavailable":
+        return "partial", 0.0, "degraded_neutral_budget", ["regime_insufficient_data"]
+    if regime_status == "partial":
+        budget_status = "partial"
+        confidence_cap = min(confidence_cap, 0.35)
+        reasons.append("regime_partial")
+    if market_label == "insufficient_data":
+        return (
+            "partial",
+            0.0,
+            "degraded_neutral_budget",
+            [
+                *reasons,
+                "regime_insufficient_data",
+            ],
+        )
+    if market_label not in _ETF_AW_RISK_BUDGET_DELTAS:
+        return (
+            "unavailable",
+            0.0,
+            "unavailable_neutral_budget",
+            [
+                *reasons,
+                "unsupported_regime_label",
+            ],
+        )
+    if confidence_score is None or confidence_score < 0.25:
+        return (
+            "partial",
+            0.0,
+            "degraded_neutral_budget",
+            [
+                *reasons,
+                "low_or_missing_confidence",
+            ],
+        )
+    effective = _clamp(float(confidence_score), 0.0, confidence_cap)
+    basis = "market_regime_tilt" if effective > 0.0 else "neutral_equal_risk_budget"
+    return budget_status, effective, basis, reasons
+
+
+def _risk_budget_raw_confidence(
+    context_row: pd.Series, regime_row: pd.Series | None
+) -> float | None:
+    if regime_row is not None:
+        value = _nullable_float(regime_row.get("confidence_score"))
+        if value is not None:
+            return value
+    return _nullable_float(context_row.get("market_confidence_score"))
+
+
+def _risk_budget_caveats(context_row: pd.Series) -> list[dict[str, Any]]:
+    caveats: list[dict[str, Any]] = []
+    for column in ("source_caveats_json", "revision_caveats_json"):
+        value = context_row.get(column)
+        if not _is_json_text(value):
+            continue
+        loaded = json.loads(value)
+        if isinstance(loaded, list):
+            caveats.extend(item for item in loaded if isinstance(item, dict))
+    return caveats
+
+
+def _series_date(value: object) -> date | None:
+    parsed = pd.to_datetime(value, errors="coerce")
+    return None if pd.isna(parsed) else parsed.date()
+
+
+def _validate_risk_budget_frame(frame: pd.DataFrame) -> dict[str, bool]:
+    """Validate the ETF all-weather risk budget contract."""
+
+    if frame.empty:
+        return {
+            "non_empty": False,
+            "no_duplicate_business_keys": False,
+            "five_roles_per_rebalance_date": False,
+            "budget_sums_valid": False,
+            "status_values_allowed": False,
+            "quality_notes_json": False,
+            "forbidden_fields_absent": False,
+            "point_in_time_sources": False,
+        }
+    key_columns = [
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_role",
+    ]
+    forbidden_fields = {
+        column
+        for column in frame.columns
+        if column
+        in {
+            "target_weight",
+            "raw_target_weight",
+            "constrained_target_weight",
+            "trade_action",
+            "order_instruction",
+            "rebalance_instruction",
+        }
+    }
+    grouped = frame.groupby(
+        ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+        dropna=False,
+    )
+    budget_sums = grouped.agg(
+        base_sum=("base_budget", "sum"),
+        delta_sum=("delta_budget", "sum"),
+        tilted_sum=("tilted_budget", "sum"),
+    )
+    source_context_dates = pd.to_datetime(
+        frame["source_strategy_context_rebalance_date"], errors="coerce"
+    ).dt.date
+    source_regime_dates = pd.to_datetime(
+        frame["source_regime_rebalance_date"], errors="coerce"
+    ).dt.date
+    rebalance_dates = pd.to_datetime(frame["rebalance_date"], errors="coerce").dt.date
+    return {
+        "non_empty": True,
+        "no_duplicate_business_keys": int(frame.duplicated(key_columns).sum()) == 0,
+        "five_roles_per_rebalance_date": all(
+            set(group["sleeve_role"].astype(str)) == _ETF_AW_REQUIRED_ROLES
+            and len(group) == len(_ETF_AW_REQUIRED_ROLES)
+            for _, group in grouped
+        ),
+        "budget_sums_valid": all(
+            abs(row["base_sum"] - 1.0) <= 1e-6
+            and abs(row["delta_sum"]) <= 1e-6
+            and abs(row["tilted_sum"] - 1.0) <= 1e-6
+            for _, row in budget_sums.iterrows()
+        )
+        and bool((frame[["base_budget", "tilted_budget"]] >= 0).all().all()),
+        "status_values_allowed": set(frame["budget_status"].astype(str)).issubset(
+            _ETF_AW_RISK_BUDGET_STATUSES
+        ),
+        "quality_notes_json": all(
+            _is_json_text(value) for value in frame["quality_notes_json"]
+        ),
+        "forbidden_fields_absent": not forbidden_fields,
+        "point_in_time_sources": all(
+            (
+                pd.isna(source_context)
+                or pd.isna(rebalance)
+                or source_context <= rebalance
+            )
+            and (
+                pd.isna(source_regime)
+                or pd.isna(rebalance)
+                or source_regime <= rebalance
+            )
+            for source_context, source_regime, rebalance in zip(
+                source_context_dates, source_regime_dates, rebalance_dates, strict=True
+            )
         ),
     }
 
