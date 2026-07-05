@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 import json
 import threading
 import unittest
+from unittest.mock import patch
 
 import duckdb
 import pandas as pd
@@ -17,7 +18,6 @@ from tradepilot.etl import update_etf_aw_data as update_module
 from tradepilot.etl.models import RunStatus
 from tradepilot.etl.read_models import (
     get_latest_etf_aw_risk_budget,
-    list_etf_aw_risk_budgets,
 )
 from tradepilot.etl.service import ETLService
 
@@ -67,6 +67,10 @@ class StageIRiskBudgetTests(unittest.TestCase):
         self.assertTrue(all(result["validation"].values()))
         frame = self._read_budget_file(2024, 7)
         self.assertEqual(len(frame), 5)
+        self.assertEqual(
+            frame["sleeve_role"].tolist(),
+            ["equity_large", "equity_small", "bond", "gold", "cash"],
+        )
         self.assertAlmostEqual(float(frame["tilted_budget"].sum()), 1.0, places=6)
         by_role = frame.set_index("sleeve_role")
         self.assertEqual(by_role.loc["equity_large", "tilted_budget"], 0.235)
@@ -109,6 +113,81 @@ class StageIRiskBudgetTests(unittest.TestCase):
 
         self.assertFalse(validation["point_in_time_sources"])
 
+    def test_budget_sum_failure_returns_health_finding(self) -> None:
+        frame = self.service._make_etf_aw_risk_budget_frame(
+            pd.DataFrame(
+                [self._context_row(date(2024, 7, 22), "complete", "research_ready")]
+            ),
+            pd.DataFrame([self._regime_row(date(2024, 7, 22), "risk_on", 0.60)]),
+        )
+        frame.loc[frame["sleeve_role"] == "cash", "tilted_budget"] = 0.30
+
+        from tradepilot.etl import service as etl_service
+
+        validation = etl_service._validate_risk_budget_frame(frame)
+        findings = etl_service._risk_budget_health_findings(frame)
+
+        self.assertFalse(validation["budget_sums_valid"])
+        self.assertIn(
+            {
+                "level": "FAIL",
+                "check_name": "budget_sums_valid",
+                "rebalance_date": "2024-07-22",
+                "sleeve_role": None,
+                "message": (
+                    "base, delta, and tilted budgets violate sum or numeric checks"
+                ),
+            },
+            findings,
+        )
+
+    def test_delta_budget_nan_fails_budget_validation(self) -> None:
+        frame = self.service._make_etf_aw_risk_budget_frame(
+            pd.DataFrame(
+                [self._context_row(date(2024, 7, 22), "complete", "research_ready")]
+            ),
+            pd.DataFrame([self._regime_row(date(2024, 7, 22), "risk_on", 0.60)]),
+        )
+        frame.loc[frame["sleeve_role"] == "cash", "delta_budget"] = pd.NA
+
+        from tradepilot.etl import service as etl_service
+
+        validation = etl_service._validate_risk_budget_frame(frame)
+        findings = etl_service._risk_budget_health_findings(frame)
+
+        self.assertFalse(validation["budget_sums_valid"])
+        self.assertTrue(
+            any(item["check_name"] == "budget_sums_valid" for item in findings)
+        )
+
+    def test_health_failures_block_write(self) -> None:
+        self._write_strategy_context(
+            self._context_row(date(2024, 7, 22), "complete", "research_ready")
+        )
+        frame = self.service._make_etf_aw_risk_budget_frame(
+            pd.DataFrame(
+                [self._context_row(date(2024, 7, 22), "complete", "research_ready")]
+            ),
+            pd.DataFrame([self._regime_row(date(2024, 7, 22), "risk_on", 0.60)]),
+        )
+        frame["target_weight"] = frame["tilted_budget"]
+
+        with patch.object(
+            self.service, "_make_etf_aw_risk_budget_frame", return_value=frame
+        ):
+            result = self.service.run_bootstrap(
+                "derived.etf_aw_risk_budget.build",
+                start=date(2024, 7, 1),
+                end=date(2024, 7, 31),
+            )
+
+        self.assertEqual(result["status"], RunStatus.FAILED.value)
+        self.assertEqual(result["records_written"], 0)
+        self.assertFalse(result["validation"]["forbidden_fields_absent"])
+        self.assertTrue(
+            any(item["level"] == "FAIL" for item in result["health_findings"])
+        )
+
     def test_risk_budget_read_models_return_latest_grouped_contract(self) -> None:
         self._write_strategy_context(
             self._context_row(date(2024, 7, 22), "complete", "research_ready")
@@ -124,11 +203,6 @@ class StageIRiskBudgetTests(unittest.TestCase):
             as_of_date=date(2024, 7, 31),
             lakehouse_root=self.lakehouse_root,
         )
-        listed = list_etf_aw_risk_budgets(
-            date(2024, 7, 1),
-            date(2024, 7, 31),
-            lakehouse_root=self.lakehouse_root,
-        )
 
         self.assertIsNotNone(latest)
         assert latest is not None
@@ -137,7 +211,6 @@ class StageIRiskBudgetTests(unittest.TestCase):
         self.assertEqual(latest["rebalance_date"], "2024-07-22")
         self.assertEqual(len(latest["budgets"]), 5)
         self.assertAlmostEqual(latest["tilted_budget_sum"], 1.0, places=6)
-        self.assertEqual(len(listed), 1)
 
     def test_update_plan_includes_risk_budget_after_strategy_context(self) -> None:
         conn = duckdb.connect(":memory:")
