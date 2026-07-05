@@ -429,6 +429,93 @@ target weight 通过写出健康检查后，还必须被前置回测内核消费
 
 这一步只验证 artifact 可消费和数值稳定，不做收益优劣判断。
 
+## 人工检查清单
+
+后续人工 review 目标权重数据时，可以按以下步骤逐项对照。该清单适用于文档数值例子、单元测试 fixture 和真实 artifact 抽样。
+
+### 1. 检查公式链
+
+先确认每个 sleeve 的基础公式都能手算复现：
+
+```text
+score_i = risk_budget_i / effective_volatility_i
+raw_weight_i = score_i / sum(score)
+```
+
+对本文数值例子，人工应能复核：
+
+- `score_sum` 约为 `116.1708`。
+- `equity_large` raw weight 约为 `0.1686`。
+- `equity_small` raw weight 约为 `0.1264`。
+- `bond` raw weight 约为 `0.2668`。
+- `gold` raw weight 约为 `0.1541`。
+- `cash` raw weight 约为 `0.2841`。
+- raw weights 合计约等于 `1.0`。
+
+如果手算无法复现实现输出，优先检查 sleeve 顺序、波动率 floor、risk budget 来源和四舍五入位置。
+
+### 2. 检查方向是否合理
+
+人工判断应符合以下直觉：
+
+- cash 波动率最低时，权重可以较高，但不能超过 `0.35`。
+- 波动率更高的 sleeve，在同等 risk budget 下权重应更低。
+- risk budget 更高的 sleeve，在同等波动率下权重应更高。
+- bond 或 cash 因低波动获得较高权重是可解释结果，但必须受上限约束。
+
+如果输出方向与上述直觉相反，应检查是否把 volatility 当成 inverse volatility、是否使用了 raw close、或是否把 sleeve role 顺序错位。
+
+### 3. 检查约束逻辑
+
+人工抽样时至少检查以下场景：
+
+- cash raw weight 超过 `0.35` 时，应被压到 `0.35`。
+- 非 cash raw weight 超过 `0.45` 时，应被压到 `0.45`。
+- 被 cap 切出的 excess 应只分配给尚未触顶的 sleeve。
+- 重新分配和归一化后，`constrained_target_weight` 合计仍为 `1.0`。
+
+如果 cap 后合计不是 `1.0`，或 excess 被分配给已触顶 sleeve，说明约束实现不正确。
+
+### 4. 检查 no-trade band
+
+比较本期 `constrained_target_weight` 和上一期最终 `target_weight`：
+
+```text
+diff_i = constrained_target_weight_i - previous_target_weight_i
+```
+
+人工判断：
+
+- `abs(diff_i) < 0.0025` 时，该 sleeve 可以沿用上一期权重。
+- `abs(diff_i) >= 0.0025` 时，该 sleeve 应使用本期 constrained 权重。
+- 应用 no-trade band 后必须再次 normalize。
+- `turnover_estimate` 应基于最终 `target_weight`，而不是 raw 或 constrained 权重。
+
+这一步用于确认 no-trade band 只消除尾差，不吞掉真实权重变化。
+
+### 5. 检查数据时点
+
+人工抽样必须确认：
+
+- `source_risk_budget_rebalance_date <= rebalance_date`。
+- sleeve daily 收益窗口只包含 `trade_date <= rebalance_date`。
+- 没有为了凑满 63 日窗口读取未来交易日。
+- stale 或缺失的 sleeve daily 没有被静默 forward-fill 成 `complete`。
+
+只要发现未来数据参与计算，该 rebalance date 的 target weight 就不能视为有效 artifact。
+
+### 6. 检查边界是否保守
+
+最后确认输出仍符合系统边界：
+
+- 样本不足不能静默输出 `complete`。
+- 多个 sleeve 样本不足导致无法形成 5 sleeve 向量时必须 FAIL。
+- cash 低波动不能导致无限放大。
+- 输出不包含交易建议、订单字段或持仓驱动字段。
+- 前端和 Dashboard 不应在该合同稳定前消费临时字段。
+
+人工 review 的结论应记录为：公式可复现、方向合理、约束正确、无未来数据、降级保守。缺任一项，都应回到实现或 fixture 修正。
+
 ## 波动率估计
 
 输入使用 `derived.etf_aw_sleeve_daily` 的 adjusted return。
