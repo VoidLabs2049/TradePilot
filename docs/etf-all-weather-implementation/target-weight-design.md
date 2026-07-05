@@ -146,6 +146,214 @@ raw_target_weight_i = inverse_vol_score_i / sum(inverse_vol_score)
 - inverse-vol 计算可解释、稳定、便于 fixture 验证。
 - risk budget 已表达状态方向，target weight 层只负责把预算映射到权重。
 
+## 逐步计算流程
+
+对每个 `rebalance_date`，V1 按 frozen sleeve 顺序执行以下步骤。
+
+### 1. 读取风险预算
+
+从 `derived.etf_aw_risk_budget` 读取同一 `calendar_name + rebalance_date + strategy_name + strategy_version` 下 5 个 sleeve 的 `tilted_budget`：
+
+```text
+risk_budget_i = tilted_budget_i
+```
+
+前置条件：
+
+- 5 个 frozen sleeve 必须完整。
+- `risk_budget` 合计必须为 `1`。
+- 来源 risk budget 不得包含 `FAIL` finding。
+- 来源 risk budget 日期不得晚于当前 `rebalance_date`。
+
+### 2. 计算日收益
+
+对每个 sleeve，使用 `derived.etf_aw_sleeve_daily` 中 `trade_date <= rebalance_date` 的 adjusted close 计算日收益：
+
+```text
+return_t = adj_close_t / adj_close_{t-1} - 1
+```
+
+如果实现里已有 `daily_return` 字段，可以直接使用该字段；否则必须从 adjustment-aware `adj_close` 计算，不能使用 raw close。
+
+### 3. 估计波动率
+
+取 rebalance date 之前可见的最近 `63` 个交易日收益，至少需要 `42` 个有效观测：
+
+```text
+volatility_i = std(return_i over trailing window)
+effective_volatility_i = max(volatility_i, 0.005)
+```
+
+如果某个 sleeve 样本不足但整体仍可降级输出：
+
+- `effective_volatility_i = 0.005`
+- `target_weight_status = partial`
+- `quality_notes_json.reasons` 包含 `insufficient_volatility_observations` 和 `volatility_floor_applied`
+
+如果多个 sleeve 样本不足导致无法形成 5 sleeve 向量，健康检查应输出 FAIL 并阻断写出。
+
+### 4. 生成 raw target weight
+
+风险预算越高、波动率越低，目标权重越高：
+
+```text
+inverse_vol_score_i = risk_budget_i / effective_volatility_i
+raw_target_weight_i = inverse_vol_score_i / sum(inverse_vol_score)
+```
+
+`raw_target_weight` 是纯公式输出，不包含单 sleeve 上限、cash 上限或 no-trade band。
+
+### 5. 应用硬约束
+
+先处理单 sleeve 上限，再处理 cash 上限：
+
+```text
+capped_weight_i = min(raw_target_weight_i, sleeve_cap_i)
+excess = sum(raw_target_weight) - sum(capped_weight)
+```
+
+其中：
+
+```text
+sleeve_cap_i = 0.35 for cash
+sleeve_cap_i = 0.45 for all other sleeves
+```
+
+被 cap 切出的 `excess` 只分配给尚未触顶的 sleeve，按其当前权重比例重新分配。重复执行直到：
+
+- 无剩余 `excess`；或
+- 所有 sleeve 都触顶。
+
+然后归一化：
+
+```text
+constrained_target_weight_i = capped_weight_i / sum(capped_weight)
+```
+
+如果所有 sleeve 都触顶且无法归一化到 `1`，健康检查应输出 FAIL。
+
+### 6. 应用 no-trade band
+
+如果存在上一期 target weight，比较本期 `constrained_target_weight` 与上一期最终 `target_weight`：
+
+```text
+diff_i = constrained_target_weight_i - previous_target_weight_i
+```
+
+若 `abs(diff_i) < 0.0025`：
+
+```text
+target_weight_i = previous_target_weight_i
+```
+
+否则：
+
+```text
+target_weight_i = constrained_target_weight_i
+```
+
+应用 no-trade band 后必须再次归一化，确保：
+
+```text
+sum(target_weight) = 1
+```
+
+首期没有上一期权重时，不应用 no-trade band：
+
+```text
+target_weight_i = constrained_target_weight_i
+```
+
+### 7. 计算换手估计
+
+V1 不读取当前持仓，因此换手估计只比较相邻 target weight：
+
+```text
+turnover_estimate = 0.5 * sum(abs(target_weight_i - previous_target_weight_i))
+```
+
+首期 `turnover_estimate` 可为 `null` 或 `0.0`，但必须在 `quality_notes_json` 中说明首期无法估算真实换手。
+
+### 8. 写出字段
+
+每个 sleeve 行至少写出：
+
+- `risk_budget`
+- `volatility_estimate`
+- `volatility_floor`
+- `raw_target_weight`
+- `constrained_target_weight`
+- `target_weight`
+- `turnover_estimate`
+- `target_weight_status`
+- `optimizer_name`
+- `optimizer_basis`
+- `quality_notes_json`
+
+所有权重字段保留 6 位小数；健康检查使用 `1e-6` 容忍度校验合计。
+
+## 数值例子
+
+假设某个 rebalance date 的 risk budget 与有效日波动率如下：
+
+| Sleeve role | `risk_budget` | `effective_volatility` |
+| --- | ---: | ---: |
+| `equity_large` | `0.235` | `0.012` |
+| `equity_small` | `0.235` | `0.016` |
+| `bond` | `0.186` | `0.006` |
+| `gold` | `0.179` | `0.010` |
+| `cash` | `0.165` | `0.005` |
+
+先计算 inverse-vol score：
+
+| Sleeve role | 计算 | Score |
+| --- | --- | ---: |
+| `equity_large` | `0.235 / 0.012` | `19.5833` |
+| `equity_small` | `0.235 / 0.016` | `14.6875` |
+| `bond` | `0.186 / 0.006` | `31.0000` |
+| `gold` | `0.179 / 0.010` | `17.9000` |
+| `cash` | `0.165 / 0.005` | `33.0000` |
+
+score 合计为 `116.1708`，得到 raw target weight：
+
+| Sleeve role | `raw_target_weight` |
+| --- | ---: |
+| `equity_large` | `0.1686` |
+| `equity_small` | `0.1264` |
+| `bond` | `0.2668` |
+| `gold` | `0.1541` |
+| `cash` | `0.2841` |
+
+此例中没有 sleeve 超过上限，且 cash 未超过 `0.35`，因此：
+
+```text
+constrained_target_weight = raw_target_weight
+```
+
+如果没有上一期权重：
+
+```text
+target_weight = constrained_target_weight
+turnover_estimate = null
+```
+
+如果上一期 `target_weight` 为：
+
+| Sleeve role | Previous |
+| --- | ---: |
+| `equity_large` | `0.1690` |
+| `equity_small` | `0.1260` |
+| `bond` | `0.2670` |
+| `gold` | `0.1540` |
+| `cash` | `0.2840` |
+
+所有差异均小于 `0.0025`，则 no-trade band 允许沿用上一期权重，最终：
+
+```text
+target_weight = previous_target_weight
+turnover_estimate = 0.0
+```
+
 ## 波动率估计
 
 输入使用 `derived.etf_aw_sleeve_daily` 的 adjusted return。
