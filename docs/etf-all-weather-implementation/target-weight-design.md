@@ -354,6 +354,81 @@ target_weight = previous_target_weight
 turnover_estimate = 0.0
 ```
 
+## 正确性判断
+
+实现完成后，不能只看输出非空来判断正确。至少需要同时满足以下检查。
+
+### 数学恒等式
+
+每个 rebalance date 都必须满足：
+
+```text
+sum(risk_budget) = 1
+effective_volatility_i = max(volatility_i, 0.005)
+inverse_vol_score_i = risk_budget_i / effective_volatility_i
+raw_target_weight_i = inverse_vol_score_i / sum(inverse_vol_score)
+sum(raw_target_weight) = 1
+sum(constrained_target_weight) = 1
+sum(target_weight) = 1
+```
+
+合计检查容忍度统一使用 `1e-6`。任何权重为负数、非数值或超过对应 sleeve 上限，都不能被视为正确输出。
+
+### 方向性检查
+
+在其他输入不变时：
+
+- `risk_budget` 增加，目标权重应增加。
+- `volatility_estimate` 增加，目标权重应下降。
+- `volatility_estimate < volatility_floor` 时，必须使用 floor 后的有效波动率。
+- cash 因低波动获得过高 raw weight 时，必须受 `0.35` 上限约束。
+- 非 cash sleeve 不得超过 `0.45`。
+- no-trade band 只能消除小于 `0.0025` 的尾差，不能吞掉明确的大幅权重变化。
+
+### 示例回归
+
+本文数值例子应进入单元测试 fixture。给定同样的 `risk_budget` 和 `effective_volatility`，实现应输出近似：
+
+| Sleeve role | Expected raw target weight |
+| --- | ---: |
+| `equity_large` | `0.1686` |
+| `equity_small` | `0.1264` |
+| `bond` | `0.2668` |
+| `gold` | `0.1541` |
+| `cash` | `0.2841` |
+
+该 fixture 的目的不是证明策略有效，而是锁定公式解释、浮点精度和 sleeve 顺序。
+
+### 约束回归
+
+还需要构造至少以下边界用例：
+
+- cash raw weight 超过 `0.35` 时被 cap，并把 excess 分配给未触顶 sleeve。
+- 非 cash raw weight 超过 `0.45` 时被 cap。
+- 多个 sleeve 同时触顶时仍能归一化；无法归一化时输出 FAIL。
+- 单个 sleeve 波动率缺失时进入 `partial` 降级。
+- 多个 sleeve 样本不足导致无法形成 5 sleeve 向量时阻断写出。
+- no-trade band 小差异沿用上一期，大差异使用本期 constrained 权重。
+
+### Point-in-time 检查
+
+任一实现或测试都必须证明：
+
+- risk budget 来源日期不晚于 `rebalance_date`。
+- sleeve daily 收益窗口只包含 `trade_date <= rebalance_date` 的行。
+- 不为了补齐 63 日窗口向后读取未来交易日。
+- stale 或缺失的 sleeve daily 会进入降级或 FAIL，而不是静默 forward-fill。
+
+### 回测内核检查
+
+target weight 通过写出健康检查后，还必须被前置回测内核消费一次：
+
+- 能生成确定性净值路径。
+- 月度换手不因 `1e-6` 级尾差异常放大。
+- diagnostics 能指出缺失收益、缺失权重和调仓日对齐问题。
+
+这一步只验证 artifact 可消费和数值稳定，不做收益优劣判断。
+
 ## 波动率估计
 
 输入使用 `derived.etf_aw_sleeve_daily` 的 adjusted return。
