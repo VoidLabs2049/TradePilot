@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query
 
 from tradepilot.etl.read_models import get_latest_etf_aw_risk_budget
 from tradepilot.workflow.models import (
+    EtfAwRiskBudgetResponse,
     WorkflowContextPayload,
     WorkflowInsightResponse,
     WorkflowInsightUpsertRequest,
@@ -84,12 +85,15 @@ def get_latest_etf_aw_context(
     return _service.get_latest_etf_aw_context(as_of_date=as_of_date)
 
 
-@router.get("/etf-aw/risk-budget/latest")
+@router.get(
+    "/etf-aw/risk-budget/latest",
+    response_model=EtfAwRiskBudgetResponse | None,
+)
 def get_latest_etf_aw_risk_budget_context(
     as_of_date: date | None = Query(
         None, description="Latest risk budget rebalance date upper bound"
     ),
-) -> dict | None:
+) -> EtfAwRiskBudgetResponse | None:
     """Return the latest frozen ETF all-weather risk budget."""
     return get_latest_etf_aw_risk_budget(as_of_date=as_of_date)
 

@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 
+from tradepilot.etl.constants import ETF_AW_ROLE_RANK
 from tradepilot.etl.models import StorageZone
 from tradepilot.etl.storage import build_dataset_file_path
 
@@ -36,13 +37,6 @@ _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION = "etf_aw_strategy_context_contract_v1
 _ETF_AW_RISK_BUDGET_DATASET = "derived.etf_aw_risk_budget"
 _ETF_AW_RISK_BUDGET_SCHEMA_VERSION = "etf_aw_risk_budget_v1"
 _ETF_AW_RISK_BUDGET_CONTRACT_VERSION = "etf_aw_risk_budget_contract_v1"
-_ETF_AW_RISK_BUDGET_ROLE_ORDER = (
-    "equity_large",
-    "equity_small",
-    "bond",
-    "gold",
-    "cash",
-)
 _ETF_AW_MACRO_RATES_CONTEXT_SCHEMA_VERSION = "etf_aw_macro_rates_context_v1"
 _MACRO_SLOW_FIELDS_DATASET = "macro.slow_fields"
 _RATES_DAILY_RATES_DATASET = "rates.daily_rates"
@@ -251,45 +245,6 @@ def get_latest_etf_aw_risk_budget(
     ):
         return _risk_budget_contract(group)
     return None
-
-
-def list_etf_aw_risk_budgets(
-    start: date,
-    end: date,
-    *,
-    lakehouse_root: Path | None = None,
-) -> list[dict[str, Any]]:
-    """Return ETF all-weather risk budgets in a rebalance-date window."""
-
-    if start > end:
-        start, end = end, start
-    frame = _read_etf_aw_risk_budget_partitions(
-        start=start,
-        end=end,
-        lakehouse_root=lakehouse_root,
-    )
-    if frame.empty:
-        return []
-    frame = _normalize_risk_budget_frame(frame)
-    frame = frame[frame["rebalance_date"].between(start, end, inclusive="both")]
-    frame = _sort_latest_rows(frame)
-    latest = frame.drop_duplicates(
-        [
-            "calendar_name",
-            "rebalance_date",
-            "strategy_name",
-            "strategy_version",
-            "sleeve_role",
-        ],
-        keep="last",
-    )
-    return [
-        _risk_budget_contract(group)
-        for _, group in latest.groupby(
-            ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
-            sort=True,
-        )
-    ]
 
 
 def get_latest_etf_aw_market_features(
@@ -1314,9 +1269,7 @@ def _strategy_context_contract(row: pd.Series) -> dict[str, Any]:
 
 def _risk_budget_contract(frame: pd.DataFrame) -> dict[str, Any]:
     ordered = frame.copy()
-    ordered["sleeve_role_order"] = ordered["sleeve_role"].map(
-        {role: index for index, role in enumerate(_ETF_AW_RISK_BUDGET_ROLE_ORDER)}
-    )
+    ordered["sleeve_role_order"] = ordered["sleeve_role"].map(ETF_AW_ROLE_RANK)
     ordered = ordered.sort_values(["sleeve_role_order", "sleeve_role"])
     first = ordered.iloc[0]
     base_sum = float(ordered["base_budget"].astype(float).sum())

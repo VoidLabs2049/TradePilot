@@ -59,8 +59,12 @@ function formatSignedPercent(value?: number | null) {
   if (typeof value !== "number") {
     return "-";
   }
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${(value * 100).toFixed(2)}%`;
+  const rounded = Math.round(value * 10000) / 100;
+  if (Object.is(rounded, -0) || rounded === 0) {
+    return "0.00%";
+  }
+  const prefix = rounded > 0 ? "+" : "";
+  return `${prefix}${rounded.toFixed(2)}%`;
 }
 
 function qualityReasons(notes?: Record<string, any>): string[] {
@@ -98,11 +102,16 @@ function BudgetBar({ row }: { row: EtfAwRiskBudgetSleeve }) {
 export default function EtfAllWeather() {
   const [riskBudget, setRiskBudget] = useState<EtfAwRiskBudget | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = async () => {
     setLoading(true);
+    setError(null);
     try {
       setRiskBudget(await getLatestEtfAwRiskBudget());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ETF 全天候风险预算读取失败");
+      setRiskBudget(null);
     } finally {
       setLoading(false);
     }
@@ -116,6 +125,7 @@ export default function EtfAllWeather() {
   const reasons = qualityReasons(riskBudget?.quality_notes);
   const tiltedSum = riskBudget?.tilted_budget_sum;
   const sumOk = typeof tiltedSum === "number" && Math.abs(tiltedSum - 1) <= 0.000001;
+  const effectiveConfidence = riskBudget?.effective_confidence_score;
   const activeRisk = useMemo(
     () =>
       budgets
@@ -134,7 +144,11 @@ export default function EtfAllWeather() {
         <Button icon={<ReloadOutlined />} loading={loading} onClick={refresh}>刷新</Button>
       </div>
 
-      {!riskBudget && !loading ? (
+      {error ? (
+        <Alert type="error" showIcon message="ETF 全天候风险预算读取失败" description={error} />
+      ) : null}
+
+      {!riskBudget && !loading && !error ? (
         <Card>
           <Empty description="暂无 ETF 全天候风险预算数据" />
         </Card>
@@ -243,7 +257,11 @@ export default function EtfAllWeather() {
                     message={`tilted_budget 合计 ${formatPercent(tiltedSum)}`}
                   />
                   <Text type="secondary">公式：tilted = normalize(base + effective_confidence * delta)</Text>
-                  <Progress percent={Math.round((riskBudget.effective_confidence_score || 0) * 100)} />
+                  {typeof effectiveConfidence === "number" ? (
+                    <Progress percent={Math.round(effectiveConfidence * 100)} />
+                  ) : (
+                    <Text type="secondary">生效置信度：-</Text>
+                  )}
                 </Space>
               </Card>
             </Col>
