@@ -53,6 +53,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
         self._insert_rebalance(date(2024, 1, 22))
         self._insert_rebalance(date(2024, 2, 20))
         self._write_sleeve_daily(date(2024, 1, 22), date(2024, 2, 23))
+        self._write_target_weights([date(2024, 1, 22), date(2024, 2, 20)])
 
         result = self.service.run_bootstrap(
             "derived.etf_aw_backtest_kernel.build",
@@ -77,6 +78,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
     def test_repeat_run_upserts_without_duplicate_business_keys(self) -> None:
         self._insert_rebalance(date(2024, 1, 22))
         self._write_sleeve_daily(date(2024, 1, 22), date(2024, 1, 31))
+        self._write_target_weights([date(2024, 1, 22)])
 
         self.service.run_bootstrap(
             "derived.etf_aw_backtest_kernel.build",
@@ -103,6 +105,22 @@ class StageHBacktestKernelTests(unittest.TestCase):
                     "metric_name",
                 ]
             ).any()
+        )
+
+    def test_bootstrap_requires_target_weight_artifact(self) -> None:
+        self._insert_rebalance(date(2024, 1, 22))
+        self._write_sleeve_daily(date(2024, 1, 22), date(2024, 1, 31))
+
+        result = self.service.run_bootstrap(
+            "derived.etf_aw_backtest_kernel.build",
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+
+        self.assertEqual(result["status"], RunStatus.FAILED.value)
+        self.assertEqual(
+            result["error_message"],
+            "ETF all-weather target weight is missing",
         )
 
     def test_duplicate_weight_rows_block_pure_kernel(self) -> None:
@@ -273,6 +291,46 @@ class StageHBacktestKernelTests(unittest.TestCase):
 
     def _write_sleeve_daily(self, start: date, end: date) -> None:
         self.service._write_etf_aw_sleeve_daily(self._sleeve_daily_frame(start, end))
+
+    def _write_target_weights(self, rebalance_dates: list[date]) -> None:
+        rows: list[dict] = []
+        sleeves = [
+            ("510300.SH", "equity_large"),
+            ("159845.SZ", "equity_small"),
+            ("511010.SH", "bond"),
+            ("518850.SH", "gold"),
+            ("159001.SZ", "cash"),
+        ]
+        for rebalance_date in rebalance_dates:
+            for code, role in sleeves:
+                rows.append(
+                    {
+                        "schema_version": "etf_aw_target_weight_v1",
+                        "contract_version": "etf_aw_target_weight_contract_v1",
+                        "calendar_name": "etf_aw_v1_monthly_post_20",
+                        "rebalance_date": rebalance_date,
+                        "effective_date": rebalance_date,
+                        "strategy_name": "etf_aw_v1",
+                        "strategy_version": "target_weight_inverse_vol_v1",
+                        "sleeve_code": code,
+                        "sleeve_role": role,
+                        "risk_budget": 0.2,
+                        "volatility_estimate": 0.01,
+                        "volatility_floor": 0.005,
+                        "raw_target_weight": 0.2,
+                        "constrained_target_weight": 0.2,
+                        "target_weight": 0.2,
+                        "target_weight_status": "complete",
+                        "optimizer_name": "budgeted_inverse_vol",
+                        "optimizer_basis": "fixture",
+                        "turnover_estimate": None,
+                        "quality_notes_json": "{}",
+                        "source_risk_budget_rebalance_date": rebalance_date,
+                        "source_sleeve_daily_max_trade_date": rebalance_date,
+                        "ingested_at": pd.Timestamp("2024-01-22"),
+                    }
+                )
+        self.service._write_etf_aw_target_weight(pd.DataFrame(rows))
 
     def _sleeve_daily_frame(self, start: date, end: date) -> pd.DataFrame:
         rows: list[dict] = []

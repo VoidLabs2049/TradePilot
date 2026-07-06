@@ -15,6 +15,16 @@ import pandas as pd
 
 from tradepilot import db
 from tradepilot.etl.datasets import DatasetDefinition
+from tradepilot.etl.etf_aw_universe import (
+    ETF_AW_SLEEVES,
+    ETF_AW_SLEEVE_CODES,
+    ETF_AW_SLEEVE_ROLES,
+    ETF_AW_SLEEVE_ROLE_ORDER,
+    ETF_AW_SLEEVE_ROLE_RANK,
+    etf_aw_role_sort_key,
+    etf_aw_sleeve_codes_frame,
+    etf_aw_sleeves_frame,
+)
 from tradepilot.etl.models import (
     CanonicalWriteResult,
     DatasetSyncResult,
@@ -79,6 +89,29 @@ _ETF_AW_RISK_BUDGET_DATASET = "derived.etf_aw_risk_budget"
 _ETF_AW_RISK_BUDGET_SCHEMA_VERSION = "etf_aw_risk_budget_v1"
 _ETF_AW_RISK_BUDGET_CONTRACT_VERSION = "etf_aw_risk_budget_contract_v1"
 _ETF_AW_RISK_BUDGET_STRATEGY_VERSION = "risk_budget_v1"
+_ETF_AW_TARGET_WEIGHT_PROFILE = "derived.etf_aw_target_weight.build"
+_ETF_AW_TARGET_WEIGHT_DATASET = "derived.etf_aw_target_weight"
+_ETF_AW_TARGET_WEIGHT_SCHEMA_VERSION = "etf_aw_target_weight_v1"
+_ETF_AW_TARGET_WEIGHT_CONTRACT_VERSION = "etf_aw_target_weight_contract_v1"
+_ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION = "target_weight_inverse_vol_v1"
+_ETF_AW_TARGET_WEIGHT_STATUSES = {
+    "complete",
+    "partial",
+    "stale",
+    "missing",
+    "unavailable",
+}
+_ETF_AW_TARGET_WEIGHT_VOL_WINDOW = 63
+_ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS = 42
+_ETF_AW_TARGET_WEIGHT_VOL_FLOOR = 0.005
+_ETF_AW_TARGET_WEIGHT_NO_TRADE_BAND = 0.0025
+_ETF_AW_TARGET_WEIGHT_CAPS = {
+    "equity_large": 0.45,
+    "equity_small": 0.45,
+    "bond": 0.45,
+    "gold": 0.45,
+    "cash": 0.35,
+}
 _ETF_AW_BACKTEST_KERNEL_PROFILE = "derived.etf_aw_backtest_kernel.build"
 _ETF_AW_BACKTEST_KERNEL_DATASET = "derived.etf_aw_backtest_kernel"
 _ETF_AW_BACKTEST_KERNEL_SCHEMA_VERSION = "etf_aw_backtest_kernel_v1"
@@ -233,60 +266,9 @@ _ETF_AW_DIRECTION_RULES = {
     "return_3m": (0.030, -0.030, 0.45),
     "return_6m": (0.050, -0.050, 0.30),
 }
-_ETF_AW_SLEEVES: list[dict[str, Any]] = [
-    {
-        "sleeve_code": "510300.SH",
-        "sleeve_role": "equity_large",
-        "sleeve_name": "沪深300ETF华泰柏瑞",
-        "listing_exchange": "SH",
-        "benchmark_name": "沪深300指数",
-        "list_date": date(2012, 5, 28),
-        "exposure_note": "Large-cap China equity beta proxy.",
-    },
-    {
-        "sleeve_code": "159845.SZ",
-        "sleeve_role": "equity_small",
-        "sleeve_name": "中证1000ETF华夏",
-        "listing_exchange": "SZ",
-        "benchmark_name": "中证1000指数收益率",
-        "list_date": date(2021, 3, 31),
-        "exposure_note": "Small-cap and higher-beta China equity proxy.",
-    },
-    {
-        "sleeve_code": "511010.SH",
-        "sleeve_role": "bond",
-        "sleeve_name": "国债ETF国泰",
-        "listing_exchange": "SH",
-        "benchmark_name": "上证5年期国债指数收益率",
-        "list_date": date(2013, 3, 25),
-        "exposure_note": (
-            "Duration-bearing sovereign bond defense sleeve; not a universal "
-            "bond factor or maximally convex crisis hedge."
-        ),
-    },
-    {
-        "sleeve_code": "518850.SH",
-        "sleeve_role": "gold",
-        "sleeve_name": "黄金ETF华夏",
-        "listing_exchange": "SH",
-        "benchmark_name": "上海黄金交易所黄金现货实盘合约Au99.99价格收益率",
-        "list_date": date(2020, 6, 5),
-        "exposure_note": "Gold hedge sleeve for inflation and stress diversification.",
-    },
-    {
-        "sleeve_code": "159001.SZ",
-        "sleeve_role": "cash",
-        "sleeve_name": "货币ETF易方达",
-        "listing_exchange": "SZ",
-        "benchmark_name": "活期存款基准利率*(1-利息税税率)",
-        "list_date": date(2014, 10, 20),
-        "exposure_note": (
-            "Cash-like neutral buffer sleeve with low-volatility behavior."
-        ),
-    },
-]
-_ETF_AW_SLEEVE_CODES = [str(row["sleeve_code"]) for row in _ETF_AW_SLEEVES]
-_ETF_AW_SLEEVE_ROLES = {str(row["sleeve_role"]) for row in _ETF_AW_SLEEVES}
+_ETF_AW_SLEEVES = ETF_AW_SLEEVES
+_ETF_AW_SLEEVE_CODES = ETF_AW_SLEEVE_CODES
+_ETF_AW_SLEEVE_ROLES = ETF_AW_SLEEVE_ROLES
 
 
 class ETLService:
@@ -516,6 +498,11 @@ class ETLService:
             )
         if profile_name == _ETF_AW_RISK_BUDGET_PROFILE:
             return self._build_etf_aw_risk_budget(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        if profile_name == _ETF_AW_TARGET_WEIGHT_PROFILE:
+            return self._build_etf_aw_target_weight(
                 start or _TRADING_CALENDAR_HISTORY_START,
                 end or date.today(),
             )
@@ -1792,13 +1779,14 @@ class ETLService:
                 JOIN stage_d_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 WHERE s.is_active = TRUE
-                ORDER BY s.sleeve_code
                 """).fetchdf()
         finally:
             self.conn.unregister("stage_d_etf_aw_codes")
         if frame.empty:
-            return pd.DataFrame(_ETF_AW_SLEEVES).loc[:, ["sleeve_code", "sleeve_role"]]
-        return frame
+            frame = etf_aw_sleeves_frame().loc[:, ["sleeve_code", "sleeve_role"]]
+        return frame.sort_values("sleeve_role", key=etf_aw_role_sort_key).reset_index(
+            drop=True
+        )
 
     def _make_snapshot_row(
         self,
@@ -2344,6 +2332,155 @@ class ETLService:
             partition_date_column="rebalance_date",
         )
 
+    def _build_etf_aw_target_weight(self, start: date, end: date) -> dict:
+        start, end = _ordered_dates(start, end)
+        rebalance = self._read_rebalance_calendar(start, end)
+        if rebalance.empty:
+            return {
+                "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
+                "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "canonical rebalance calendar is missing",
+            }
+        risk_budget = self._read_partitioned_dataset(
+            _ETF_AW_RISK_BUDGET_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        if risk_budget.empty:
+            return {
+                "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
+                "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather risk budget is missing",
+            }
+        risk_budget = _filter_target_weight_risk_budget_to_calendar(
+            risk_budget, rebalance
+        )
+        if risk_budget.empty:
+            return {
+                "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
+                "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": (
+                    "ETF all-weather risk budget has no calendar-aligned "
+                    "rebalance keys"
+                ),
+            }
+        panel = self._read_partitioned_dataset(
+            "derived.etf_aw_sleeve_daily",
+            start - timedelta(days=140),
+            end,
+            StorageZone.DERIVED,
+        )
+        if panel.empty:
+            return {
+                "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
+                "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "derived sleeve daily panel is missing",
+            }
+        previous_target_weight = self._read_partitioned_dataset(
+            _ETF_AW_TARGET_WEIGHT_DATASET,
+            start - timedelta(days=370),
+            start - timedelta(days=1),
+            StorageZone.DERIVED,
+        )
+        target_weight = self._make_etf_aw_target_weight_frame(
+            risk_budget,
+            panel,
+            previous_target_weight=previous_target_weight,
+        )
+        if target_weight.empty:
+            return {
+                "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
+                "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather target weight has no valid rebalance keys",
+            }
+        validation = _validate_target_weight_frame(target_weight)
+        if not all(validation.values()):
+            return {
+                "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
+                "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "validation": validation,
+                "error_message": "ETF all-weather target weight validation failed",
+            }
+        write_result = self._write_etf_aw_target_weight(target_weight)
+        return {
+            "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
+            "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
+            "status": RunStatus.SUCCESS.value,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "records_written": write_result.records_written,
+            "records_inserted": write_result.records_inserted,
+            "records_updated": write_result.records_updated,
+            "partitions_written": write_result.partitions_written,
+            "storage_paths": write_result.storage_paths,
+            "validation": validation,
+            "target_weight_status_counts": _value_counts_dict(
+                target_weight["target_weight_status"]
+            ),
+        }
+
+    def _make_etf_aw_target_weight_frame(
+        self,
+        risk_budget: pd.DataFrame,
+        panel: pd.DataFrame,
+        previous_target_weight: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        return _make_etf_aw_target_weight_frame(
+            risk_budget,
+            panel,
+            previous_target_weight=previous_target_weight,
+        )
+
+    def _write_etf_aw_target_weight(
+        self, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=_ETF_AW_TARGET_WEIGHT_DATASET,
+            zone=StorageZone.DERIVED,
+            canonical=canonical,
+            key_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+                "sleeve_code",
+            ),
+            sort_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+                "sleeve_role",
+                "ingested_at",
+            ),
+            partition_date_column="rebalance_date",
+        )
+
     def _build_etf_aw_backtest_kernel(self, start: date, end: date) -> dict:
         start, end = _ordered_dates(start, end)
         rebalance = self._read_rebalance_calendar(start, end)
@@ -2373,7 +2510,22 @@ class ETLService:
                 "records_written": 0,
                 "error_message": "derived sleeve daily panel is missing",
             }
-        weights = _equal_weight_backtest_fixture(rebalance)
+        weights = self._read_partitioned_dataset(
+            _ETF_AW_TARGET_WEIGHT_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        if weights.empty:
+            return {
+                "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
+                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather target weight is missing",
+            }
         backtest = self._make_etf_aw_backtest_kernel_frame(
             panel=panel,
             rebalance=rebalance,
@@ -2913,7 +3065,7 @@ def _business_keys(frame: pd.DataFrame, key_columns: tuple[str, ...]) -> set[tup
 def _etf_aw_sleeve_codes_frame() -> pd.DataFrame:
     """Return the frozen ETF all-weather sleeve universe as a query frame."""
 
-    return pd.DataFrame({"sleeve_code": _ETF_AW_SLEEVE_CODES})
+    return etf_aw_sleeve_codes_frame()
 
 
 def _trading_calendar_exchange_frame(exchanges: Iterable[str]) -> pd.DataFrame:
@@ -4611,6 +4763,473 @@ def _validate_risk_budget_frame(frame: pd.DataFrame) -> dict[str, bool]:
     }
 
 
+def _make_etf_aw_target_weight_frame(
+    risk_budget: pd.DataFrame,
+    panel: pd.DataFrame,
+    *,
+    previous_target_weight: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Build V1 budgeted inverse-vol target weights from frozen artifacts."""
+
+    if risk_budget.empty or panel.empty:
+        return pd.DataFrame()
+    budget = _normalize_rebalance_date_frame(risk_budget)
+    budget = budget.dropna(subset=["calendar_name", "rebalance_date"])
+    budget = budget[
+        budget["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+        & budget["strategy_version"]
+        .astype(str)
+        .eq(_ETF_AW_RISK_BUDGET_STRATEGY_VERSION)
+    ].copy()
+    if budget.empty:
+        return pd.DataFrame()
+    budget = budget.sort_values(["rebalance_date", "ingested_at"])
+    budget = budget.drop_duplicates(
+        [
+            "calendar_name",
+            "rebalance_date",
+            "strategy_name",
+            "strategy_version",
+            "sleeve_role",
+        ],
+        keep="last",
+    )
+    panel = _target_weight_panel_returns(panel)
+    rows: list[dict[str, Any]] = []
+    previous_by_key = _latest_previous_target_by_key(previous_target_weight)
+    ingested_at = _utc_now()
+    for key, group in budget.groupby(
+        ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+        sort=True,
+    ):
+        group = group.sort_values("sleeve_role", key=etf_aw_role_sort_key)
+        generated = _target_weight_rows_for_rebalance(
+            key=key,
+            budget_group=group,
+            panel=panel,
+            previous_target=previous_by_key.get((str(key[0]), _ETF_AW_STRATEGY_NAME)),
+            ingested_at=ingested_at,
+        )
+        if not generated:
+            continue
+        rows.extend(generated)
+        previous_by_key[(str(key[0]), _ETF_AW_STRATEGY_NAME)] = {
+            str(row["sleeve_code"]): float(row["target_weight"]) for row in generated
+        }
+    return pd.DataFrame(rows)
+
+
+def _filter_target_weight_risk_budget_to_calendar(
+    risk_budget: pd.DataFrame, rebalance: pd.DataFrame
+) -> pd.DataFrame:
+    if risk_budget.empty or rebalance.empty:
+        return pd.DataFrame()
+    budget = _normalize_rebalance_date_frame(risk_budget)
+    calendar = _normalize_rebalance_date_frame(rebalance)
+    valid_keys = {
+        (str(row["calendar_name"]), row["rebalance_date"])
+        for _, row in calendar.dropna(
+            subset=["calendar_name", "rebalance_date"]
+        ).iterrows()
+    }
+    if not valid_keys:
+        return pd.DataFrame()
+    return budget[
+        budget.apply(
+            lambda row: (str(row["calendar_name"]), row["rebalance_date"])
+            in valid_keys,
+            axis=1,
+        )
+    ].copy()
+
+
+def _latest_previous_target_by_key(
+    previous_target_weight: pd.DataFrame | None,
+) -> dict[tuple[str, str], dict[str, float]]:
+    if previous_target_weight is None or previous_target_weight.empty:
+        return {}
+    previous = _normalize_rebalance_date_frame(previous_target_weight)
+    previous = previous[
+        previous["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+        & previous["strategy_version"]
+        .astype(str)
+        .eq(_ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION)
+    ].copy()
+    if previous.empty:
+        return {}
+    previous = previous.sort_values(["rebalance_date", "ingested_at"])
+    latest_date_by_calendar = previous.groupby("calendar_name")["rebalance_date"].max()
+    result: dict[tuple[str, str], dict[str, float]] = {}
+    for calendar_name, latest_date in latest_date_by_calendar.items():
+        group = previous[
+            (previous["calendar_name"].astype(str) == str(calendar_name))
+            & (previous["rebalance_date"] == latest_date)
+        ].copy()
+        group = group.drop_duplicates("sleeve_code", keep="last")
+        if set(group["sleeve_code"].astype(str)) != set(_ETF_AW_SLEEVE_CODES):
+            continue
+        result[(str(calendar_name), _ETF_AW_STRATEGY_NAME)] = {
+            str(row["sleeve_code"]): float(row["target_weight"])
+            for _, row in group.iterrows()
+        }
+    return result
+
+
+def _target_weight_panel_returns(panel: pd.DataFrame) -> pd.DataFrame:
+    panel = panel.copy()
+    panel["trade_date"] = pd.to_datetime(panel["trade_date"], errors="coerce").dt.date
+    panel = panel[panel["sleeve_code"].astype(str).isin(_ETF_AW_SLEEVE_CODES)].copy()
+    panel = panel.sort_values(["sleeve_code", "trade_date"]).reset_index(drop=True)
+    if "daily_return" in panel.columns:
+        panel["daily_return"] = panel["daily_return"].apply(_nullable_float)
+    else:
+        panel["adj_close"] = panel["adj_close"].apply(_nullable_float)
+        panel["daily_return"] = panel.groupby("sleeve_code")["adj_close"].pct_change()
+    return panel
+
+
+def _target_weight_rows_for_rebalance(
+    *,
+    key: tuple[str, date, str, str],
+    budget_group: pd.DataFrame,
+    panel: pd.DataFrame,
+    previous_target: dict[str, float] | None,
+    ingested_at: datetime,
+) -> list[dict[str, Any]]:
+    calendar_name, rebalance_date, _, _ = key
+    if not _target_weight_budget_group_valid(budget_group, rebalance_date):
+        return []
+    vol_by_role, source_max_by_role, reasons_by_role = _target_weight_volatility(
+        panel, rebalance_date
+    )
+    insufficient_roles = [
+        role
+        for role, reasons in reasons_by_role.items()
+        if "insufficient_volatility_observations" in reasons
+    ]
+    if len(insufficient_roles) > 1:
+        return []
+
+    risk_budget = {
+        str(row["sleeve_role"]): float(row["tilted_budget"])
+        for _, row in budget_group.iterrows()
+    }
+    raw_weights = _budgeted_inverse_vol_weights(risk_budget, vol_by_role)
+    constrained = _apply_target_weight_caps(raw_weights)
+    if not constrained:
+        return []
+    target = _apply_no_trade_band(constrained, previous_target)
+    raw_rounded = _round_role_weights(raw_weights)
+    constrained_rounded = _round_role_weights(constrained)
+    target_rounded = _round_code_weights(target)
+    turnover = (
+        None
+        if previous_target is None
+        else round(
+            0.5
+            * sum(
+                abs(
+                    target[_role_code(role)]
+                    - previous_target.get(_role_code(role), 0.0)
+                )
+                for role in ETF_AW_SLEEVE_ROLE_ORDER
+            ),
+            6,
+        )
+    )
+    rows: list[dict[str, Any]] = []
+    for _, row in budget_group.iterrows():
+        role = str(row["sleeve_role"])
+        code = _role_code(role)
+        reasons = list(reasons_by_role.get(role, []))
+        if previous_target is None:
+            reasons.append("first_period_turnover_not_observable")
+        status = "partial" if insufficient_roles else str(row["budget_status"])
+        if status not in _ETF_AW_TARGET_WEIGHT_STATUSES:
+            status = "partial"
+        rows.append(
+            {
+                "schema_version": _ETF_AW_TARGET_WEIGHT_SCHEMA_VERSION,
+                "contract_version": _ETF_AW_TARGET_WEIGHT_CONTRACT_VERSION,
+                "calendar_name": str(calendar_name),
+                "rebalance_date": rebalance_date,
+                "effective_date": rebalance_date,
+                "strategy_name": _ETF_AW_STRATEGY_NAME,
+                "strategy_version": _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
+                "sleeve_code": code,
+                "sleeve_role": role,
+                "risk_budget": round(risk_budget[role], 6),
+                "volatility_estimate": round(vol_by_role[role], 6),
+                "volatility_floor": _ETF_AW_TARGET_WEIGHT_VOL_FLOOR,
+                "raw_target_weight": raw_rounded[role],
+                "constrained_target_weight": constrained_rounded[role],
+                "target_weight": target_rounded[code],
+                "target_weight_status": status,
+                "optimizer_name": "budgeted_inverse_vol",
+                "optimizer_basis": (
+                    "risk_budget divided by trailing adjusted-close volatility "
+                    "with sleeve caps and no-trade band"
+                ),
+                "turnover_estimate": turnover,
+                "quality_notes_json": json.dumps(
+                    {
+                        "reasons": sorted(set(reasons)),
+                        "volatility_window": _ETF_AW_TARGET_WEIGHT_VOL_WINDOW,
+                        "minimum_observations": (
+                            _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS
+                        ),
+                        "no_trade_band": _ETF_AW_TARGET_WEIGHT_NO_TRADE_BAND,
+                        "sleeve_cap": _ETF_AW_TARGET_WEIGHT_CAPS[role],
+                        "source_budget_status": str(row["budget_status"]),
+                    },
+                    sort_keys=True,
+                ),
+                "source_risk_budget_rebalance_date": rebalance_date,
+                "source_sleeve_daily_max_trade_date": source_max_by_role.get(role),
+                "ingested_at": ingested_at,
+            }
+        )
+    return rows
+
+
+def _target_weight_budget_group_valid(
+    budget_group: pd.DataFrame, rebalance_date: date
+) -> bool:
+    if len(budget_group) != len(ETF_AW_SLEEVE_ROLE_ORDER):
+        return False
+    if set(budget_group["sleeve_role"].astype(str)) != _ETF_AW_REQUIRED_ROLES:
+        return False
+    if any(str(value).upper() == "FAIL" for value in budget_group.get("finding", [])):
+        return False
+    budget_sum = budget_group["tilted_budget"].astype(float).sum()
+    if abs(budget_sum - 1.0) > 1e-6:
+        return False
+    source_dates = pd.to_datetime(
+        budget_group["rebalance_date"], errors="coerce"
+    ).dt.date
+    return all(pd.isna(value) or value <= rebalance_date for value in source_dates)
+
+
+def _target_weight_volatility(
+    panel: pd.DataFrame, rebalance_date: date
+) -> tuple[dict[str, float], dict[str, date | None], dict[str, list[str]]]:
+    vol_by_role: dict[str, float] = {}
+    source_max_by_role: dict[str, date | None] = {}
+    reasons_by_role: dict[str, list[str]] = {}
+    for role in ETF_AW_SLEEVE_ROLE_ORDER:
+        code = _role_code(role)
+        sleeve_panel = panel[
+            (panel["sleeve_code"].astype(str) == code)
+            & (panel["trade_date"] <= rebalance_date)
+        ].copy()
+        source_max = (
+            max(sleeve_panel["trade_date"].dropna().tolist())
+            if not sleeve_panel.empty
+            else None
+        )
+        returns = (
+            sleeve_panel["daily_return"].dropna().tail(_ETF_AW_TARGET_WEIGHT_VOL_WINDOW)
+        )
+        reasons: list[str] = []
+        if len(returns) < _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS:
+            volatility = _ETF_AW_TARGET_WEIGHT_VOL_FLOOR
+            reasons.extend(
+                [
+                    "insufficient_volatility_observations",
+                    "volatility_floor_applied",
+                ]
+            )
+        else:
+            estimated = float(returns.std(ddof=1))
+            volatility = max(estimated, _ETF_AW_TARGET_WEIGHT_VOL_FLOOR)
+            if volatility == _ETF_AW_TARGET_WEIGHT_VOL_FLOOR:
+                reasons.append("volatility_floor_applied")
+        vol_by_role[role] = volatility
+        source_max_by_role[role] = source_max
+        reasons_by_role[role] = reasons
+    return vol_by_role, source_max_by_role, reasons_by_role
+
+
+def _budgeted_inverse_vol_weights(
+    risk_budget: dict[str, float], vol_by_role: dict[str, float]
+) -> dict[str, float]:
+    scores = {
+        role: risk_budget[role]
+        / max(vol_by_role[role], _ETF_AW_TARGET_WEIGHT_VOL_FLOOR)
+        for role in ETF_AW_SLEEVE_ROLE_ORDER
+    }
+    total = sum(scores.values())
+    return {role: scores[role] / total for role in ETF_AW_SLEEVE_ROLE_ORDER}
+
+
+def _apply_target_weight_caps(weights: dict[str, float]) -> dict[str, float]:
+    capped = {
+        role: min(weights[role], _ETF_AW_TARGET_WEIGHT_CAPS[role]) for role in weights
+    }
+    while True:
+        excess = 1.0 - sum(capped.values())
+        if excess <= 1e-12:
+            break
+        open_roles = [
+            role
+            for role in ETF_AW_SLEEVE_ROLE_ORDER
+            if capped[role] < _ETF_AW_TARGET_WEIGHT_CAPS[role] - 1e-12
+        ]
+        if not open_roles:
+            return {}
+        open_total = sum(capped[role] for role in open_roles)
+        if open_total <= 0.0:
+            return {}
+        changed = False
+        for role in open_roles:
+            addition = excess * capped[role] / open_total
+            next_weight = min(capped[role] + addition, _ETF_AW_TARGET_WEIGHT_CAPS[role])
+            changed = changed or abs(next_weight - capped[role]) > 1e-12
+            capped[role] = next_weight
+        if not changed:
+            return {}
+    total = sum(capped.values())
+    if total <= 0.0:
+        return {}
+    return {role: capped[role] / total for role in ETF_AW_SLEEVE_ROLE_ORDER}
+
+
+def _apply_no_trade_band(
+    constrained: dict[str, float], previous_target: dict[str, float] | None
+) -> dict[str, float]:
+    if previous_target is None:
+        return {
+            _role_code(role): constrained[role] for role in ETF_AW_SLEEVE_ROLE_ORDER
+        }
+    target = {}
+    for role in ETF_AW_SLEEVE_ROLE_ORDER:
+        code = _role_code(role)
+        previous = previous_target.get(code)
+        if previous is not None and abs(constrained[role] - previous) < (
+            _ETF_AW_TARGET_WEIGHT_NO_TRADE_BAND
+        ):
+            target[code] = previous
+        else:
+            target[code] = constrained[role]
+    total = sum(target.values())
+    return {code: value / total for code, value in target.items()}
+
+
+def _round_role_weights(weights: dict[str, float]) -> dict[str, float]:
+    rounded = {role: round(weights[role], 6) for role in ETF_AW_SLEEVE_ROLE_ORDER}
+    drift = round(1.0 - sum(rounded.values()), 6)
+    rounded[ETF_AW_SLEEVE_ROLE_ORDER[-1]] = round(
+        rounded[ETF_AW_SLEEVE_ROLE_ORDER[-1]] + drift,
+        6,
+    )
+    return rounded
+
+
+def _round_code_weights(weights: dict[str, float]) -> dict[str, float]:
+    rounded = {
+        _role_code(role): round(weights[_role_code(role)], 6)
+        for role in ETF_AW_SLEEVE_ROLE_ORDER
+    }
+    last_code = _role_code(ETF_AW_SLEEVE_ROLE_ORDER[-1])
+    drift = round(1.0 - sum(rounded.values()), 6)
+    rounded[last_code] = round(rounded[last_code] + drift, 6)
+    return rounded
+
+
+def _role_code(role: str) -> str:
+    return str(_ETF_AW_SLEEVES[ETF_AW_SLEEVE_ROLE_RANK[role]]["sleeve_code"])
+
+
+def _validate_target_weight_frame(frame: pd.DataFrame) -> dict[str, bool]:
+    """Validate the ETF all-weather target weight contract."""
+
+    if frame.empty:
+        return {
+            "non_empty": False,
+            "no_duplicate_business_keys": False,
+            "five_roles_per_rebalance_date": False,
+            "weight_sums_valid": False,
+            "status_values_allowed": False,
+            "quality_notes_json": False,
+            "forbidden_fields_absent": False,
+            "point_in_time_sources": False,
+            "caps_respected": False,
+        }
+    key_columns = [
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_code",
+    ]
+    grouped = frame.groupby(
+        ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+        dropna=False,
+    )
+    forbidden_fields = {
+        "trade_action",
+        "order_instruction",
+        "rebalance_instruction",
+        "order_quantity",
+        "order_amount",
+        "broker_account",
+    }.intersection(set(frame.columns))
+    source_budget_dates = pd.to_datetime(
+        frame["source_risk_budget_rebalance_date"], errors="coerce"
+    ).dt.date
+    rebalance_dates = pd.to_datetime(frame["rebalance_date"], errors="coerce").dt.date
+    return {
+        "non_empty": True,
+        "no_duplicate_business_keys": int(frame.duplicated(key_columns).sum()) == 0,
+        "five_roles_per_rebalance_date": all(
+            set(group["sleeve_role"].astype(str)) == _ETF_AW_REQUIRED_ROLES
+            and len(group) == len(_ETF_AW_REQUIRED_ROLES)
+            for _, group in grouped
+        ),
+        "weight_sums_valid": all(
+            abs(group["risk_budget"].astype(float).sum() - 1.0) <= 1e-6
+            and abs(group["raw_target_weight"].astype(float).sum() - 1.0) <= 1e-6
+            and abs(group["constrained_target_weight"].astype(float).sum() - 1.0)
+            <= 1e-6
+            and abs(group["target_weight"].astype(float).sum() - 1.0) <= 1e-6
+            and bool(
+                (
+                    group[
+                        [
+                            "risk_budget",
+                            "raw_target_weight",
+                            "constrained_target_weight",
+                            "target_weight",
+                        ]
+                    ]
+                    >= 0.0
+                )
+                .all()
+                .all()
+            )
+            for _, group in grouped
+        ),
+        "status_values_allowed": set(
+            frame["target_weight_status"].astype(str)
+        ).issubset(_ETF_AW_TARGET_WEIGHT_STATUSES),
+        "quality_notes_json": all(
+            _is_json_text(value) for value in frame["quality_notes_json"]
+        ),
+        "forbidden_fields_absent": not forbidden_fields,
+        "point_in_time_sources": all(
+            pd.isna(source_date) or pd.isna(rebalance) or source_date <= rebalance
+            for source_date, rebalance in zip(
+                source_budget_dates, rebalance_dates, strict=True
+            )
+        ),
+        "caps_respected": all(
+            float(row["constrained_target_weight"])
+            <= _ETF_AW_TARGET_WEIGHT_CAPS[str(row["sleeve_role"])] + 1e-6
+            for _, row in frame.iterrows()
+        ),
+    }
+
+
 def _equal_weight_backtest_fixture(rebalance: pd.DataFrame) -> pd.DataFrame:
     """Return equal monthly weights for the frozen v1 ETF sleeves."""
 
@@ -4684,6 +5303,18 @@ def _make_etf_aw_backtest_kernel_frame(
     monthly_returns: list[float] = []
     return_values: list[float] = []
     calendar_name = str(weights["calendar_name"].dropna().iloc[0])
+    strategy_name = (
+        str(weights["strategy_name"].dropna().iloc[0])
+        if "strategy_name" in weights.columns
+        and not weights["strategy_name"].dropna().empty
+        else _ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME
+    )
+    strategy_version = (
+        str(weights["strategy_version"].dropna().iloc[0])
+        if "strategy_version" in weights.columns
+        and not weights["strategy_version"].dropna().empty
+        else _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION
+    )
 
     weight_by_date = {
         key: group.set_index("sleeve_code")["target_weight"].astype(float).to_dict()
@@ -4727,6 +5358,8 @@ def _make_etf_aw_backtest_kernel_frame(
             rows.append(
                 _backtest_row(
                     calendar_name=calendar_name,
+                    strategy_name=strategy_name,
+                    strategy_version=strategy_version,
                     observation_type="turnover",
                     observation_date=trade_date,
                     metric_name="monthly_turnover",
@@ -4754,6 +5387,8 @@ def _make_etf_aw_backtest_kernel_frame(
         rows.append(
             _backtest_row(
                 calendar_name=calendar_name,
+                strategy_name=strategy_name,
+                strategy_version=strategy_version,
                 observation_type="daily_nav",
                 observation_date=trade_date,
                 metric_name="net_value",
@@ -4773,6 +5408,8 @@ def _make_etf_aw_backtest_kernel_frame(
         rows.append(
             _backtest_row(
                 calendar_name=calendar_name,
+                strategy_name=strategy_name,
+                strategy_version=strategy_version,
                 observation_type="metric",
                 observation_date=metric_date,
                 metric_name=metric_name,
@@ -4867,6 +5504,8 @@ def _backtest_diagnostic_rows(
         [
             _backtest_row(
                 calendar_name=_REBALANCE_CALENDAR_NAME,
+                strategy_name=_ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME,
+                strategy_version=_ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION,
                 observation_type="diagnostic",
                 observation_date=start,
                 metric_name="input_validation",
@@ -4883,6 +5522,8 @@ def _backtest_diagnostic_rows(
 def _backtest_row(
     *,
     calendar_name: str,
+    strategy_name: str,
+    strategy_version: str,
     observation_type: str,
     observation_date: date,
     metric_name: str,
@@ -4897,8 +5538,8 @@ def _backtest_row(
     return {
         "schema_version": _ETF_AW_BACKTEST_KERNEL_SCHEMA_VERSION,
         "calendar_name": calendar_name,
-        "strategy_name": _ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME,
-        "strategy_version": _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION,
+        "strategy_name": strategy_name,
+        "strategy_version": strategy_version,
         "observation_type": observation_type,
         "observation_date": observation_date,
         "metric_name": metric_name,
