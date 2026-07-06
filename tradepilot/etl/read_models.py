@@ -292,6 +292,8 @@ def list_etf_aw_risk_budgets(
 def get_latest_etf_aw_target_weight(
     as_of_date: date | None = None,
     *,
+    strategy_name: str | None = None,
+    strategy_version: str | None = None,
     lakehouse_root: Path | None = None,
 ) -> dict[str, Any] | None:
     """Return the latest ETF all-weather target weight at or before a date."""
@@ -302,11 +304,19 @@ def get_latest_etf_aw_target_weight(
     frame = _normalize_target_weight_frame(frame)
     if as_of_date is not None and not frame.empty:
         frame = frame[frame["rebalance_date"] <= as_of_date].copy()
+    frame = _filter_target_weight_strategy(
+        frame,
+        strategy_name=strategy_name,
+        strategy_version=strategy_version,
+    )
     if frame.empty:
         return None
-    latest_date = max(frame["rebalance_date"].dropna().tolist())
+    dates = frame["rebalance_date"].dropna().tolist()
+    if not dates:
+        return None
+    latest_date = max(dates)
     latest = frame[frame["rebalance_date"] == latest_date].copy()
-    latest = _sort_latest_rows(latest)
+    latest = _sort_target_weight_rows(latest)
     latest = latest.drop_duplicates(
         [
             "calendar_name",
@@ -329,6 +339,8 @@ def list_etf_aw_target_weights(
     start: date,
     end: date,
     *,
+    strategy_name: str | None = None,
+    strategy_version: str | None = None,
     lakehouse_root: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Return ETF all-weather target weights in a rebalance-date window."""
@@ -344,7 +356,12 @@ def list_etf_aw_target_weights(
         return []
     frame = _normalize_target_weight_frame(frame)
     frame = frame[frame["rebalance_date"].between(start, end, inclusive="both")]
-    frame = _sort_latest_rows(frame)
+    frame = _filter_target_weight_strategy(
+        frame,
+        strategy_name=strategy_name,
+        strategy_version=strategy_version,
+    )
+    frame = _sort_target_weight_rows(frame)
     latest = frame.drop_duplicates(
         [
             "calendar_name",
@@ -893,8 +910,16 @@ def _normalize_target_weight_frame(frame: pd.DataFrame) -> pd.DataFrame:
         "strategy_version",
         "sleeve_code",
         "sleeve_role",
+        "risk_budget",
+        "volatility_estimate",
+        "volatility_floor",
+        "raw_target_weight",
+        "constrained_target_weight",
         "target_weight",
         "target_weight_status",
+        "optimizer_name",
+        "optimizer_basis",
+        "quality_notes_json",
     }
     if not required.issubset(frame.columns):
         return pd.DataFrame()
@@ -919,6 +944,46 @@ def _normalize_target_weight_frame(frame: pd.DataFrame) -> pd.DataFrame:
         )
     ].copy()
     return normalized
+
+
+def _filter_target_weight_strategy(
+    frame: pd.DataFrame,
+    *,
+    strategy_name: str | None,
+    strategy_version: str | None,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    filtered = frame
+    if strategy_name is not None:
+        filtered = filtered[filtered["strategy_name"].astype(str) == strategy_name]
+    if strategy_version is not None:
+        filtered = filtered[
+            filtered["strategy_version"].astype(str) == strategy_version
+        ]
+    return filtered.copy()
+
+
+def _sort_target_weight_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    sorted_frame = frame.copy()
+    if "ingested_at" in sorted_frame.columns:
+        sorted_frame["ingested_at"] = pd.to_datetime(
+            sorted_frame["ingested_at"], errors="coerce"
+        )
+    else:
+        sorted_frame["ingested_at"] = pd.NaT
+    return sorted_frame.sort_values(
+        [
+            "rebalance_date",
+            "calendar_name",
+            "strategy_name",
+            "strategy_version",
+            "sleeve_code",
+            "ingested_at",
+        ]
+    )
 
 
 def _dataset_months(
@@ -1502,9 +1567,9 @@ def _target_weight_contract(frame: pd.DataFrame) -> dict[str, Any]:
         "effective_date": _date_text(first.get("effective_date")),
         "strategy_name": _optional_text(first.get("strategy_name")),
         "strategy_version": _optional_text(first.get("strategy_version")),
-        "target_weight_status": _optional_text(first.get("target_weight_status")),
-        "optimizer_name": _optional_text(first.get("optimizer_name")),
-        "optimizer_basis": _optional_text(first.get("optimizer_basis")),
+        "target_weight_status": _target_weight_group_status(ordered),
+        "optimizer_name": _single_or_mixed_text(ordered["optimizer_name"]),
+        "optimizer_basis": _single_or_mixed_text(ordered["optimizer_basis"]),
         "risk_budget_sum": round(float(ordered["risk_budget"].astype(float).sum()), 6),
         "raw_target_weight_sum": round(
             float(ordered["raw_target_weight"].astype(float).sum()), 6
@@ -1518,10 +1583,48 @@ def _target_weight_contract(frame: pd.DataFrame) -> dict[str, Any]:
         "weights": [
             _target_weight_sleeve_contract(row) for _, row in ordered.iterrows()
         ],
-        "quality_notes": _quality_notes(first.get("quality_notes_json")),
+        "quality_notes": _target_weight_group_quality_notes(ordered),
         "source_risk_budget_rebalance_date": _date_text(
             first.get("source_risk_budget_rebalance_date")
         ),
+    }
+
+
+def _target_weight_group_status(frame: pd.DataFrame) -> str | None:
+    statuses = set(frame["target_weight_status"].dropna().astype(str).tolist())
+    if not statuses:
+        return None
+    if statuses == {"complete"}:
+        return "complete"
+    if "unavailable" in statuses:
+        return "unavailable"
+    if "missing" in statuses:
+        return "missing"
+    if "stale" in statuses:
+        return "stale"
+    return "partial"
+
+
+def _single_or_mixed_text(series: pd.Series) -> str | None:
+    values = sorted(set(series.dropna().astype(str).tolist()))
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else "mixed"
+
+
+def _target_weight_group_quality_notes(frame: pd.DataFrame) -> dict[str, Any]:
+    reasons: set[str] = set()
+    sleeves: dict[str, Any] = {}
+    for _, row in frame.iterrows():
+        notes = _quality_notes(row.get("quality_notes_json"))
+        for reason in notes.get("reasons", []):
+            reasons.add(str(reason))
+        sleeve_role = _optional_text(row.get("sleeve_role"))
+        if sleeve_role is not None:
+            sleeves[sleeve_role] = notes
+    return {
+        "reasons": sorted(reasons),
+        "sleeves": sleeves,
     }
 
 

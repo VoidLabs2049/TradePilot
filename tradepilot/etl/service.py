@@ -103,6 +103,7 @@ _ETF_AW_TARGET_WEIGHT_STATUSES = {
 }
 _ETF_AW_TARGET_WEIGHT_VOL_WINDOW = 63
 _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS = 42
+_ETF_AW_TARGET_WEIGHT_PANEL_LOOKBACK_DAYS = _ETF_AW_TARGET_WEIGHT_VOL_WINDOW * 3
 _ETF_AW_TARGET_WEIGHT_VOL_FLOOR = 0.005
 _ETF_AW_TARGET_WEIGHT_NO_TRADE_BAND = 0.0025
 _ETF_AW_TARGET_WEIGHT_CAPS = {
@@ -111,6 +112,29 @@ _ETF_AW_TARGET_WEIGHT_CAPS = {
     "bond": 0.45,
     "gold": 0.45,
     "cash": 0.35,
+}
+_ETF_AW_TARGET_WEIGHT_RISK_BUDGET_COLUMNS = {
+    "calendar_name",
+    "rebalance_date",
+    "strategy_name",
+    "strategy_version",
+    "sleeve_role",
+    "tilted_budget",
+    "budget_status",
+    "source_strategy_context_rebalance_date",
+    "source_regime_rebalance_date",
+}
+_ETF_AW_TARGET_WEIGHT_PANEL_RETURN_COLUMNS = {
+    "sleeve_code",
+    "trade_date",
+}
+_ETF_AW_TARGET_WEIGHT_PREVIOUS_COLUMNS = {
+    "calendar_name",
+    "rebalance_date",
+    "strategy_name",
+    "strategy_version",
+    "sleeve_code",
+    "target_weight",
 }
 _ETF_AW_BACKTEST_KERNEL_PROFILE = "derived.etf_aw_backtest_kernel.build"
 _ETF_AW_BACKTEST_KERNEL_DATASET = "derived.etf_aw_backtest_kernel"
@@ -2379,7 +2403,7 @@ class ETLService:
             }
         panel = self._read_partitioned_dataset(
             "derived.etf_aw_sleeve_daily",
-            start - timedelta(days=140),
+            start - timedelta(days=_ETF_AW_TARGET_WEIGHT_PANEL_LOOKBACK_DAYS),
             end,
             StorageZone.DERIVED,
         )
@@ -4773,6 +4797,12 @@ def _make_etf_aw_target_weight_frame(
 
     if risk_budget.empty or panel.empty:
         return pd.DataFrame()
+    if not _ETF_AW_TARGET_WEIGHT_RISK_BUDGET_COLUMNS.issubset(risk_budget.columns):
+        return pd.DataFrame()
+    if not _ETF_AW_TARGET_WEIGHT_PANEL_RETURN_COLUMNS.issubset(panel.columns):
+        return pd.DataFrame()
+    if "daily_return" not in panel.columns and "adj_close" not in panel.columns:
+        return pd.DataFrame()
     budget = _normalize_rebalance_date_frame(risk_budget)
     budget = budget.dropna(subset=["calendar_name", "rebalance_date"])
     budget = budget[
@@ -4807,15 +4837,25 @@ def _make_etf_aw_target_weight_frame(
             key=key,
             budget_group=group,
             panel=panel,
-            previous_target=previous_by_key.get((str(key[0]), _ETF_AW_STRATEGY_NAME)),
+            previous_target=previous_by_key.get(
+                (
+                    str(key[0]),
+                    _ETF_AW_STRATEGY_NAME,
+                    _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
+                )
+            ),
             ingested_at=ingested_at,
         )
         if not generated:
             continue
         rows.extend(generated)
-        previous_by_key[(str(key[0]), _ETF_AW_STRATEGY_NAME)] = {
-            str(row["sleeve_code"]): float(row["target_weight"]) for row in generated
-        }
+        previous_by_key[
+            (
+                str(key[0]),
+                _ETF_AW_STRATEGY_NAME,
+                _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
+            )
+        ] = {str(row["sleeve_code"]): float(row["target_weight"]) for row in generated}
     return pd.DataFrame(rows)
 
 
@@ -4845,8 +4885,12 @@ def _filter_target_weight_risk_budget_to_calendar(
 
 def _latest_previous_target_by_key(
     previous_target_weight: pd.DataFrame | None,
-) -> dict[tuple[str, str], dict[str, float]]:
+) -> dict[tuple[str, str, str], dict[str, float]]:
     if previous_target_weight is None or previous_target_weight.empty:
+        return {}
+    if not _ETF_AW_TARGET_WEIGHT_PREVIOUS_COLUMNS.issubset(
+        previous_target_weight.columns
+    ):
         return {}
     previous = _normalize_rebalance_date_frame(previous_target_weight)
     previous = previous[
@@ -4859,7 +4903,7 @@ def _latest_previous_target_by_key(
         return {}
     previous = previous.sort_values(["rebalance_date", "ingested_at"])
     latest_date_by_calendar = previous.groupby("calendar_name")["rebalance_date"].max()
-    result: dict[tuple[str, str], dict[str, float]] = {}
+    result: dict[tuple[str, str, str], dict[str, float]] = {}
     for calendar_name, latest_date in latest_date_by_calendar.items():
         group = previous[
             (previous["calendar_name"].astype(str) == str(calendar_name))
@@ -4868,7 +4912,13 @@ def _latest_previous_target_by_key(
         group = group.drop_duplicates("sleeve_code", keep="last")
         if set(group["sleeve_code"].astype(str)) != set(_ETF_AW_SLEEVE_CODES):
             continue
-        result[(str(calendar_name), _ETF_AW_STRATEGY_NAME)] = {
+        result[
+            (
+                str(calendar_name),
+                _ETF_AW_STRATEGY_NAME,
+                _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
+            )
+        ] = {
             str(row["sleeve_code"]): float(row["target_weight"])
             for _, row in group.iterrows()
         }
@@ -4918,7 +4968,7 @@ def _target_weight_rows_for_rebalance(
     constrained = _apply_target_weight_caps(raw_weights)
     if not constrained:
         return []
-    target = _apply_no_trade_band(constrained, previous_target)
+    target, no_trade_band_drift = _apply_no_trade_band(constrained, previous_target)
     raw_rounded = _round_role_weights(raw_weights)
     constrained_rounded = _round_role_weights(constrained)
     target_rounded = _round_code_weights(target)
@@ -4944,7 +4994,7 @@ def _target_weight_rows_for_rebalance(
         reasons = list(reasons_by_role.get(role, []))
         if previous_target is None:
             reasons.append("first_period_turnover_not_observable")
-        status = "partial" if insufficient_roles else str(row["budget_status"])
+        status = "partial" if role in insufficient_roles else str(row["budget_status"])
         if status not in _ETF_AW_TARGET_WEIGHT_STATUSES:
             status = "partial"
         rows.append(
@@ -4979,6 +5029,10 @@ def _target_weight_rows_for_rebalance(
                             _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS
                         ),
                         "no_trade_band": _ETF_AW_TARGET_WEIGHT_NO_TRADE_BAND,
+                        "no_trade_band_normalization_drift": round(
+                            no_trade_band_drift,
+                            12,
+                        ),
                         "sleeve_cap": _ETF_AW_TARGET_WEIGHT_CAPS[role],
                         "source_budget_status": str(row["budget_status"]),
                     },
@@ -5004,10 +5058,19 @@ def _target_weight_budget_group_valid(
     budget_sum = budget_group["tilted_budget"].astype(float).sum()
     if abs(budget_sum - 1.0) > 1e-6:
         return False
-    source_dates = pd.to_datetime(
-        budget_group["rebalance_date"], errors="coerce"
+    source_context_dates = pd.to_datetime(
+        budget_group["source_strategy_context_rebalance_date"], errors="coerce"
     ).dt.date
-    return all(pd.isna(value) or value <= rebalance_date for value in source_dates)
+    source_regime_dates = pd.to_datetime(
+        budget_group["source_regime_rebalance_date"], errors="coerce"
+    ).dt.date
+    return all(
+        (pd.isna(context_date) or context_date <= rebalance_date)
+        and (pd.isna(regime_date) or regime_date <= rebalance_date)
+        for context_date, regime_date in zip(
+            source_context_dates, source_regime_dates, strict=True
+        )
+    )
 
 
 def _target_weight_volatility(
@@ -5096,11 +5159,12 @@ def _apply_target_weight_caps(weights: dict[str, float]) -> dict[str, float]:
 
 def _apply_no_trade_band(
     constrained: dict[str, float], previous_target: dict[str, float] | None
-) -> dict[str, float]:
+) -> tuple[dict[str, float], float]:
     if previous_target is None:
-        return {
-            _role_code(role): constrained[role] for role in ETF_AW_SLEEVE_ROLE_ORDER
-        }
+        return (
+            {_role_code(role): constrained[role] for role in ETF_AW_SLEEVE_ROLE_ORDER},
+            0.0,
+        )
     target = {}
     for role in ETF_AW_SLEEVE_ROLE_ORDER:
         code = _role_code(role)
@@ -5112,7 +5176,9 @@ def _apply_no_trade_band(
         else:
             target[code] = constrained[role]
     total = sum(target.values())
-    return {code: value / total for code, value in target.items()}
+    normalized = {code: value / total for code, value in target.items()}
+    drift = sum(abs(normalized[code] - target[code]) for code in target)
+    return normalized, drift
 
 
 def _round_role_weights(weights: dict[str, float]) -> dict[str, float]:
