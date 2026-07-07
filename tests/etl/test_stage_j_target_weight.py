@@ -15,6 +15,7 @@ import pandas as pd
 from tradepilot import db
 from tradepilot.etl import service as etl_service
 from tradepilot.etl import update_etf_aw_data as update_module
+from tradepilot.etl.datasets import build_derived_etf_aw_backtest_kernel_dataset
 from tradepilot.etl.etf_aw_universe import (
     ETF_AW_SLEEVE_CODE_BY_ROLE,
     ETF_AW_SLEEVE_ROLE_ORDER,
@@ -180,6 +181,28 @@ class StageJTargetWeightTests(unittest.TestCase):
         self.assertAlmostEqual(sum(target.values()), 1.0, places=6)
         self.assertGreaterEqual(drift, 0.0)
 
+    def test_no_trade_band_recaps_final_target_weight(self) -> None:
+        constrained = {
+            "equity_large": 0.148,
+            "equity_small": 0.10,
+            "bond": 0.202,
+            "gold": 0.45,
+            "cash": 0.10,
+        }
+        previous = {
+            ETF_AW_SLEEVE_CODE_BY_ROLE["equity_large"]: 0.148,
+            ETF_AW_SLEEVE_CODE_BY_ROLE["equity_small"]: 0.10,
+            ETF_AW_SLEEVE_CODE_BY_ROLE["bond"]: 0.20,
+            ETF_AW_SLEEVE_CODE_BY_ROLE["gold"]: 0.45,
+            ETF_AW_SLEEVE_CODE_BY_ROLE["cash"]: 0.10,
+        }
+
+        target, drift = etl_service._apply_no_trade_band(constrained, previous)
+
+        self.assertAlmostEqual(sum(target.values()), 1.0, places=6)
+        self.assertLessEqual(target[ETF_AW_SLEEVE_CODE_BY_ROLE["gold"]], 0.450001)
+        self.assertGreater(drift, 0.0)
+
     def test_bootstrap_writes_and_read_model_returns_latest_contract(self) -> None:
         rebalance_date = date(2024, 7, 22)
         self.service._write_etf_aw_risk_budget(
@@ -263,6 +286,36 @@ class StageJTargetWeightTests(unittest.TestCase):
         self.assertIn("cash", latest["quality_notes"]["sleeves"])
         self.assertEqual(len(listed), 1)
         self.assertEqual(listed[0]["strategy_version"], "experimental_v2")
+
+    def test_latest_target_weight_requires_unambiguous_group(self) -> None:
+        rebalance_date = date(2024, 7, 22)
+        default_frame = self._target_weight_frame(
+            rebalance_date,
+            self._equal_role_weights(),
+        )
+        other_frame = self._target_weight_frame(
+            rebalance_date,
+            self._equal_role_weights(),
+        )
+        other_frame["calendar_name"] = "etf_aw_v2_monthly_post_20"
+        self.service._write_etf_aw_target_weight(
+            pd.concat([default_frame, other_frame], ignore_index=True)
+        )
+
+        ambiguous = get_latest_etf_aw_target_weight(
+            as_of_date=rebalance_date,
+            lakehouse_root=self.lakehouse_root,
+        )
+        selected = get_latest_etf_aw_target_weight(
+            as_of_date=rebalance_date,
+            calendar_name="etf_aw_v1_monthly_post_20",
+            lakehouse_root=self.lakehouse_root,
+        )
+
+        self.assertIsNone(ambiguous)
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        self.assertEqual(selected["calendar_name"], "etf_aw_v1_monthly_post_20")
 
     def test_read_model_rejects_target_weight_missing_contract_columns(self) -> None:
         frame = self._target_weight_frame(date(2024, 7, 22), self._equal_role_weights())
@@ -466,6 +519,11 @@ class StageJTargetWeightTests(unittest.TestCase):
             names.index("derived.etf_aw_risk_budget.build"),
             names.index("derived.etf_aw_target_weight.build"),
         )
+
+    def test_backtest_kernel_declares_target_weight_dependency(self) -> None:
+        definition = build_derived_etf_aw_backtest_kernel_dataset()
+
+        self.assertIn("derived.etf_aw_target_weight", definition.dependencies)
 
     def _budget_row(
         self, rebalance_date: date, sleeve_role: str, tilted_budget: float, status: str

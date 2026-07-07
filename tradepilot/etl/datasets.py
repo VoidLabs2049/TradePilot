@@ -478,6 +478,7 @@ def build_derived_etf_aw_backtest_kernel_dataset() -> DatasetDefinition:
             "reference.rebalance_calendar",
             "reference.etf_aw_sleeves",
             "derived.etf_aw_sleeve_daily",
+            "derived.etf_aw_target_weight",
         ],
     )
 

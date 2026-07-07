@@ -292,6 +292,7 @@ def list_etf_aw_risk_budgets(
 def get_latest_etf_aw_target_weight(
     as_of_date: date | None = None,
     *,
+    calendar_name: str | None = None,
     strategy_name: str | None = None,
     strategy_version: str | None = None,
     lakehouse_root: Path | None = None,
@@ -306,6 +307,7 @@ def get_latest_etf_aw_target_weight(
         frame = frame[frame["rebalance_date"] <= as_of_date].copy()
     frame = _filter_target_weight_strategy(
         frame,
+        calendar_name=calendar_name,
         strategy_name=strategy_name,
         strategy_version=strategy_version,
     )
@@ -327,18 +329,23 @@ def get_latest_etf_aw_target_weight(
         ],
         keep="last",
     )
-    for _, group in latest.groupby(
-        ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
-        sort=True,
-    ):
-        return _target_weight_contract(group)
-    return None
+    groups = [
+        group
+        for _, group in latest.groupby(
+            ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+            sort=True,
+        )
+    ]
+    if len(groups) != 1:
+        return None
+    return _target_weight_contract(groups[0])
 
 
 def list_etf_aw_target_weights(
     start: date,
     end: date,
     *,
+    calendar_name: str | None = None,
     strategy_name: str | None = None,
     strategy_version: str | None = None,
     lakehouse_root: Path | None = None,
@@ -358,6 +365,7 @@ def list_etf_aw_target_weights(
     frame = frame[frame["rebalance_date"].between(start, end, inclusive="both")]
     frame = _filter_target_weight_strategy(
         frame,
+        calendar_name=calendar_name,
         strategy_name=strategy_name,
         strategy_version=strategy_version,
     )
@@ -949,12 +957,15 @@ def _normalize_target_weight_frame(frame: pd.DataFrame) -> pd.DataFrame:
 def _filter_target_weight_strategy(
     frame: pd.DataFrame,
     *,
+    calendar_name: str | None,
     strategy_name: str | None,
     strategy_version: str | None,
 ) -> pd.DataFrame:
     if frame.empty:
         return frame
     filtered = frame
+    if calendar_name is not None:
+        filtered = filtered[filtered["calendar_name"].astype(str) == calendar_name]
     if strategy_name is not None:
         filtered = filtered[filtered["strategy_name"].astype(str) == strategy_name]
     if strategy_version is not None:

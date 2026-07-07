@@ -17,10 +17,10 @@ from tradepilot import db
 from tradepilot.etl.datasets import DatasetDefinition
 from tradepilot.etl.etf_aw_universe import (
     ETF_AW_SLEEVES,
+    ETF_AW_SLEEVE_CODE_BY_ROLE,
     ETF_AW_SLEEVE_CODES,
     ETF_AW_SLEEVE_ROLES,
     ETF_AW_SLEEVE_ROLE_ORDER,
-    ETF_AW_SLEEVE_ROLE_RANK,
     etf_aw_role_sort_key,
     etf_aw_sleeve_codes_frame,
     etf_aw_sleeves_frame,
@@ -5177,8 +5177,14 @@ def _apply_no_trade_band(
             target[code] = constrained[role]
     total = sum(target.values())
     normalized = {code: value / total for code, value in target.items()}
-    drift = sum(abs(normalized[code] - target[code]) for code in target)
-    return normalized, drift
+    recapped = _apply_target_weight_caps(
+        {role: normalized[_role_code(role)] for role in ETF_AW_SLEEVE_ROLE_ORDER}
+    )
+    final_target = {
+        _role_code(role): recapped[role] for role in ETF_AW_SLEEVE_ROLE_ORDER
+    }
+    drift = sum(abs(final_target[code] - target[code]) for code in target)
+    return final_target, drift
 
 
 def _round_role_weights(weights: dict[str, float]) -> dict[str, float]:
@@ -5203,7 +5209,7 @@ def _round_code_weights(weights: dict[str, float]) -> dict[str, float]:
 
 
 def _role_code(role: str) -> str:
-    return str(_ETF_AW_SLEEVES[ETF_AW_SLEEVE_ROLE_RANK[role]]["sleeve_code"])
+    return ETF_AW_SLEEVE_CODE_BY_ROLE[role]
 
 
 def _validate_target_weight_frame(frame: pd.DataFrame) -> dict[str, bool]:
@@ -5290,6 +5296,8 @@ def _validate_target_weight_frame(frame: pd.DataFrame) -> dict[str, bool]:
         ),
         "caps_respected": all(
             float(row["constrained_target_weight"])
+            <= _ETF_AW_TARGET_WEIGHT_CAPS[str(row["sleeve_role"])] + 1e-6
+            and float(row["target_weight"])
             <= _ETF_AW_TARGET_WEIGHT_CAPS[str(row["sleeve_role"])] + 1e-6
             for _, row in frame.iterrows()
         ),
