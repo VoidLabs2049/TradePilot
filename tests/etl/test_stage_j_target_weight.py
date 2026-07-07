@@ -199,9 +199,11 @@ class StageJTargetWeightTests(unittest.TestCase):
 
         target, drift = etl_service._apply_no_trade_band(constrained, previous)
 
+        snapped = dict(previous)
+        expected_drift = sum(abs(target[code] - snapped[code]) for code in snapped)
         self.assertAlmostEqual(sum(target.values()), 1.0, places=6)
         self.assertLessEqual(target[ETF_AW_SLEEVE_CODE_BY_ROLE["gold"]], 0.450001)
-        self.assertGreater(drift, 0.0)
+        self.assertAlmostEqual(drift, expected_drift, places=12)
 
     def test_bootstrap_writes_and_read_model_returns_latest_contract(self) -> None:
         rebalance_date = date(2024, 7, 22)

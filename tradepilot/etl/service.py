@@ -2358,17 +2358,23 @@ class ETLService:
 
     def _build_etf_aw_target_weight(self, start: date, end: date) -> dict:
         start, end = _ordered_dates(start, end)
-        rebalance = self._read_rebalance_calendar(start, end)
-        if rebalance.empty:
-            return {
+
+        def _failed(error_message: str, **extra: Any) -> dict:
+            result = {
                 "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
                 "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
                 "status": RunStatus.FAILED.value,
                 "requested_start": start.isoformat(),
                 "requested_end": end.isoformat(),
                 "records_written": 0,
-                "error_message": "canonical rebalance calendar is missing",
+                "error_message": error_message,
             }
+            result.update(extra)
+            return result
+
+        rebalance = self._read_rebalance_calendar(start, end)
+        if rebalance.empty:
+            return _failed("canonical rebalance calendar is missing")
         risk_budget = self._read_partitioned_dataset(
             _ETF_AW_RISK_BUDGET_DATASET,
             start,
@@ -2376,31 +2382,17 @@ class ETLService:
             StorageZone.DERIVED,
         )
         if risk_budget.empty:
-            return {
-                "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
-                "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
-                "status": RunStatus.FAILED.value,
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "records_written": 0,
-                "error_message": "ETF all-weather risk budget is missing",
-            }
+            return _failed("ETF all-weather risk budget is missing")
         risk_budget = _filter_target_weight_risk_budget_to_calendar(
             risk_budget, rebalance
         )
         if risk_budget.empty:
-            return {
-                "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
-                "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
-                "status": RunStatus.FAILED.value,
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "records_written": 0,
-                "error_message": (
+            return _failed(
+                (
                     "ETF all-weather risk budget has no calendar-aligned "
                     "rebalance keys"
                 ),
-            }
+            )
         panel = self._read_partitioned_dataset(
             "derived.etf_aw_sleeve_daily",
             start - timedelta(days=_ETF_AW_TARGET_WEIGHT_PANEL_LOOKBACK_DAYS),
@@ -2408,15 +2400,7 @@ class ETLService:
             StorageZone.DERIVED,
         )
         if panel.empty:
-            return {
-                "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
-                "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
-                "status": RunStatus.FAILED.value,
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "records_written": 0,
-                "error_message": "derived sleeve daily panel is missing",
-            }
+            return _failed("derived sleeve daily panel is missing")
         previous_target_weight = self._read_partitioned_dataset(
             _ETF_AW_TARGET_WEIGHT_DATASET,
             start - timedelta(days=370),
@@ -2429,27 +2413,13 @@ class ETLService:
             previous_target_weight=previous_target_weight,
         )
         if target_weight.empty:
-            return {
-                "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
-                "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
-                "status": RunStatus.FAILED.value,
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "records_written": 0,
-                "error_message": "ETF all-weather target weight has no valid rebalance keys",
-            }
+            return _failed("ETF all-weather target weight has no valid rebalance keys")
         validation = _validate_target_weight_frame(target_weight)
         if not all(validation.values()):
-            return {
-                "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
-                "dataset_name": _ETF_AW_TARGET_WEIGHT_DATASET,
-                "status": RunStatus.FAILED.value,
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "records_written": 0,
-                "validation": validation,
-                "error_message": "ETF all-weather target weight validation failed",
-            }
+            return _failed(
+                "ETF all-weather target weight validation failed",
+                validation=validation,
+            )
         write_result = self._write_etf_aw_target_weight(target_weight)
         return {
             "profile_name": _ETF_AW_TARGET_WEIGHT_PROFILE,
@@ -4866,21 +4836,19 @@ def _filter_target_weight_risk_budget_to_calendar(
         return pd.DataFrame()
     budget = _normalize_rebalance_date_frame(risk_budget)
     calendar = _normalize_rebalance_date_frame(rebalance)
-    valid_keys = {
-        (str(row["calendar_name"]), row["rebalance_date"])
-        for _, row in calendar.dropna(
-            subset=["calendar_name", "rebalance_date"]
-        ).iterrows()
-    }
-    if not valid_keys:
-        return pd.DataFrame()
-    return budget[
-        budget.apply(
-            lambda row: (str(row["calendar_name"]), row["rebalance_date"])
-            in valid_keys,
-            axis=1,
-        )
+    calendar_keys = calendar.dropna(subset=["calendar_name", "rebalance_date"])[
+        ["calendar_name", "rebalance_date"]
     ].copy()
+    if calendar_keys.empty:
+        return pd.DataFrame()
+    calendar_index = pd.MultiIndex.from_frame(
+        calendar_keys.assign(calendar_name=calendar_keys["calendar_name"].astype(str))
+    )
+    budget_keys = budget[["calendar_name", "rebalance_date"]].copy()
+    budget_index = pd.MultiIndex.from_frame(
+        budget_keys.assign(calendar_name=budget_keys["calendar_name"].astype(str))
+    )
+    return budget[budget_index.isin(calendar_index)].copy()
 
 
 def _latest_previous_target_by_key(
@@ -5079,12 +5047,15 @@ def _target_weight_volatility(
     vol_by_role: dict[str, float] = {}
     source_max_by_role: dict[str, date | None] = {}
     reasons_by_role: dict[str, list[str]] = {}
+    eligible = panel[panel["trade_date"] <= rebalance_date].copy()
+    if not eligible.empty:
+        eligible["sleeve_code"] = eligible["sleeve_code"].astype(str)
+    panel_by_code = {
+        str(code): group for code, group in eligible.groupby("sleeve_code", sort=False)
+    }
     for role in ETF_AW_SLEEVE_ROLE_ORDER:
         code = _role_code(role)
-        sleeve_panel = panel[
-            (panel["sleeve_code"].astype(str) == code)
-            & (panel["trade_date"] <= rebalance_date)
-        ].copy()
+        sleeve_panel = panel_by_code.get(code, pd.DataFrame())
         source_max = (
             max(sleeve_panel["trade_date"].dropna().tolist())
             if not sleeve_panel.empty
