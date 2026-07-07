@@ -2,15 +2,18 @@ import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-do
 import { Layout, Menu } from "antd";
 import {
   DashboardOutlined,
+  ExperimentOutlined,
   FundOutlined,
 } from "@ant-design/icons";
 import Dashboard from "./pages/Dashboard";
+import EtfAllWeather from "./pages/EtfAllWeather";
 import Portfolio from "./pages/Portfolio";
 
 const { Sider, Content } = Layout;
 
 const menuItems = [
   { key: "/", icon: <DashboardOutlined />, label: <NavLink to="/">Daily Workflow</NavLink> },
+  { key: "/etf-aw", icon: <ExperimentOutlined />, label: <NavLink to="/etf-aw">ETF 全天候</NavLink> },
   { key: "/portfolio", icon: <FundOutlined />, label: <NavLink to="/portfolio">持仓管理</NavLink> },
 ];
 
@@ -27,6 +30,7 @@ function App() {
         <Content style={{ padding: 24 }}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/etf-aw" element={<EtfAllWeather />} />
             <Route path="/portfolio" element={<Portfolio />} />
             <Route path="/dashboard" element={<Navigate to="/" replace />} />
             <Route path="/analysis" element={<Navigate to="/" replace />} />

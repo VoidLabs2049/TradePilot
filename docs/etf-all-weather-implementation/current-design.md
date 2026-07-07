@@ -38,7 +38,7 @@ TradePilot ETF 全天候不是 ETF 涨跌预测器，而是低频风险配置系
 
 ## 最新开发规划吸收
 
-当前 ETF 全天候实现应按“后端基础框架先行，前端体验后置”的节奏推进。
+当前 ETF 全天候实现应按“后端基础框架先行，前端体验后置”的节奏推进。已新增的 ETF risk budget 页面只作为只读观察面板，用于检查 frozen artifact 是否可读、公式是否直观；它不代表 target weight、交易建议或回测评估已经完成。
 
 MVP 的日常工作流是：
 
@@ -55,7 +55,7 @@ MVP 的日常工作流是：
 - 数据获取和本地落库可重复运行。
 - 风险预算、目标权重和回测可通过命令行脚本独立触发。
 - 回测结果能产出净值、回撤、换手、指标和诊断报表。
-- 前端页面先消费稳定 read model；不要在权重合同未稳定前提前做复杂交互。
+- 前端页面先消费稳定 read model；不要在权重合同未稳定前提前做复杂交互。现有 risk budget 页面必须保持只读，不加入参数调整、回测触发、目标权重推导或交易动作。
 
 模型策略上，V1 继续使用规则式状态映射、风险预算和 budgeted inverse-vol。机器学习、期货、期权、港股、美股和更完整宏观数据属于后续扩展方向，只能在当前股票/ETF 数据链路、回测纪律和风险预算估计稳定后逐步纳入。
 
@@ -168,6 +168,27 @@ strategy_context
 
 这是正确边界。当前系统已经能把市场快照、市场状态和宏观/利率上下文拼成 research-ready 或 degraded context，但还没有进入正式组合权重和交易建议层。
 
+### Stage I：风险预算
+
+已实现 `derived.etf_aw_risk_budget` 的 V1 最小版本：
+
+- 注册 `derived.etf_aw_risk_budget` 数据集和 `derived.etf_aw_risk_budget.build` bootstrap profile。
+- 从 `derived.etf_aw_strategy_context` 与 `derived.etf_aw_regime_score` 生成每个 rebalance date、每个 sleeve role 的风险预算。
+- 固定中性预算、regime delta、confidence clamp、低置信度/缺失/陈旧/不可用降级和 point-in-time 来源检查。
+- 写出前运行健康检查，`FAIL` finding 会阻断写出。
+- read model 暴露 `get_latest_etf_aw_risk_budget` / `list_etf_aw_risk_budgets`。
+- API 暴露 `/api/workflow/etf-aw/risk-budget/latest`。
+
+该层仍然不输出：
+
+- `target_weight`
+- `raw_target_weight`
+- `constrained_target_weight`
+- `trade_action`
+- `order_instruction`
+
+已新增的 `/etf-aw` 页面只读取风险预算 artifact，用于展示 base budget、delta budget、tilted budget、状态和质量诊断。它不是投资组合权重页面，也不应承担参数配置、回测运行或交易建议职责。
+
 ### Workflow / Dashboard
 
 后端 workflow 已暴露 ETF 全天候上下文：
@@ -178,7 +199,15 @@ strategy_context
 
 前端 Dashboard 已展示 ETF 全天候 snapshot 表，字段包括 sleeve、代码、1M/3M/6M 收益、3M 波动、6M 回撤、状态和诊断。
 
-当前前端主要展示 snapshot；strategy context 后续可作为 insight-first 面板的输入。
+当前前端主要展示 snapshot 和 risk budget 只读观察结果；strategy context 后续可作为 insight-first 面板的输入。下一步不得继续扩展前端，除非后端 target weight 和 frozen backtest 合同已经稳定。
+
+后续前端清理方向：
+
+- 保留 `/etf-aw` 的只读定位，但清理视觉密度，让页面更像工作台而不是调试面板。
+- 将 snapshot、risk budget、未来 target weight 和 backtest report 按稳定后端合同分区展示，避免一个页面堆叠临时字段。
+- 统一状态、诊断、百分比和 caveat 展示组件，减少重复表格和长 JSON tooltip。
+- 删除或隐藏只服务开发排查的字段，把详细诊断下钻到 drawer 或折叠区。
+- 在 target weight 和 backtest 合同稳定前，不新增参数编辑、策略切换、回测触发或交易动作入口。
 
 ## 资料库吸收边界
 
@@ -246,8 +275,7 @@ Tushare / project ETL
 
 ```text
 strategy_context
--> backtest kernel acceptance fixture
--> regime/budget mapper
+-> derived.etf_aw_risk_budget
 -> covariance estimator
 -> budgeted risk parity or inverse-vol engine
 -> target sleeve weights
@@ -277,7 +305,7 @@ strategy_context
 
 ### 回测内核验收夹具
 
-在实现 `derived.etf_aw_risk_budget` 前，应先冻结一个小型回测内核设计。
+已冻结并实现小型回测内核的最小验收夹具。后续需要把它从等权 fixture 推进到消费 frozen `derived.etf_aw_target_weight`，但仍不能在回测循环中生成预算、优化权重或搜索参数。
 
 该内核的输入只包括：
 
@@ -390,6 +418,8 @@ V1 输出必须包含 explainability：
 下一阶段建议新增独立 derived 数据集，而不是扩展 Stage G：
 
 ### `derived.etf_aw_risk_budget`
+
+已完成 V1 最小实现。后续只允许补齐健康检查和 CLI 入口，不应继续扩大其职责。
 
 粒度：
 
@@ -602,16 +632,18 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 4. 实现前置回测内核，先用等权 fixture 跑通。已完成最小版本。
 5. 新增并冻结 `backtest-evaluation-design.md`，先收口命令行报表 MVP 和单策略可视化合同，完整基线对标留 Phase 2。
 6. 新增并冻结 `etf-aw-cli-design.md`。已完成。
-7. 新增并冻结 `risk-budget-design.md`。
-8. 继续推进风险预算估计：实现 `derived.etf_aw_risk_budget` schema、read model、规则式 mapper、健康检查和降级测试。
-9. 新增并冻结 `target-weight-design.md`。
-10. 实现 `derived.etf_aw_target_weight` 和 budgeted inverse-vol MVP，并用前置回测内核验收。
-11. 按 `etf-aw-cli-design.md` 接入 `build-risk-budget`、`health-check risk-budget`、`build-target-weight`、`health-check target-weight`、`backtest-kernel`、`backtest-report`。
-12. 增加后端命令行回测报表，覆盖净值、回撤、指标、换手和 diagnostics。
-13. 增加 monthly explainability table 和后置 baseline comparison。
-14. 再评估是否引入 simplified ERC。
-15. 后端合同稳定后，再补前端页面或 Dashboard 面板。
-16. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
+7. 新增并冻结 `risk-budget-design.md`。已完成。
+8. 实现 `derived.etf_aw_risk_budget` schema、read model、规则式 mapper、健康检查和降级测试。已完成 V1 最小版本。
+9. 收束前端：`/etf-aw` 只作为 risk budget 只读观察面板，不继续扩展 UI。
+10. 新增并冻结 `target-weight-design.md`。
+11. 实现 `derived.etf_aw_target_weight` 和 budgeted inverse-vol MVP，并用前置回测内核验收。
+12. 按 `etf-aw-cli-design.md` 接入 `build-risk-budget`、`health-check risk-budget`、`build-target-weight`、`health-check target-weight`、`backtest-kernel`、`backtest-report`。
+13. 增加后端命令行回测报表，覆盖净值、回撤、指标、换手和 diagnostics。
+14. 增加 monthly explainability table 和后置 baseline comparison。
+15. 再评估是否引入 simplified ERC。
+16. 后端 target weight 和 backtest 合同稳定后，再补前端目标权重、净值或 Dashboard 面板。
+17. 清理 ETF 全天候前端界面，保持只读、分区清晰、诊断可下钻，不把临时研究字段堆到主视图。
+18. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
 
 ## 非目标
 

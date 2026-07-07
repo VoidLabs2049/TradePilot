@@ -9,7 +9,7 @@ from typing import Any
 
 import pandas as pd
 
-from tradepilot.etl.etf_aw_universe import etf_aw_role_sort_key
+from tradepilot.etl.constants import ETF_AW_ROLE_RANK
 from tradepilot.etl.models import StorageZone
 from tradepilot.etl.storage import build_dataset_file_path
 
@@ -67,6 +67,10 @@ _ETF_AW_FIELD_MAX_AGE_DAYS = {
     "cn_gov_10y_yield": 10,
     "cn_yield_curve_slope_10y_1y": 10,
 }
+
+
+def _etf_aw_role_sort_key(series: pd.Series) -> pd.Series:
+    return series.astype(str).map(ETF_AW_ROLE_RANK).fillna(len(ETF_AW_ROLE_RANK))
 
 
 def get_latest_etf_aw_snapshot(
@@ -1525,7 +1529,7 @@ def _strategy_context_contract(row: pd.Series) -> dict[str, Any]:
 
 
 def _risk_budget_contract(frame: pd.DataFrame) -> dict[str, Any]:
-    ordered = frame.sort_values("sleeve_role", key=etf_aw_role_sort_key)
+    ordered = frame.sort_values("sleeve_role", key=_etf_aw_role_sort_key)
     first = ordered.iloc[0]
     base_sum = float(ordered["base_budget"].astype(float).sum())
     tilted_sum = float(ordered["tilted_budget"].astype(float).sum())
@@ -1568,7 +1572,7 @@ def _risk_budget_sleeve_contract(row: pd.Series) -> dict[str, Any]:
 
 
 def _target_weight_contract(frame: pd.DataFrame) -> dict[str, Any]:
-    ordered = frame.sort_values("sleeve_role", key=etf_aw_role_sort_key)
+    ordered = frame.sort_values("sleeve_role", key=_etf_aw_role_sort_key)
     first = ordered.iloc[0]
     return {
         "schema_version": _ETF_AW_TARGET_WEIGHT_SCHEMA_VERSION,
