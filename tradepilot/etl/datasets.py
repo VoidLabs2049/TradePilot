@@ -418,6 +418,40 @@ def build_derived_etf_aw_risk_budget_dataset() -> DatasetDefinition:
     )
 
 
+def build_derived_etf_aw_target_weight_dataset() -> DatasetDefinition:
+    """Return the ETF all-weather target weight dataset definition."""
+
+    return DatasetDefinition(
+        dataset_name="derived.etf_aw_target_weight",
+        category=DatasetCategory.DERIVED,
+        grain="calendar_rebalance_strategy_sleeve",
+        primary_source="derived",
+        storage_zone=StorageZone.DERIVED,
+        partition_strategy="year_month",
+        canonical_schema_name="etf_aw_target_weight_v1",
+        timing_semantics=(
+            "Monthly paper target weights derived from frozen risk budget and "
+            "point-in-time adjustment-aware sleeve returns. It emits no trade "
+            "actions, order quantities, or broker instructions."
+        ),
+        validation_rule_names=[
+            "target_weight.duplicate_business_key",
+            "target_weight.five_roles_per_rebalance_date",
+            "target_weight.weight_sums",
+            "target_weight.status_allowed",
+            "target_weight.no_trade_fields",
+            "target_weight.point_in_time_sources",
+            "target_weight.quality_notes_json",
+            "target_weight.caps_respected",
+        ],
+        dependencies=[
+            "derived.etf_aw_risk_budget",
+            "derived.etf_aw_sleeve_daily",
+            "reference.rebalance_calendar",
+        ],
+    )
+
+
 def build_derived_etf_aw_backtest_kernel_dataset() -> DatasetDefinition:
     """Return the ETF all-weather minimal backtest kernel definition."""
 
@@ -444,6 +478,7 @@ def build_derived_etf_aw_backtest_kernel_dataset() -> DatasetDefinition:
             "reference.rebalance_calendar",
             "reference.etf_aw_sleeves",
             "derived.etf_aw_sleeve_daily",
+            "derived.etf_aw_target_weight",
         ],
     )
 
@@ -637,6 +672,7 @@ def build_stage_b_datasets() -> list[DatasetDefinition]:
         build_derived_etf_aw_market_features_dataset(),
         build_derived_etf_aw_strategy_context_dataset(),
         build_derived_etf_aw_risk_budget_dataset(),
+        build_derived_etf_aw_target_weight_dataset(),
         build_derived_etf_aw_backtest_kernel_dataset(),
         build_macro_slow_fields_dataset(),
         build_rates_daily_rates_dataset(),

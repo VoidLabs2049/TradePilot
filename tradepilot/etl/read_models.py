@@ -37,6 +37,9 @@ _ETF_AW_STRATEGY_CONTEXT_CONTRACT_VERSION = "etf_aw_strategy_context_contract_v1
 _ETF_AW_RISK_BUDGET_DATASET = "derived.etf_aw_risk_budget"
 _ETF_AW_RISK_BUDGET_SCHEMA_VERSION = "etf_aw_risk_budget_v1"
 _ETF_AW_RISK_BUDGET_CONTRACT_VERSION = "etf_aw_risk_budget_contract_v1"
+_ETF_AW_TARGET_WEIGHT_DATASET = "derived.etf_aw_target_weight"
+_ETF_AW_TARGET_WEIGHT_SCHEMA_VERSION = "etf_aw_target_weight_v1"
+_ETF_AW_TARGET_WEIGHT_CONTRACT_VERSION = "etf_aw_target_weight_contract_v1"
 _ETF_AW_MACRO_RATES_CONTEXT_SCHEMA_VERSION = "etf_aw_macro_rates_context_v1"
 _MACRO_SLOW_FIELDS_DATASET = "macro.slow_fields"
 _RATES_DAILY_RATES_DATASET = "rates.daily_rates"
@@ -64,6 +67,10 @@ _ETF_AW_FIELD_MAX_AGE_DAYS = {
     "cn_gov_10y_yield": 10,
     "cn_yield_curve_slope_10y_1y": 10,
 }
+
+
+def _etf_aw_role_sort_key(series: pd.Series) -> pd.Series:
+    return series.astype(str).map(ETF_AW_ROLE_RANK).fillna(len(ETF_AW_ROLE_RANK))
 
 
 def get_latest_etf_aw_snapshot(
@@ -245,6 +252,145 @@ def get_latest_etf_aw_risk_budget(
     ):
         return _risk_budget_contract(group)
     return None
+
+
+def list_etf_aw_risk_budgets(
+    start: date,
+    end: date,
+    *,
+    lakehouse_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return ETF all-weather risk budgets in a rebalance-date window."""
+
+    if start > end:
+        start, end = end, start
+    frame = _read_etf_aw_risk_budget_partitions(
+        start=start,
+        end=end,
+        lakehouse_root=lakehouse_root,
+    )
+    if frame.empty:
+        return []
+    frame = _normalize_risk_budget_frame(frame)
+    frame = frame[frame["rebalance_date"].between(start, end, inclusive="both")]
+    frame = _sort_latest_rows(frame)
+    latest = frame.drop_duplicates(
+        [
+            "calendar_name",
+            "rebalance_date",
+            "strategy_name",
+            "strategy_version",
+            "sleeve_role",
+        ],
+        keep="last",
+    )
+    return [
+        _risk_budget_contract(group)
+        for _, group in latest.groupby(
+            ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+            sort=True,
+        )
+    ]
+
+
+def get_latest_etf_aw_target_weight(
+    as_of_date: date | None = None,
+    *,
+    calendar_name: str | None = None,
+    strategy_name: str | None = None,
+    strategy_version: str | None = None,
+    lakehouse_root: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return the latest ETF all-weather target weight at or before a date."""
+
+    frame = _read_etf_aw_target_weight_partitions(lakehouse_root=lakehouse_root)
+    if frame.empty:
+        return None
+    frame = _normalize_target_weight_frame(frame)
+    if as_of_date is not None and not frame.empty:
+        frame = frame[frame["rebalance_date"] <= as_of_date].copy()
+    frame = _filter_target_weight_strategy(
+        frame,
+        calendar_name=calendar_name,
+        strategy_name=strategy_name,
+        strategy_version=strategy_version,
+    )
+    if frame.empty:
+        return None
+    dates = frame["rebalance_date"].dropna().tolist()
+    if not dates:
+        return None
+    latest_date = max(dates)
+    latest = frame[frame["rebalance_date"] == latest_date].copy()
+    latest = _sort_target_weight_rows(latest)
+    latest = latest.drop_duplicates(
+        [
+            "calendar_name",
+            "rebalance_date",
+            "strategy_name",
+            "strategy_version",
+            "sleeve_code",
+        ],
+        keep="last",
+    )
+    groups = [
+        group
+        for _, group in latest.groupby(
+            ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+            sort=True,
+        )
+    ]
+    if len(groups) != 1:
+        return None
+    return _target_weight_contract(groups[0])
+
+
+def list_etf_aw_target_weights(
+    start: date,
+    end: date,
+    *,
+    calendar_name: str | None = None,
+    strategy_name: str | None = None,
+    strategy_version: str | None = None,
+    lakehouse_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return ETF all-weather target weights in a rebalance-date window."""
+
+    if start > end:
+        start, end = end, start
+    frame = _read_etf_aw_target_weight_partitions(
+        start=start,
+        end=end,
+        lakehouse_root=lakehouse_root,
+    )
+    if frame.empty:
+        return []
+    frame = _normalize_target_weight_frame(frame)
+    frame = frame[frame["rebalance_date"].between(start, end, inclusive="both")]
+    frame = _filter_target_weight_strategy(
+        frame,
+        calendar_name=calendar_name,
+        strategy_name=strategy_name,
+        strategy_version=strategy_version,
+    )
+    frame = _sort_target_weight_rows(frame)
+    latest = frame.drop_duplicates(
+        [
+            "calendar_name",
+            "rebalance_date",
+            "strategy_name",
+            "strategy_version",
+            "sleeve_code",
+        ],
+        keep="last",
+    )
+    return [
+        _target_weight_contract(group)
+        for _, group in latest.groupby(
+            ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
+            sort=True,
+        )
+    ]
 
 
 def get_latest_etf_aw_market_features(
@@ -468,6 +614,32 @@ def _read_etf_aw_risk_budget_partitions(
     ):
         path = build_dataset_file_path(
             _ETF_AW_RISK_BUDGET_DATASET,
+            StorageZone.DERIVED,
+            [("year", year), ("month", f"{month:02d}")],
+            lakehouse_root=lakehouse_root,
+        )
+        if path.exists():
+            frames.append(pd.read_parquet(path))
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
+def _read_etf_aw_target_weight_partitions(
+    start: date | None = None,
+    end: date | None = None,
+    *,
+    lakehouse_root: Path | None = None,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for year, month in _dataset_months(
+        _ETF_AW_TARGET_WEIGHT_DATASET,
+        start,
+        end,
+        lakehouse_root=lakehouse_root,
+    ):
+        path = build_dataset_file_path(
+            _ETF_AW_TARGET_WEIGHT_DATASET,
             StorageZone.DERIVED,
             [("year", year), ("month", f"{month:02d}")],
             lakehouse_root=lakehouse_root,
@@ -738,6 +910,95 @@ def _normalize_risk_budget_frame(frame: pd.DataFrame) -> pd.DataFrame:
         )
     ].copy()
     return normalized
+
+
+def _normalize_target_weight_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    required = {
+        "schema_version",
+        "contract_version",
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_code",
+        "sleeve_role",
+        "risk_budget",
+        "volatility_estimate",
+        "volatility_floor",
+        "raw_target_weight",
+        "constrained_target_weight",
+        "target_weight",
+        "target_weight_status",
+        "optimizer_name",
+        "optimizer_basis",
+        "quality_notes_json",
+    }
+    if not required.issubset(frame.columns):
+        return pd.DataFrame()
+    normalized = frame.copy()
+    normalized["rebalance_date"] = _normalize_date_series(normalized["rebalance_date"])
+    for column in (
+        "effective_date",
+        "source_risk_budget_rebalance_date",
+        "source_sleeve_daily_max_trade_date",
+    ):
+        if column in normalized.columns:
+            normalized[column] = _normalize_date_series(normalized[column])
+    normalized = normalized.dropna(subset=["rebalance_date"])
+    normalized = normalized[
+        (
+            normalized["schema_version"].astype(str)
+            == _ETF_AW_TARGET_WEIGHT_SCHEMA_VERSION
+        )
+        & (
+            normalized["contract_version"].astype(str)
+            == _ETF_AW_TARGET_WEIGHT_CONTRACT_VERSION
+        )
+    ].copy()
+    return normalized
+
+
+def _filter_target_weight_strategy(
+    frame: pd.DataFrame,
+    *,
+    calendar_name: str | None,
+    strategy_name: str | None,
+    strategy_version: str | None,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    filtered = frame
+    if calendar_name is not None:
+        filtered = filtered[filtered["calendar_name"].astype(str) == calendar_name]
+    if strategy_name is not None:
+        filtered = filtered[filtered["strategy_name"].astype(str) == strategy_name]
+    if strategy_version is not None:
+        filtered = filtered[
+            filtered["strategy_version"].astype(str) == strategy_version
+        ]
+    return filtered.copy()
+
+
+def _sort_target_weight_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    sorted_frame = frame.copy()
+    if "ingested_at" in sorted_frame.columns:
+        sorted_frame["ingested_at"] = pd.to_datetime(
+            sorted_frame["ingested_at"], errors="coerce"
+        )
+    else:
+        sorted_frame["ingested_at"] = pd.NaT
+    return sorted_frame.sort_values(
+        [
+            "rebalance_date",
+            "calendar_name",
+            "strategy_name",
+            "strategy_version",
+            "sleeve_code",
+            "ingested_at",
+        ]
+    )
 
 
 def _dataset_months(
@@ -1268,9 +1529,7 @@ def _strategy_context_contract(row: pd.Series) -> dict[str, Any]:
 
 
 def _risk_budget_contract(frame: pd.DataFrame) -> dict[str, Any]:
-    ordered = frame.copy()
-    ordered["sleeve_role_order"] = ordered["sleeve_role"].map(ETF_AW_ROLE_RANK)
-    ordered = ordered.sort_values(["sleeve_role_order", "sleeve_role"])
+    ordered = frame.sort_values("sleeve_role", key=_etf_aw_role_sort_key)
     first = ordered.iloc[0]
     base_sum = float(ordered["base_budget"].astype(float).sum())
     tilted_sum = float(ordered["tilted_budget"].astype(float).sum())
@@ -1309,6 +1568,99 @@ def _risk_budget_sleeve_contract(row: pd.Series) -> dict[str, Any]:
         "tilted_budget": _optional_float(row.get("tilted_budget")),
         "budget_status": _optional_text(row.get("budget_status")),
         "quality_notes": _quality_notes(row.get("quality_notes_json")),
+    }
+
+
+def _target_weight_contract(frame: pd.DataFrame) -> dict[str, Any]:
+    ordered = frame.sort_values("sleeve_role", key=_etf_aw_role_sort_key)
+    first = ordered.iloc[0]
+    return {
+        "schema_version": _ETF_AW_TARGET_WEIGHT_SCHEMA_VERSION,
+        "contract_version": _ETF_AW_TARGET_WEIGHT_CONTRACT_VERSION,
+        "calendar_name": _optional_text(first.get("calendar_name")),
+        "rebalance_date": _date_text(first.get("rebalance_date")),
+        "effective_date": _date_text(first.get("effective_date")),
+        "strategy_name": _optional_text(first.get("strategy_name")),
+        "strategy_version": _optional_text(first.get("strategy_version")),
+        "target_weight_status": _target_weight_group_status(ordered),
+        "optimizer_name": _single_or_mixed_text(ordered["optimizer_name"]),
+        "optimizer_basis": _single_or_mixed_text(ordered["optimizer_basis"]),
+        "risk_budget_sum": round(float(ordered["risk_budget"].astype(float).sum()), 6),
+        "raw_target_weight_sum": round(
+            float(ordered["raw_target_weight"].astype(float).sum()), 6
+        ),
+        "constrained_target_weight_sum": round(
+            float(ordered["constrained_target_weight"].astype(float).sum()), 6
+        ),
+        "target_weight_sum": round(
+            float(ordered["target_weight"].astype(float).sum()), 6
+        ),
+        "weights": [
+            _target_weight_sleeve_contract(row) for _, row in ordered.iterrows()
+        ],
+        "quality_notes": _target_weight_group_quality_notes(ordered),
+        "source_risk_budget_rebalance_date": _date_text(
+            first.get("source_risk_budget_rebalance_date")
+        ),
+    }
+
+
+def _target_weight_group_status(frame: pd.DataFrame) -> str | None:
+    statuses = set(frame["target_weight_status"].dropna().astype(str).tolist())
+    if not statuses:
+        return None
+    if statuses == {"complete"}:
+        return "complete"
+    if "unavailable" in statuses:
+        return "unavailable"
+    if "missing" in statuses:
+        return "missing"
+    if "stale" in statuses:
+        return "stale"
+    return "partial"
+
+
+def _single_or_mixed_text(series: pd.Series) -> str | None:
+    values = sorted(set(series.dropna().astype(str).tolist()))
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else "mixed"
+
+
+def _target_weight_group_quality_notes(frame: pd.DataFrame) -> dict[str, Any]:
+    reasons: set[str] = set()
+    sleeves: dict[str, Any] = {}
+    for _, row in frame.iterrows():
+        notes = _quality_notes(row.get("quality_notes_json"))
+        for reason in notes.get("reasons", []):
+            reasons.add(str(reason))
+        sleeve_role = _optional_text(row.get("sleeve_role"))
+        if sleeve_role is not None:
+            sleeves[sleeve_role] = notes
+    return {
+        "reasons": sorted(reasons),
+        "sleeves": sleeves,
+    }
+
+
+def _target_weight_sleeve_contract(row: pd.Series) -> dict[str, Any]:
+    return {
+        "sleeve_code": _optional_text(row.get("sleeve_code")),
+        "sleeve_role": _optional_text(row.get("sleeve_role")),
+        "risk_budget": _optional_float(row.get("risk_budget")),
+        "volatility_estimate": _optional_float(row.get("volatility_estimate")),
+        "volatility_floor": _optional_float(row.get("volatility_floor")),
+        "raw_target_weight": _optional_float(row.get("raw_target_weight")),
+        "constrained_target_weight": _optional_float(
+            row.get("constrained_target_weight")
+        ),
+        "target_weight": _optional_float(row.get("target_weight")),
+        "target_weight_status": _optional_text(row.get("target_weight_status")),
+        "turnover_estimate": _optional_float(row.get("turnover_estimate")),
+        "quality_notes": _quality_notes(row.get("quality_notes_json")),
+        "source_sleeve_daily_max_trade_date": _date_text(
+            row.get("source_sleeve_daily_max_trade_date")
+        ),
     }
 
 
