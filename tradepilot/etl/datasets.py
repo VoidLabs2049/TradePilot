@@ -497,7 +497,10 @@ def build_derived_etf_aw_monthly_explainability_dataset() -> DatasetDefinition:
         timing_semantics=(
             "Dashboard-facing monthly explanation layer built from frozen "
             "strategy context, risk budget, target weight, and backtest kernel "
-            "artifacts. It emits no trade actions or rebalance plan fields."
+            "artifacts within the same rebalance cycle. Business key is "
+            "calendar_name + rebalance_date + strategy_name + strategy_version; "
+            "year_month partitions are derived from rebalance_date. It emits no "
+            "trade actions or rebalance plan fields."
         ),
         validation_rule_names=[
             "monthly_explainability.duplicate_business_key",

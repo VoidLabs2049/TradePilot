@@ -90,6 +90,12 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
         self.assertEqual(len(frame), 1)
         row = frame.iloc[0]
         self.assertEqual(row["market_regime_label"], "risk_on")
+        self.assertEqual(row["source_context_strategy_version"], "stage_g_v1")
+        self.assertEqual(row["source_risk_budget_strategy_version"], "risk_budget_v1")
+        self.assertEqual(
+            row["source_target_weight_strategy_version"],
+            "target_weight_inverse_vol_v1",
+        )
         self.assertTrue(bool(row["macro_rates_missing"]))
         self.assertEqual(row["risk_budget_status"], "partial")
         self.assertEqual(row["target_weight_status"], "partial")
@@ -101,6 +107,92 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
         self.assertTrue(constraints["no_trade_band_triggered"])
         target = json.loads(row["target_weight_explanation_json"])
         self.assertEqual(len(target["weights"]), 5)
+
+    def test_monthly_explainability_ignores_other_context_strategy_version(
+        self,
+    ) -> None:
+        rebalance_date = date(2024, 7, 22)
+        context = self._context_row(rebalance_date)
+        other_context = self._context_row(rebalance_date)
+        other_context["strategy_version"] = "experimental_context_v2"
+        other_context["market_regime_label"] = "defensive"
+        other_context["ingested_at"] = pd.Timestamp("2024-07-22 16:00:00")
+
+        frame = self.service._make_etf_aw_monthly_explainability_frame(
+            strategy_context=pd.DataFrame([context, other_context]),
+            risk_budget=pd.DataFrame(
+                [
+                    self._budget_row(rebalance_date, role)
+                    for role in ETF_AW_SLEEVE_ROLE_ORDER
+                ]
+            ),
+            target_weight=pd.DataFrame(
+                [
+                    self._target_weight_row(rebalance_date, role)
+                    for role in ETF_AW_SLEEVE_ROLE_ORDER
+                ]
+            ),
+            backtest_kernel=pd.DataFrame([self._turnover_row(rebalance_date)]),
+        )
+
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(frame.iloc[0]["market_regime_label"], "risk_on")
+        self.assertEqual(frame.iloc[0]["source_context_strategy_version"], "stage_g_v1")
+
+    def test_monthly_explainability_missing_required_columns_returns_empty(
+        self,
+    ) -> None:
+        rebalance_date = date(2024, 7, 22)
+        context = pd.DataFrame([self._context_row(rebalance_date)]).drop(
+            columns=["ingested_at"]
+        )
+
+        frame = self.service._make_etf_aw_monthly_explainability_frame(
+            strategy_context=context,
+            risk_budget=pd.DataFrame(
+                [
+                    self._budget_row(rebalance_date, role)
+                    for role in ETF_AW_SLEEVE_ROLE_ORDER
+                ]
+            ),
+            target_weight=pd.DataFrame(
+                [
+                    self._target_weight_row(rebalance_date, role)
+                    for role in ETF_AW_SLEEVE_ROLE_ORDER
+                ]
+            ),
+            backtest_kernel=pd.DataFrame([self._turnover_row(rebalance_date)]),
+        )
+
+        self.assertTrue(frame.empty)
+
+    def test_monthly_explainability_requires_backtest_rebalance_evidence(
+        self,
+    ) -> None:
+        rebalance_date = date(2024, 7, 22)
+        metric_row = self._turnover_row(rebalance_date)
+        metric_row["observation_type"] = "metric"
+        metric_row["metric_name"] = "total_return"
+        metric_row["quality_notes_json"] = "{}"
+
+        frame = self.service._make_etf_aw_monthly_explainability_frame(
+            strategy_context=pd.DataFrame([self._context_row(rebalance_date)]),
+            risk_budget=pd.DataFrame(
+                [
+                    self._budget_row(rebalance_date, role)
+                    for role in ETF_AW_SLEEVE_ROLE_ORDER
+                ]
+            ),
+            target_weight=pd.DataFrame(
+                [
+                    self._target_weight_row(rebalance_date, role)
+                    for role in ETF_AW_SLEEVE_ROLE_ORDER
+                ]
+            ),
+            backtest_kernel=pd.DataFrame([metric_row]),
+        )
+
+        self.assertTrue(frame.empty)
 
     def test_monthly_explainability_declares_frozen_artifact_dependencies(self) -> None:
         definition = build_derived_etf_aw_monthly_explainability_dataset()

@@ -220,6 +220,20 @@ strategy_context
 
 `2025-03-20` 曾有 5 行 `unavailable`。复核后确认根因不是波动率窗口不足，也不是状态传递仍为 `unavailable`，而是 risk budget 的 5 个 `tilted_budget` 四舍五入后合计为 `1.0000010000000001`，略超 target weight 上游校验的 `1e-6` 容忍线，导致整组预算被拒绝。现已把 risk budget rounding drift 固定压到最后一个 sleeve，重建后该期 target weight 为 `partial`。
 
+### Stage K：月度解释表
+
+已实现 `derived.etf_aw_monthly_explainability.build`：
+
+- 消费 frozen `derived.etf_aw_strategy_context`、`derived.etf_aw_risk_budget`、`derived.etf_aw_target_weight` 和 `derived.etf_aw_backtest_kernel`。
+- 每个 `calendar_name + rebalance_date + strategy_name + strategy_version` 输出一行解释。
+- `strategy_version` 采用 target weight 版本；同时显式输出 `source_context_strategy_version`、`source_risk_budget_strategy_version` 和 `source_target_weight_strategy_version`，避免隐藏不同 artifact 版本组合。
+- `rebalance_date` 是业务日期和 `year_month` 分区来源。
+- 输出市场状态、macro/rates 是否缺失、risk budget 原因、target weight 原因、vol floor / cap / no-trade band 触发、目标权重换手、backtest turnover 和 diagnostics。
+- backtest 是强依赖：解释表只在同一 rebalance cycle 有 backtest turnover 或 diagnostic 证据时写出。
+- 不输出 `trade_action`、`order_instruction`、`rebalance_plan` 或任何真实交易计划字段。
+
+该层是进入 Dashboard / workflow insight 前的解释层，不是 baseline evaluation，也不是 rebalance plan。
+
 ## 资料库吸收边界
 
 ### 直接吸收
@@ -281,6 +295,7 @@ Tushare / project ETL
 -> derived.etf_aw_risk_budget
 -> derived.etf_aw_target_weight
 -> derived.etf_aw_backtest_kernel
+-> derived.etf_aw_monthly_explainability
 -> workflow context
 -> Dashboard snapshot panel
 ```
@@ -291,7 +306,7 @@ Tushare / project ETL
 artifact health check
 -> risk budget availability repair
 -> backtest evaluation report
--> monthly explainability report
+-> baseline comparison report
 -> shadow recommendation record
 ```
 
@@ -645,10 +660,11 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 8. 已明确 rebalance timing：V1 权重用于调仓日收盘后或次日人工执行，保留 `trade_date <= rebalance_date`；如果未来改为盘前执行，再切换为 `trade_date < rebalance_date` 并重建 artifact。
 9. 已按 `etf-aw-cli-design.md` 补齐 `build-risk-budget`、`health-check risk-budget`、`build-target-weight`、`health-check target-weight`、`backtest-kernel`、`backtest-report` 的命令边界。
 10. 已增加后端命令行回测报表 Phase 0，覆盖净值、回撤、指标、换手和 diagnostics 摘要。
-11. 增加 monthly explainability table 和后置 baseline comparison。
-12. 再评估是否引入 simplified ERC。
-13. 后端合同稳定后，再补前端页面或 Dashboard 面板。
-14. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
+11. 已增加 monthly explainability table，消费 frozen context / budget / weight / backtest artifact，并补齐 source version 追溯。
+12. 下一步做 backtest evaluation baseline comparison，baseline 必须先生成独立 frozen weight artifact，不能在 backtest loop 中临时调参。
+13. 再评估是否引入 simplified ERC。
+14. 后端合同稳定后，再补前端页面或 Dashboard 面板。
+15. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
 
 ## 非目标
 

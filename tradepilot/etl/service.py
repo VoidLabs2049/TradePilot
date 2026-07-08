@@ -5873,7 +5873,8 @@ def _make_etf_aw_monthly_explainability_frame(
     weights = _latest_weight_groups_by_rebalance(target_weight)
     turnover = _backtest_turnover_by_rebalance(backtest_kernel)
     diagnostics = _backtest_diagnostics_by_rebalance(backtest_kernel)
-    keys = sorted(set(context) & set(budget) & set(weights))
+    backtest_keys = set(turnover) | set(diagnostics)
+    keys = sorted(set(context) & set(budget) & set(weights) & backtest_keys)
     rows: list[dict[str, Any]] = []
     ingested_at = _utc_now()
     for key in keys:
@@ -5897,10 +5898,21 @@ def _make_etf_aw_monthly_explainability_frame(
 def _latest_context_by_rebalance(
     frame: pd.DataFrame,
 ) -> dict[tuple[str, date], pd.Series]:
-    if "rebalance_date" not in frame.columns:
+    required = {
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "ingested_at",
+    }
+    if not required.issubset(frame.columns):
         return {}
     context = _normalize_rebalance_date_frame(frame)
     context = context.dropna(subset=["calendar_name", "rebalance_date"])
+    context = context[
+        context["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+        & context["strategy_version"].astype(str).eq(_ETF_AW_STRATEGY_VERSION)
+    ].copy()
     if context.empty:
         return {}
     context = context.sort_values(["rebalance_date", "ingested_at"])
@@ -5914,7 +5926,14 @@ def _latest_context_by_rebalance(
 def _latest_budget_groups_by_rebalance(
     frame: pd.DataFrame,
 ) -> dict[tuple[str, date], pd.DataFrame]:
-    required = {"calendar_name", "rebalance_date", "sleeve_role"}
+    required = {
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_role",
+        "ingested_at",
+    }
     if not required.issubset(frame.columns):
         return {}
     budget = _normalize_rebalance_date_frame(frame)
@@ -5947,7 +5966,15 @@ def _latest_budget_groups_by_rebalance(
 def _latest_weight_groups_by_rebalance(
     frame: pd.DataFrame,
 ) -> dict[tuple[str, date], pd.DataFrame]:
-    required = {"calendar_name", "rebalance_date", "sleeve_code"}
+    required = {
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_code",
+        "sleeve_role",
+        "ingested_at",
+    }
     if not required.issubset(frame.columns):
         return {}
     weights = _normalize_rebalance_date_frame(frame)
@@ -5982,16 +6009,28 @@ def _backtest_turnover_by_rebalance(
 ) -> dict[tuple[str, date], float | None]:
     required = {
         "calendar_name",
+        "strategy_name",
+        "strategy_version",
         "observation_type",
+        "observation_date",
         "metric_name",
+        "metric_value",
         "quality_notes_json",
+        "ingested_at",
     }
     if not required.issubset(frame.columns):
         return {}
-    turnover = frame[
-        frame["observation_type"].astype(str).eq("turnover")
-        & frame["metric_name"].astype(str).eq("monthly_turnover")
-    ]
+    kernel = frame[
+        frame["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+        & frame["strategy_version"]
+        .astype(str)
+        .eq(_ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION)
+    ].copy()
+    turnover = kernel[
+        kernel["observation_type"].astype(str).eq("turnover")
+        & kernel["metric_name"].astype(str).eq("monthly_turnover")
+    ].copy()
+    turnover = turnover.sort_values(["observation_date", "ingested_at"])
     result: dict[tuple[str, date], float | None] = {}
     for _, row in turnover.iterrows():
         notes = _json_object_or_value(row.get("quality_notes_json"))
@@ -6009,10 +6048,30 @@ def _backtest_turnover_by_rebalance(
 def _backtest_diagnostics_by_rebalance(
     frame: pd.DataFrame,
 ) -> dict[tuple[str, date], list[dict[str, Any]]]:
-    if "quality_notes_json" not in frame.columns:
+    required = {
+        "calendar_name",
+        "strategy_name",
+        "strategy_version",
+        "observation_type",
+        "observation_date",
+        "metric_name",
+        "quality_notes_json",
+        "ingested_at",
+    }
+    if not required.issubset(frame.columns):
         return {}
-    diagnostics = frame[frame["observation_type"].astype(str).eq("diagnostic")]
+    kernel = frame[
+        frame["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+        & frame["strategy_version"]
+        .astype(str)
+        .eq(_ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION)
+    ].copy()
+    diagnostics = kernel[kernel["observation_type"].astype(str).eq("diagnostic")].copy()
+    diagnostics = diagnostics.sort_values(
+        ["calendar_name", "observation_date", "metric_name", "ingested_at"]
+    )
     result: dict[tuple[str, date], list[dict[str, Any]]] = {}
+    seen: set[tuple[str, date, str]] = set()
     for _, row in diagnostics.iterrows():
         notes = _json_object_or_value(row.get("quality_notes_json"))
         if not isinstance(notes, dict):
@@ -6023,6 +6082,10 @@ def _backtest_diagnostics_by_rebalance(
         if rebalance_date is None:
             continue
         key = (str(row["calendar_name"]), rebalance_date)
+        item_key = (key[0], key[1], str(row["metric_name"]))
+        if item_key in seen:
+            continue
+        seen.add(item_key)
         result.setdefault(key, []).append(notes)
     return result
 
@@ -6057,6 +6120,15 @@ def _monthly_explainability_row(
         "rebalance_date": rebalance_date,
         "strategy_name": _ETF_AW_STRATEGY_NAME,
         "strategy_version": _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
+        "source_context_strategy_version": _optional_text(
+            context_row.get("strategy_version")
+        ),
+        "source_risk_budget_strategy_version": _optional_text(
+            budget_group.iloc[0].get("strategy_version")
+        ),
+        "source_target_weight_strategy_version": _optional_text(
+            weight_group.iloc[0].get("strategy_version")
+        ),
         "market_regime_label": _optional_text(context_row.get("market_regime_label")),
         "market_state_summary": _market_state_summary(context_row),
         "context_status": _optional_text(context_row.get("context_status")),
@@ -6176,14 +6248,21 @@ def _target_weight_constraint_flags(frame: pd.DataFrame) -> dict[str, Any]:
             no_trade_roles.append(role)
     return {
         "vol_floor_triggered": bool(floor_roles),
-        "vol_floor_roles": sorted(set(floor_roles), key=ETF_AW_SLEEVE_ROLE_ORDER.index),
+        "vol_floor_roles": _sort_sleeve_roles(floor_roles),
         "cap_triggered": bool(cap_roles),
-        "cap_roles": sorted(set(cap_roles), key=ETF_AW_SLEEVE_ROLE_ORDER.index),
+        "cap_roles": _sort_sleeve_roles(cap_roles),
         "no_trade_band_triggered": bool(no_trade_roles),
-        "no_trade_band_roles": sorted(
-            set(no_trade_roles), key=ETF_AW_SLEEVE_ROLE_ORDER.index
-        ),
+        "no_trade_band_roles": _sort_sleeve_roles(no_trade_roles),
     }
+
+
+def _sort_sleeve_roles(roles: Iterable[str]) -> list[str]:
+    frame = pd.DataFrame({"sleeve_role": sorted(set(roles))})
+    if frame.empty:
+        return []
+    return frame.sort_values("sleeve_role", key=etf_aw_role_sort_key)[
+        "sleeve_role"
+    ].tolist()
 
 
 def _budget_explanation(frame: pd.DataFrame) -> list[dict[str, Any]]:
@@ -6266,6 +6345,9 @@ def _validate_monthly_explainability_frame(frame: pd.DataFrame) -> dict[str, boo
         "rebalance_date",
         "strategy_name",
         "strategy_version",
+        "source_context_strategy_version",
+        "source_risk_budget_strategy_version",
+        "source_target_weight_strategy_version",
         "market_state_summary",
         "macro_rates_missing",
         "risk_budget_status",
