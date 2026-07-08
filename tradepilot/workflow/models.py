@@ -133,6 +133,39 @@ class WorkflowContextPayload(BaseModel):
     metadata: dict = Field(default_factory=dict)
 
 
+class EtfAwRiskBudgetSleeveResponse(BaseModel):
+    """One sleeve row in the ETF all-weather risk budget response."""
+
+    sleeve_role: str
+    base_budget: float | None = None
+    delta_budget: float | None = None
+    tilted_budget: float | None = None
+    budget_status: str | None = None
+    quality_notes: dict = Field(default_factory=dict)
+
+
+class EtfAwRiskBudgetResponse(BaseModel):
+    """Latest frozen ETF all-weather risk budget response."""
+
+    schema_version: str
+    contract_version: str
+    calendar_name: str | None = None
+    rebalance_date: str | None = None
+    strategy_name: str | None = None
+    strategy_version: str | None = None
+    market_regime_label: str | None = None
+    budget_status: str | None = None
+    budget_basis: str | None = None
+    confidence_score: float | None = None
+    effective_confidence_score: float | None = None
+    base_budget_sum: float | None = None
+    tilted_budget_sum: float | None = None
+    budgets: list[EtfAwRiskBudgetSleeveResponse] = Field(default_factory=list)
+    quality_notes: dict = Field(default_factory=dict)
+    source_strategy_context_rebalance_date: str | None = None
+    source_regime_rebalance_date: str | None = None
+
+
 class InsightSectionKey(StrEnum):
     """Standard section keys for The-One workflow insights."""
 
