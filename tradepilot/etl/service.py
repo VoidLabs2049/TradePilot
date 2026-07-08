@@ -4133,7 +4133,7 @@ def _stage_g_context_status(
     if macro_rates_context_status == "stale":
         return "stale", "not_ready"
     if macro_rates_context_status == "unavailable":
-        return "unavailable", "not_ready"
+        return "partial", "degraded_research"
     if market_context_status == "complete" and macro_rates_context_status == "complete":
         return "complete", "research_ready"
     return "partial", "degraded_research"
@@ -4534,7 +4534,9 @@ def _risk_budget_rows(
         raw_budget = dict(_ETF_AW_RISK_BUDGET_BASE)
         reasons.append("raw_budget_floor_breach")
     total = sum(raw_budget.values())
-    tilted = {role: round(value / total, 6) for role, value in raw_budget.items()}
+    tilted = _round_role_budgets(
+        {role: value / total for role, value in raw_budget.items()}
+    )
     notes = {
         "reasons": sorted(set(reasons)),
         "source_context_status": context_status,
@@ -4573,8 +4575,18 @@ def _risk_budget_rows(
             "delta_budget": round(delta[role], 6),
             "tilted_budget": tilted[role],
         }
-        for role in sorted(_ETF_AW_REQUIRED_ROLES)
+        for role in ETF_AW_SLEEVE_ROLE_ORDER
     ]
+
+
+def _round_role_budgets(budgets: dict[str, float]) -> dict[str, float]:
+    """Round sleeve budgets while keeping the monthly sum exactly stable."""
+
+    rounded = {role: round(budgets[role], 6) for role in ETF_AW_SLEEVE_ROLE_ORDER}
+    drift = round(1.0 - sum(rounded.values()), 6)
+    last_role = ETF_AW_SLEEVE_ROLE_ORDER[-1]
+    rounded[last_role] = round(rounded[last_role] + drift, 6)
+    return rounded
 
 
 def _risk_budget_decision(
@@ -4703,6 +4715,33 @@ def _validate_risk_budget_frame(frame: pd.DataFrame) -> dict[str, bool]:
     if frame.empty:
         return {
             "non_empty": False,
+            "missing_required_columns": False,
+            "no_duplicate_business_keys": False,
+            "five_roles_per_rebalance_date": False,
+            "budget_sums_valid": False,
+            "status_values_allowed": False,
+            "quality_notes_json": False,
+            "forbidden_fields_absent": False,
+            "point_in_time_sources": False,
+        }
+    required_columns = {
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_role",
+        "base_budget",
+        "delta_budget",
+        "tilted_budget",
+        "budget_status",
+        "quality_notes_json",
+        "source_strategy_context_rebalance_date",
+        "source_regime_rebalance_date",
+    }
+    if not required_columns.issubset(frame.columns):
+        return {
+            "non_empty": True,
+            "missing_required_columns": False,
             "no_duplicate_business_keys": False,
             "five_roles_per_rebalance_date": False,
             "budget_sums_valid": False,
@@ -5218,6 +5257,35 @@ def _validate_target_weight_frame(frame: pd.DataFrame) -> dict[str, bool]:
     if frame.empty:
         return {
             "non_empty": False,
+            "missing_required_columns": False,
+            "no_duplicate_business_keys": False,
+            "five_roles_per_rebalance_date": False,
+            "weight_sums_valid": False,
+            "status_values_allowed": False,
+            "quality_notes_json": False,
+            "forbidden_fields_absent": False,
+            "point_in_time_sources": False,
+            "caps_respected": False,
+        }
+    required_columns = {
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_code",
+        "sleeve_role",
+        "risk_budget",
+        "raw_target_weight",
+        "constrained_target_weight",
+        "target_weight",
+        "target_weight_status",
+        "quality_notes_json",
+        "source_risk_budget_rebalance_date",
+    }
+    if not required_columns.issubset(frame.columns):
+        return {
+            "non_empty": True,
+            "missing_required_columns": False,
             "no_duplicate_business_keys": False,
             "five_roles_per_rebalance_date": False,
             "weight_sums_valid": False,

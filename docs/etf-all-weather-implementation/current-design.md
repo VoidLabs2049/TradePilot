@@ -24,7 +24,9 @@ TradePilot ETF 全天候不是 ETF 涨跌预测器，而是低频风险配置系
 -> 月度 rebalance snapshot
 -> 市场状态/宏观利率上下文
 -> 策略上下文
--> 后续风险预算与组合建议
+-> 风险预算 artifact
+-> 目标权重 artifact
+-> 回测内核和后续评估
 -> Dashboard / workflow 展示
 ```
 
@@ -180,6 +182,44 @@ strategy_context
 
 当前前端主要展示 snapshot；strategy context 后续可作为 insight-first 面板的输入。
 
+### Stage H：前置回测内核
+
+已实现 `derived.etf_aw_backtest_kernel.build`：
+
+- 消费已经写出的月度目标权重 artifact。
+- 使用 `derived.etf_aw_sleeve_daily` 的 adjustment-aware 日频收益。
+- 输出 daily NAV、月度 turnover 和最小指标。
+- 缺少 `derived.etf_aw_target_weight` 时明确失败，不再静默回退等权。
+
+该层仍是开发期验收夹具，不承载完整策略评估叙事。baseline 对比、成本假设、参数扰动和 Dashboard 净值展示属于后置 evaluation 层。
+
+### Stage I：风险预算 artifact
+
+已实现 `derived.etf_aw_risk_budget.build` 和 read model：
+
+- 从 `derived.etf_aw_strategy_context` 生成 sleeve 级风险预算。
+- 保留 `base_risk_budget`、`tilted_risk_budget`、`risk_budget`、`confidence_score`、`budget_status` 和质量说明。
+- V1 使用规则式 regime/budget mapper，不使用机器学习分类器。
+- 输出 frozen artifact，供 target weight 层消费。
+
+已定位历史区间 `unavailable` 的主因：早期月份 market regime 已可用，但 `macro_rates_context_status = unavailable`，Stage G 旧规则把整个 strategy context 硬降为 `unavailable`，risk budget 随之降级。现已把 market-only 且市场上下文完整的场景调整为 `partial / degraded_research`，risk budget 对应输出 `partial`，并用较低 confidence cap 约束主动 tilt。
+
+本地已补回 `macro.slow_fields`、`rates.daily_rates`、`rates.lpr` 的 2025-01 到 2026-05 历史数据；`rates.gov_curve_points` 因 Tushare `yc_cb` 接口权限不足仍只能覆盖 2026-04 以后。当前 risk budget 状态为 75 行 `partial`、10 行 `complete`。人工检查记录见 `docs/etf-all-weather-implementation/risk-budget-manual-check-2026-07-06.md`。
+
+### Stage J：目标权重 artifact
+
+已实现 `derived.etf_aw_target_weight.build` 和 read model：
+
+- 消费 frozen risk budget、sleeve daily 和 rebalance calendar。
+- 使用 `budgeted_inverse_vol` V1 优化器生成纸面目标权重。
+- 固定 63 日收益窗口、42 最小观测、vol floor、cash/non-cash cap、no-trade band 和换手估计。
+- 输出 raw target weight、constrained target weight、target weight、状态、来源日期和 explainability notes。
+- 已通过前置 backtest kernel 消费验证。
+
+人工检查记录见 `docs/etf-all-weather-implementation/target-weight-manual-check-2026-07-06.md`。当前 85 行目标权重中 10 行为 `complete`，75 行为 `partial`，0 行为 `unavailable`。其中 `partial` 主要来自上游 market-only risk budget 降级。
+
+`2025-03-20` 曾有 5 行 `unavailable`。复核后确认根因不是波动率窗口不足，也不是状态传递仍为 `unavailable`，而是 risk budget 的 5 个 `tilted_budget` 四舍五入后合计为 `1.0000010000000001`，略超 target weight 上游校验的 `1e-6` 容忍线，导致整组预算被拒绝。现已把 risk budget rounding drift 固定压到最后一个 sleeve，重建后该期 target weight 为 `partial`。
+
 ## 资料库吸收边界
 
 ### 直接吸收
@@ -238,6 +278,9 @@ Tushare / project ETL
 -> derived.etf_aw_regime_score
 -> derived.etf_aw_market_features
 -> derived.etf_aw_strategy_context
+-> derived.etf_aw_risk_budget
+-> derived.etf_aw_target_weight
+-> derived.etf_aw_backtest_kernel
 -> workflow context
 -> Dashboard snapshot panel
 ```
@@ -245,14 +288,10 @@ Tushare / project ETL
 ### 下一阶段新增层
 
 ```text
-strategy_context
--> backtest kernel acceptance fixture
--> regime/budget mapper
--> covariance estimator
--> budgeted risk parity or inverse-vol engine
--> target sleeve weights
--> rebalance threshold and cost filter
--> explainability table
+artifact health check
+-> risk budget availability repair
+-> backtest evaluation report
+-> monthly explainability report
 -> shadow recommendation record
 ```
 
@@ -277,7 +316,7 @@ strategy_context
 
 ### 回测内核验收夹具
 
-在实现 `derived.etf_aw_risk_budget` 前，应先冻结一个小型回测内核设计。
+已冻结并实现一个小型回测内核设计。
 
 该内核的输入只包括：
 
@@ -305,7 +344,7 @@ strategy_context
 
 ### 状态到预算
 
-V1 先使用规则映射，不使用机器学习分类器。
+V1 已使用规则映射，不使用机器学习分类器。
 
 建议输出：
 
@@ -354,9 +393,9 @@ V1 使用 `derived.etf_aw_sleeve_daily` 的 adjusted return：
 
 优先级：
 
-1. budgeted inverse-vol approximation
-2. simplified ERC / risk parity
-3. later: learnable ERC
+1. budgeted inverse-vol approximation。已实现为 V1。
+2. simplified ERC / risk parity。待 V1 数据质量稳定后再评估。
+3. later: learnable ERC。延后。
 
 V1 输出必须包含 explainability：
 
@@ -596,22 +635,20 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 
 ## 近期执行顺序
 
-1. 冻结本文档为当前设计入口。
-2. 更新旧 `progress-status.md`，避免文档状态继续停留在 “schema not done”。已完成。
-3. 新增并冻结 `backtest-kernel-design.md`。已完成。
-4. 实现前置回测内核，先用等权 fixture 跑通。已完成最小版本。
-5. 新增并冻结 `backtest-evaluation-design.md`，先收口命令行报表 MVP 和单策略可视化合同，完整基线对标留 Phase 2。
-6. 新增并冻结 `etf-aw-cli-design.md`。已完成。
-7. 新增并冻结 `risk-budget-design.md`。
-8. 继续推进风险预算估计：实现 `derived.etf_aw_risk_budget` schema、read model、规则式 mapper、健康检查和降级测试。
-9. 新增并冻结 `target-weight-design.md`。
-10. 实现 `derived.etf_aw_target_weight` 和 budgeted inverse-vol MVP，并用前置回测内核验收。
-11. 按 `etf-aw-cli-design.md` 接入 `build-risk-budget`、`health-check risk-budget`、`build-target-weight`、`health-check target-weight`、`backtest-kernel`、`backtest-report`。
-12. 增加后端命令行回测报表，覆盖净值、回撤、指标、换手和 diagnostics。
-13. 增加 monthly explainability table 和后置 baseline comparison。
-14. 再评估是否引入 simplified ERC。
-15. 后端合同稳定后，再补前端页面或 Dashboard 面板。
-16. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
+1. 在新分支 `feat/etf-aw-artifact-health-evaluation` 上推进 artifact health 和 evaluation 阶段。
+2. 更新本文档为当前事实入口，明确 Stage H/I/J 已落地，下一步从 artifact health check 开始。
+3. 已定位并修复 `derived.etf_aw_risk_budget` 多数月份为 `unavailable` 的主因：market-only 场景不再硬阻断，改为 `partial / degraded_research`。
+4. 已补充 2025-01 到 2026-05 的 PMI、SHIBOR、LPR 历史数据；国债曲线历史补数受 Tushare `yc_cb` 权限限制，仍需后续处理。
+5. 已重跑 `derived.etf_aw_strategy_context`、`derived.etf_aw_risk_budget`、`derived.etf_aw_target_weight` 和 `derived.etf_aw_backtest_kernel`。当前 risk budget 为 75 行 `partial`、10 行 `complete`。
+6. 补充 risk budget 人工检查记录，覆盖状态分布、预算合计、tilt 方向、confidence 生效方式和降级原因。已完成。
+7. 已复核并修复 `2025-03-20` target weight 为 `unavailable` 的原因：risk budget rounding drift 略超校验阈值，修复后为 `partial`。
+8. 已明确 rebalance timing：V1 权重用于调仓日收盘后或次日人工执行，保留 `trade_date <= rebalance_date`；如果未来改为盘前执行，再切换为 `trade_date < rebalance_date` 并重建 artifact。
+9. 已按 `etf-aw-cli-design.md` 补齐 `build-risk-budget`、`health-check risk-budget`、`build-target-weight`、`health-check target-weight`、`backtest-kernel`、`backtest-report` 的命令边界。
+10. 已增加后端命令行回测报表 Phase 0，覆盖净值、回撤、指标、换手和 diagnostics 摘要。
+11. 增加 monthly explainability table 和后置 baseline comparison。
+12. 再评估是否引入 simplified ERC。
+13. 后端合同稳定后，再补前端页面或 Dashboard 面板。
+14. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
 
 ## 非目标
 

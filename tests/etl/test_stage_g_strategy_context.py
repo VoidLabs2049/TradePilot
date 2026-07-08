@@ -121,7 +121,7 @@ class StageGStrategyContextTests(unittest.TestCase):
         self.assertNotIn("trade_action", row.index)
         self.assertNotIn("order_instruction", row.index)
 
-    def test_missing_primary_rates_makes_context_unavailable(self) -> None:
+    def test_missing_primary_rates_keeps_market_only_context_partial(self) -> None:
         self._run_pipeline(self._complete_rows())
 
         self.service.run_bootstrap(
@@ -131,8 +131,8 @@ class StageGStrategyContextTests(unittest.TestCase):
         )
 
         row = self._read_context_file(2024, 7).iloc[0]
-        self.assertEqual(row["context_status"], "unavailable")
-        self.assertEqual(row["readiness_level"], "not_ready")
+        self.assertEqual(row["context_status"], "partial")
+        self.assertEqual(row["readiness_level"], "degraded_research")
         self.assertEqual(row["context_basis"], "market_only")
         self.assertEqual(row["market_context_status"], "complete")
         self.assertEqual(row["macro_rates_context_status"], "unavailable")

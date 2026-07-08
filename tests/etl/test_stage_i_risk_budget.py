@@ -94,6 +94,51 @@ class StageIRiskBudgetTests(unittest.TestCase):
         notes = json.loads(frame.iloc[0]["quality_notes_json"])
         self.assertIn("low_or_missing_confidence", notes["reasons"])
 
+    def test_market_only_context_outputs_partial_budget_with_capped_confidence(
+        self,
+    ) -> None:
+        row = self._context_row(date(2024, 7, 22), "partial", "degraded_research")
+        row["context_basis"] = "market_only"
+        row["macro_rates_context_status"] = "unavailable"
+        self._write_strategy_context(row)
+        self._write_regime(self._regime_row(date(2024, 7, 22), "risk_on", 0.80))
+
+        self.service.run_bootstrap(
+            "derived.etf_aw_risk_budget.build",
+            start=date(2024, 7, 1),
+            end=date(2024, 7, 31),
+        )
+
+        frame = self._read_budget_file(2024, 7)
+        self.assertEqual(set(frame["budget_status"]), {"partial"})
+        by_role = frame.set_index("sleeve_role")
+        self.assertEqual(by_role.loc["equity_large", "tilted_budget"], 0.2175)
+        self.assertEqual(by_role.loc["equity_small", "tilted_budget"], 0.2175)
+        self.assertEqual(by_role.loc["cash", "tilted_budget"], 0.1825)
+        notes = json.loads(by_role.loc["equity_large", "quality_notes_json"])
+        self.assertEqual(notes["effective_confidence_score"], 0.35)
+        self.assertIn("strategy_context_partial", notes["reasons"])
+        self.assertEqual(notes["macro_rates_context_status"], "unavailable")
+
+    def test_budget_rounding_keeps_downstream_sum_within_tolerance(self) -> None:
+        self._write_strategy_context(
+            self._context_row(date(2025, 3, 20), "partial", "degraded_research")
+        )
+        self._write_regime(self._regime_row(date(2025, 3, 20), "hedge_bid", 0.31425))
+
+        self.service.run_bootstrap(
+            "derived.etf_aw_risk_budget.build",
+            start=date(2025, 3, 1),
+            end=date(2025, 3, 31),
+        )
+
+        frame = self._read_budget_file(2025, 3)
+        self.assertLessEqual(abs(float(frame["tilted_budget"].sum()) - 1.0), 1e-6)
+        self.assertEqual(
+            frame.sort_values("sleeve_role")["sleeve_role"].tolist(),
+            ["bond", "cash", "equity_large", "equity_small", "gold"],
+        )
+
     def test_future_source_date_fails_point_in_time_validation(self) -> None:
         frame = self.service._make_etf_aw_risk_budget_frame(
             pd.DataFrame(
