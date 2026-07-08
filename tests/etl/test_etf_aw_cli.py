@@ -108,6 +108,75 @@ class EtfAwCliTests(unittest.TestCase):
                 self._backtest_row(
                     "metric", date(2024, 7, 22), "total_return", 0.01, None
                 ),
+                self._backtest_row(
+                    "metric",
+                    date(2024, 7, 22),
+                    "max_drawdown",
+                    -0.02,
+                    None,
+                ),
+                self._backtest_row(
+                    "metric",
+                    date(2024, 7, 22),
+                    "annualized_volatility",
+                    0.12,
+                    None,
+                ),
+                self._backtest_row(
+                    "daily_nav",
+                    date(2024, 7, 22),
+                    "net_value",
+                    1.005,
+                    1.005,
+                    strategy_name="static_inverse_vol",
+                    strategy_version="static_inverse_vol_v1",
+                    weight_source_type="baseline_weight",
+                    source_weight_dataset="derived.etf_aw_baseline_weight",
+                ),
+                self._backtest_row(
+                    "turnover",
+                    date(2024, 7, 22),
+                    "monthly_turnover",
+                    0.0,
+                    None,
+                    strategy_name="static_inverse_vol",
+                    strategy_version="static_inverse_vol_v1",
+                    weight_source_type="baseline_weight",
+                    source_weight_dataset="derived.etf_aw_baseline_weight",
+                ),
+                self._backtest_row(
+                    "metric",
+                    date(2024, 7, 22),
+                    "total_return",
+                    0.005,
+                    None,
+                    strategy_name="static_inverse_vol",
+                    strategy_version="static_inverse_vol_v1",
+                    weight_source_type="baseline_weight",
+                    source_weight_dataset="derived.etf_aw_baseline_weight",
+                ),
+                self._backtest_row(
+                    "metric",
+                    date(2024, 7, 22),
+                    "max_drawdown",
+                    -0.03,
+                    None,
+                    strategy_name="static_inverse_vol",
+                    strategy_version="static_inverse_vol_v1",
+                    weight_source_type="baseline_weight",
+                    source_weight_dataset="derived.etf_aw_baseline_weight",
+                ),
+                self._backtest_row(
+                    "metric",
+                    date(2024, 7, 22),
+                    "annualized_volatility",
+                    0.10,
+                    None,
+                    strategy_name="static_inverse_vol",
+                    strategy_version="static_inverse_vol_v1",
+                    weight_source_type="baseline_weight",
+                    source_weight_dataset="derived.etf_aw_baseline_weight",
+                ),
             ]
         )
         write_dataset_parquet(
@@ -140,6 +209,11 @@ class EtfAwCliTests(unittest.TestCase):
         self.assertEqual(payload["strategy_name"], "etf_aw_v1")
         self.assertEqual(payload["daily_nav_rows"], 1)
         self.assertEqual(payload["metrics"]["total_return"], 0.01)
+        self.assertEqual(len(payload["strategies"]), 2)
+        self.assertAlmostEqual(payload["comparison"]["total_return_diff"], 0.005)
+        self.assertAlmostEqual(
+            payload["comparison"]["annualized_volatility_diff"], 0.02
+        )
 
     def _context_row(self, rebalance_date: date) -> dict:
         return {
@@ -241,12 +315,19 @@ class EtfAwCliTests(unittest.TestCase):
         metric_name: str,
         metric_value: float,
         net_value: float | None,
+        *,
+        strategy_name: str = "etf_aw_v1",
+        strategy_version: str = "target_weight_inverse_vol_v1",
+        weight_source_type: str = "target_weight",
+        source_weight_dataset: str = "derived.etf_aw_target_weight",
     ) -> dict:
         return {
             "schema_version": "etf_aw_backtest_kernel_v1",
             "calendar_name": "etf_aw_v1_monthly_post_20",
-            "strategy_name": "etf_aw_v1",
-            "strategy_version": "target_weight_inverse_vol_v1",
+            "strategy_name": strategy_name,
+            "strategy_version": strategy_version,
+            "weight_source_type": weight_source_type,
+            "source_weight_dataset": source_weight_dataset,
             "observation_type": observation_type,
             "observation_date": observation_date,
             "metric_name": metric_name,

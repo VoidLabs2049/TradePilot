@@ -479,6 +479,38 @@ def build_derived_etf_aw_backtest_kernel_dataset() -> DatasetDefinition:
             "reference.etf_aw_sleeves",
             "derived.etf_aw_sleeve_daily",
             "derived.etf_aw_target_weight",
+            "derived.etf_aw_baseline_weight",
+        ],
+    )
+
+
+def build_derived_etf_aw_baseline_weight_dataset() -> DatasetDefinition:
+    """Return the ETF all-weather static baseline weight definition."""
+
+    return DatasetDefinition(
+        dataset_name="derived.etf_aw_baseline_weight",
+        category=DatasetCategory.DERIVED,
+        grain="calendar_rebalance_baseline_sleeve",
+        primary_source="derived",
+        storage_zone=StorageZone.DERIVED,
+        partition_strategy="year_month",
+        canonical_schema_name="etf_aw_baseline_weight_v1",
+        timing_semantics=(
+            "Frozen static inverse-vol baseline weights generated before "
+            "backtest evaluation. Incomplete vectors are not written."
+        ),
+        validation_rule_names=[
+            "baseline_weight.duplicate_business_key",
+            "baseline_weight.five_roles_per_rebalance_date",
+            "baseline_weight.weight_sums",
+            "baseline_weight.no_partial_rows",
+            "baseline_weight.quality_notes_json",
+            "baseline_weight.no_trade_fields",
+        ],
+        dependencies=[
+            "reference.rebalance_calendar",
+            "reference.etf_aw_sleeves",
+            "derived.etf_aw_sleeve_daily",
         ],
     )
 
@@ -707,6 +739,7 @@ def build_stage_b_datasets() -> list[DatasetDefinition]:
         build_derived_etf_aw_strategy_context_dataset(),
         build_derived_etf_aw_risk_budget_dataset(),
         build_derived_etf_aw_target_weight_dataset(),
+        build_derived_etf_aw_baseline_weight_dataset(),
         build_derived_etf_aw_backtest_kernel_dataset(),
         build_derived_etf_aw_monthly_explainability_dataset(),
         build_macro_slow_fields_dataset(),

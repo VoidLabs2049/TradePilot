@@ -67,6 +67,10 @@ class StageHBacktestKernelTests(unittest.TestCase):
         self.assertIn("daily_nav", set(frame["observation_type"]))
         self.assertIn("metric", set(frame["observation_type"]))
         self.assertIn("turnover", set(frame["observation_type"]))
+        self.assertEqual(set(frame["weight_source_type"]), {"target_weight"})
+        self.assertEqual(
+            set(frame["source_weight_dataset"]), {"derived.etf_aw_target_weight"}
+        )
         metrics = frame[frame["observation_type"] == "metric"]
         self.assertIn("max_drawdown", set(metrics["metric_name"]))
         self.assertIn("sharpe_ratio", set(metrics["metric_name"]))
@@ -100,6 +104,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
                     "calendar_name",
                     "strategy_name",
                     "strategy_version",
+                    "weight_source_type",
                     "observation_type",
                     "observation_date",
                     "metric_name",
@@ -120,7 +125,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
         self.assertEqual(result["status"], RunStatus.FAILED.value)
         self.assertEqual(
             result["error_message"],
-            "ETF all-weather target weight is missing",
+            "ETF all-weather target_weight is missing",
         )
 
     def test_duplicate_weight_rows_block_pure_kernel(self) -> None:

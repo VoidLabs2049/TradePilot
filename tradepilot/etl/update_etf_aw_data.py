@@ -56,6 +56,7 @@ _DERIVED_DATASET_COVERAGE = {
     "derived.etf_aw_strategy_context": (StorageZone.DERIVED, "rebalance_date"),
     "derived.etf_aw_risk_budget": (StorageZone.DERIVED, "rebalance_date"),
     "derived.etf_aw_target_weight": (StorageZone.DERIVED, "rebalance_date"),
+    "derived.etf_aw_baseline_weight": (StorageZone.DERIVED, "rebalance_date"),
     "derived.etf_aw_backtest_kernel": (StorageZone.DERIVED, "observation_date"),
     "derived.etf_aw_monthly_explainability": (StorageZone.DERIVED, "rebalance_date"),
 }
@@ -68,6 +69,7 @@ _DERIVED_PROFILES = (
     "derived.etf_aw_strategy_context.build",
     "derived.etf_aw_risk_budget.build",
     "derived.etf_aw_target_weight.build",
+    "derived.etf_aw_baseline_weight.build",
     "derived.etf_aw_backtest_kernel.build",
     "derived.etf_aw_monthly_explainability.build",
 )

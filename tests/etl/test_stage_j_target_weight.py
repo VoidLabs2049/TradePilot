@@ -496,6 +496,10 @@ class StageJTargetWeightTests(unittest.TestCase):
             set(frame["strategy_version"]),
             {"target_weight_inverse_vol_v1"},
         )
+        self.assertEqual(set(frame["weight_source_type"]), {"target_weight"})
+        self.assertEqual(
+            set(frame["source_weight_dataset"]), {"derived.etf_aw_target_weight"}
+        )
 
     def test_update_plan_runs_target_weight_after_risk_budget(self) -> None:
         conn = duckdb.connect(":memory:")
@@ -521,11 +525,20 @@ class StageJTargetWeightTests(unittest.TestCase):
             names.index("derived.etf_aw_risk_budget.build"),
             names.index("derived.etf_aw_target_weight.build"),
         )
+        self.assertLess(
+            names.index("derived.etf_aw_target_weight.build"),
+            names.index("derived.etf_aw_baseline_weight.build"),
+        )
+        self.assertLess(
+            names.index("derived.etf_aw_baseline_weight.build"),
+            names.index("derived.etf_aw_backtest_kernel.build"),
+        )
 
-    def test_backtest_kernel_declares_target_weight_dependency(self) -> None:
+    def test_backtest_kernel_declares_weight_dependencies(self) -> None:
         definition = build_derived_etf_aw_backtest_kernel_dataset()
 
         self.assertIn("derived.etf_aw_target_weight", definition.dependencies)
+        self.assertIn("derived.etf_aw_baseline_weight", definition.dependencies)
 
     def _budget_row(
         self, rebalance_date: date, sleeve_role: str, tilted_budget: float, status: str
