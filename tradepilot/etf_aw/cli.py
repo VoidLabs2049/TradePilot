@@ -23,6 +23,7 @@ from tradepilot.etl.service import (
 _RISK_BUDGET_PROFILE = "derived.etf_aw_risk_budget.build"
 _TARGET_WEIGHT_PROFILE = "derived.etf_aw_target_weight.build"
 _BACKTEST_KERNEL_PROFILE = "derived.etf_aw_backtest_kernel.build"
+_MONTHLY_EXPLAINABILITY_PROFILE = "derived.etf_aw_monthly_explainability.build"
 
 
 @click.group()
@@ -241,6 +242,35 @@ def backtest_kernel(
 
     _run_bootstrap_command(
         profile_name=_BACKTEST_KERNEL_PROFILE,
+        start=_parse_date(start_date, "start-date"),
+        end=_parse_date(end_date, "end-date"),
+        db_path=db_path,
+        lakehouse_root=lakehouse_root,
+    )
+
+
+@main.command("build-monthly-explainability")
+@click.option("--start-date", required=True, type=str)
+@click.option("--end-date", required=True, type=str)
+@click.option(
+    "--db-path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=DB_PATH,
+    show_default=True,
+)
+@click.option(
+    "--lakehouse-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=LAKEHOUSE_ROOT,
+    show_default=True,
+)
+def build_monthly_explainability(
+    start_date: str, end_date: str, db_path: Path, lakehouse_root: Path
+) -> None:
+    """Build the monthly explainability table from frozen artifacts."""
+
+    _run_bootstrap_command(
+        profile_name=_MONTHLY_EXPLAINABILITY_PROFILE,
         start=_parse_date(start_date, "start-date"),
         end=_parse_date(end_date, "end-date"),
         db_path=db_path,

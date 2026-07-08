@@ -483,6 +483,37 @@ def build_derived_etf_aw_backtest_kernel_dataset() -> DatasetDefinition:
     )
 
 
+def build_derived_etf_aw_monthly_explainability_dataset() -> DatasetDefinition:
+    """Return the ETF all-weather monthly explainability table definition."""
+
+    return DatasetDefinition(
+        dataset_name="derived.etf_aw_monthly_explainability",
+        category=DatasetCategory.DERIVED,
+        grain="calendar_rebalance_strategy_explanation",
+        primary_source="derived",
+        storage_zone=StorageZone.DERIVED,
+        partition_strategy="year_month",
+        canonical_schema_name="etf_aw_monthly_explainability_v1",
+        timing_semantics=(
+            "Dashboard-facing monthly explanation layer built from frozen "
+            "strategy context, risk budget, target weight, and backtest kernel "
+            "artifacts. It emits no trade actions or rebalance plan fields."
+        ),
+        validation_rule_names=[
+            "monthly_explainability.duplicate_business_key",
+            "monthly_explainability.required_columns",
+            "monthly_explainability.json_fields_valid",
+            "monthly_explainability.no_trade_fields",
+        ],
+        dependencies=[
+            "derived.etf_aw_strategy_context",
+            "derived.etf_aw_risk_budget",
+            "derived.etf_aw_target_weight",
+            "derived.etf_aw_backtest_kernel",
+        ],
+    )
+
+
 def build_macro_slow_fields_dataset() -> DatasetDefinition:
     """Return the Stage F slow macro fields dataset definition."""
 
@@ -674,6 +705,7 @@ def build_stage_b_datasets() -> list[DatasetDefinition]:
         build_derived_etf_aw_risk_budget_dataset(),
         build_derived_etf_aw_target_weight_dataset(),
         build_derived_etf_aw_backtest_kernel_dataset(),
+        build_derived_etf_aw_monthly_explainability_dataset(),
         build_macro_slow_fields_dataset(),
         build_rates_daily_rates_dataset(),
         build_rates_lpr_dataset(),
