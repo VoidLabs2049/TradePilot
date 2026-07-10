@@ -205,6 +205,42 @@ class StageHBacktestKernelTests(unittest.TestCase):
         notes = json.loads(frame.iloc[0]["quality_notes_json"])
         self.assertIn("missing_sleeve_return", notes["reasons"])
 
+    def test_blocked_kernel_diagnostic_uses_target_weight_strategy_cycle(
+        self,
+    ) -> None:
+        rebalance_date = date(2024, 1, 22)
+        rebalance = pd.DataFrame(
+            [
+                {
+                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "rebalance_date": rebalance_date,
+                }
+            ]
+        )
+        weights = self._equal_weights(rebalance_date)
+        weights["strategy_name"] = "etf_aw_v1"
+        weights["strategy_version"] = "target_weight_inverse_vol_v1"
+        panel = self._sleeve_daily_frame(rebalance_date, date(2024, 1, 31))
+        panel = panel[panel["sleeve_code"] != "518850.SH"].copy()
+
+        frame = self.service._make_etf_aw_backtest_kernel_frame(
+            panel=panel,
+            rebalance=rebalance,
+            weights=weights,
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+
+        self.assertEqual(set(frame["observation_type"]), {"diagnostic"})
+        self.assertEqual(frame.iloc[0]["strategy_name"], "etf_aw_v1")
+        self.assertEqual(
+            frame.iloc[0]["strategy_version"],
+            "target_weight_inverse_vol_v1",
+        )
+        self.assertEqual(frame.iloc[0]["observation_date"], rebalance_date)
+        notes = json.loads(frame.iloc[0]["quality_notes_json"])
+        self.assertEqual(notes["rebalance_date"], rebalance_date.isoformat())
+
     def test_rebalance_date_without_matching_trade_date_blocks_pure_kernel(
         self,
     ) -> None:

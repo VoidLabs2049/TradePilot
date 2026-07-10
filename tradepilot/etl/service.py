@@ -4391,9 +4391,7 @@ def _stage_g_context_status(
         return "unavailable", "not_ready"
     if market_context_status == "stale":
         return "stale", "not_ready"
-    if macro_rates_context_status == "stale":
-        return "stale", "not_ready"
-    if macro_rates_context_status == "unavailable":
+    if macro_rates_context_status in {"stale", "unavailable"}:
         return "partial", "degraded_research"
     if market_context_status == "complete" and macro_rates_context_status == "complete":
         return "complete", "research_ready"
@@ -4843,11 +4841,19 @@ def _risk_budget_rows(
 def _round_role_budgets(budgets: dict[str, float]) -> dict[str, float]:
     """Round sleeve budgets while keeping the monthly sum exactly stable."""
 
-    rounded = {role: round(budgets[role], 6) for role in ETF_AW_ROLE_ORDER}
-    drift = round(1.0 - sum(rounded.values()), 6)
-    last_role = ETF_AW_ROLE_ORDER[-1]
-    rounded[last_role] = round(rounded[last_role] + drift, 6)
-    return rounded
+    scale = 1_000_000
+    raw_units = {role: budgets[role] * scale for role in ETF_AW_ROLE_ORDER}
+    rounded_units = {role: math.floor(raw_units[role]) for role in ETF_AW_ROLE_ORDER}
+    remainder = scale - sum(rounded_units.values())
+    if remainder > 0:
+        roles = sorted(
+            ETF_AW_ROLE_ORDER,
+            key=lambda role: raw_units[role] - rounded_units[role],
+            reverse=True,
+        )
+        for role in roles[:remainder]:
+            rounded_units[role] += 1
+    return {role: rounded_units[role] / scale for role in ETF_AW_ROLE_ORDER}
 
 
 def _risk_budget_decision(
@@ -5946,11 +5952,32 @@ def _make_etf_aw_backtest_kernel_frame(
     """Build daily NAV, metric, and turnover rows for supplied monthly weights."""
 
     ingested_at = _utc_now()
+    calendar_name = _backtest_kernel_calendar_name(rebalance, weights)
+    strategy_name = _backtest_kernel_strategy_value(
+        weights, "strategy_name", _ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME
+    )
+    strategy_version = _backtest_kernel_strategy_value(
+        weights, "strategy_version", _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION
+    )
+    weight_source_type = _backtest_kernel_strategy_value(
+        weights, "weight_source_type", "target_weight"
+    )
+    source_weight_dataset = _backtest_kernel_strategy_value(
+        weights, "source_weight_dataset", _ETF_AW_TARGET_WEIGHT_DATASET
+    )
+    diagnostic_rebalance_dates = _backtest_diagnostic_rebalance_dates(
+        rebalance, weights, start
+    )
     diagnostics = _backtest_input_diagnostics(panel, rebalance, weights)
     if diagnostics["blocking"]:
         return _backtest_diagnostic_rows(
             diagnostics=diagnostics,
-            start=start,
+            calendar_name=calendar_name,
+            strategy_name=strategy_name,
+            strategy_version=strategy_version,
+            rebalance_dates=diagnostic_rebalance_dates,
+            weight_source_type=weight_source_type,
+            source_weight_dataset=source_weight_dataset,
             ingested_at=ingested_at,
         )
 
@@ -5975,7 +6002,12 @@ def _make_etf_aw_backtest_kernel_frame(
     if returns.empty:
         return _backtest_diagnostic_rows(
             diagnostics={"blocking": True, "reasons": ["no_daily_returns"]},
-            start=start,
+            calendar_name=calendar_name,
+            strategy_name=strategy_name,
+            strategy_version=strategy_version,
+            rebalance_dates=diagnostic_rebalance_dates,
+            weight_source_type=weight_source_type,
+            source_weight_dataset=source_weight_dataset,
             ingested_at=ingested_at,
         )
 
@@ -5988,31 +6020,6 @@ def _make_etf_aw_backtest_kernel_frame(
     previous_target: dict[str, float] | None = None
     monthly_returns: list[float] = []
     return_values: list[float] = []
-    calendar_name = str(weights["calendar_name"].dropna().iloc[0])
-    strategy_name = (
-        str(weights["strategy_name"].dropna().iloc[0])
-        if "strategy_name" in weights.columns
-        and not weights["strategy_name"].dropna().empty
-        else _ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME
-    )
-    strategy_version = (
-        str(weights["strategy_version"].dropna().iloc[0])
-        if "strategy_version" in weights.columns
-        and not weights["strategy_version"].dropna().empty
-        else _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION
-    )
-    weight_source_type = (
-        str(weights["weight_source_type"].dropna().iloc[0])
-        if "weight_source_type" in weights.columns
-        and not weights["weight_source_type"].dropna().empty
-        else "target_weight"
-    )
-    source_weight_dataset = (
-        str(weights["source_weight_dataset"].dropna().iloc[0])
-        if "source_weight_dataset" in weights.columns
-        and not weights["source_weight_dataset"].dropna().empty
-        else _ETF_AW_TARGET_WEIGHT_DATASET
-    )
 
     weight_by_date = {
         key: group.set_index("sleeve_code")["target_weight"].astype(float).to_dict()
@@ -6196,35 +6203,82 @@ def _backtest_input_diagnostics(
     }
 
 
+def _backtest_kernel_calendar_name(
+    rebalance: pd.DataFrame, weights: pd.DataFrame
+) -> str:
+    """Return the calendar name visible to backtest kernel diagnostics."""
+
+    if (
+        "calendar_name" in weights.columns
+        and not weights["calendar_name"].dropna().empty
+    ):
+        return str(weights["calendar_name"].dropna().iloc[0])
+    if (
+        "calendar_name" in rebalance.columns
+        and not rebalance["calendar_name"].dropna().empty
+    ):
+        return str(rebalance["calendar_name"].dropna().iloc[0])
+    return _REBALANCE_CALENDAR_NAME
+
+
+def _backtest_kernel_strategy_value(
+    weights: pd.DataFrame, column: str, fallback: str
+) -> str:
+    """Return the strategy value carried by target weights when available."""
+
+    if column in weights.columns and not weights[column].dropna().empty:
+        return str(weights[column].dropna().iloc[0])
+    return fallback
+
+
+def _backtest_diagnostic_rebalance_dates(
+    rebalance: pd.DataFrame, weights: pd.DataFrame, fallback: date
+) -> list[date]:
+    """Return rebalance-cycle dates for blocked backtest diagnostics."""
+
+    dates: set[date] = set()
+    for frame in (weights, rebalance):
+        if "rebalance_date" not in frame.columns:
+            continue
+        values = pd.to_datetime(frame["rebalance_date"], errors="coerce").dt.date
+        dates.update(value for value in values.dropna().tolist())
+    return sorted(dates) or [fallback]
+
+
 def _backtest_diagnostic_rows(
     *,
     diagnostics: dict[str, Any],
-    start: date,
+    calendar_name: str,
+    strategy_name: str,
+    strategy_version: str,
+    rebalance_dates: list[date],
     ingested_at: datetime,
     weight_source_type: str = "target_weight",
     source_weight_dataset: str = _ETF_AW_TARGET_WEIGHT_DATASET,
-    strategy_name: str = _ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME,
-    strategy_version: str = _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION,
 ) -> pd.DataFrame:
     """Return a validation-visible diagnostic row for blocked kernel inputs."""
 
     return pd.DataFrame(
         [
             _backtest_row(
-                calendar_name=_REBALANCE_CALENDAR_NAME,
+                calendar_name=calendar_name,
                 strategy_name=strategy_name,
                 strategy_version=strategy_version,
                 weight_source_type=weight_source_type,
                 source_weight_dataset=source_weight_dataset,
                 observation_type="diagnostic",
-                observation_date=start,
+                observation_date=rebalance_date,
                 metric_name="input_validation",
                 metric_value=None,
                 net_value=None,
                 portfolio_return=None,
-                quality_notes=diagnostics,
+                quality_notes={
+                    **diagnostics,
+                    "rebalance_date": rebalance_date.isoformat(),
+                },
                 ingested_at=ingested_at,
             )
+            for rebalance_date in rebalance_dates
         ]
     )
 

@@ -194,6 +194,35 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
 
         self.assertTrue(frame.empty)
 
+    def test_monthly_explainability_keeps_diagnostic_only_backtest_cycle(
+        self,
+    ) -> None:
+        rebalance_date = date(2024, 7, 22)
+
+        frame = self.service._make_etf_aw_monthly_explainability_frame(
+            strategy_context=pd.DataFrame([self._context_row(rebalance_date)]),
+            risk_budget=pd.DataFrame(
+                [
+                    self._budget_row(rebalance_date, role)
+                    for role in ETF_AW_SLEEVE_ROLE_ORDER
+                ]
+            ),
+            target_weight=pd.DataFrame(
+                [
+                    self._target_weight_row(rebalance_date, role)
+                    for role in ETF_AW_SLEEVE_ROLE_ORDER
+                ]
+            ),
+            backtest_kernel=pd.DataFrame([self._diagnostic_row(rebalance_date)]),
+        )
+
+        self.assertEqual(len(frame), 1)
+        diagnostics = json.loads(frame.iloc[0]["diagnostics_json"])
+        self.assertEqual(
+            diagnostics["backtest_diagnostics"][0]["reasons"],
+            ["missing_sleeve_return"],
+        )
+
     def test_monthly_explainability_declares_frozen_artifact_dependencies(self) -> None:
         definition = build_derived_etf_aw_monthly_explainability_dataset()
 
@@ -342,6 +371,29 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
                 {
                     "rebalance_date": rebalance_date.isoformat(),
                     "turnover_basis": "previous_target_weight",
+                },
+                sort_keys=True,
+            ),
+            "ingested_at": pd.Timestamp("2024-07-22 15:00:00"),
+        }
+
+    def _diagnostic_row(self, rebalance_date: date) -> dict:
+        return {
+            "schema_version": "etf_aw_backtest_kernel_v1",
+            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "strategy_name": "etf_aw_v1",
+            "strategy_version": "target_weight_inverse_vol_v1",
+            "observation_type": "diagnostic",
+            "observation_date": rebalance_date,
+            "metric_name": "input_validation",
+            "metric_value": None,
+            "net_value": None,
+            "portfolio_return": None,
+            "quality_notes_json": json.dumps(
+                {
+                    "blocking": True,
+                    "reasons": ["missing_sleeve_return"],
+                    "rebalance_date": rebalance_date.isoformat(),
                 },
                 sort_keys=True,
             ),
