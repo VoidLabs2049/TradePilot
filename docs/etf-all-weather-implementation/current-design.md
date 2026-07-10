@@ -277,6 +277,114 @@ strategy_context
 
 该阶段仍不新增 backtest read model、API 或前端多策略对比图。
 
+### Stage M：回测稳健性评估（设计中）
+
+下一阶段拟单独提交 `backtest-robustness-evaluation-design.md`，其设计范围为：
+
+- 先审计当前策略与 baseline 的真实 point-in-time 可比区间、调仓周期数、状态分布和缺失原因。
+- 保持 gross backtest kernel 不变，在 evaluation/report 层增加固定成本敏感性网格。
+- 明确 previous-target turnover、初始建仓成本不可观测和短样本 caveat。
+- 用扩展样本和成本后结果决定是否值得设计 simplified ERC。
+
+该阶段仍只建设后端 CLI 和 repo-visible 报告，不新增 read model、API、前端或交易动作。
+
+## 后续总流程
+
+以下 Stage M-R 是后续规划标签，不代表已经实现。每一阶段必须满足退出条件后才能进入下一阶段；如果决策门不通过，应回到明确的上游层生成新版本 artifact，不能在评估循环中临时调参。
+
+### 研发与交付主线
+
+```text
+Stage L 已完成：baseline artifact + 双 kernel + comparison report
+  -> Stage M1：point-in-time 历史覆盖审计
+  -> Stage M2：固定成本敏感性评估
+  -> 决策门 A：当前动态 risk budget 是否有稳健增量价值？
+       ├─ 数据覆盖不足
+       │    -> 补 point-in-time 数据或积累 forward research observation
+       │    -> 重建 frozen artifact
+       │    -> 回到 Stage M
+       ├─ 成本后优势不稳定
+       │    -> 当前 V1 保持 research-only，不进入 paper / shadow
+       │    -> 可选择复核 regime / risk-budget mapper、partial 状态和 confidence clamp
+       │    -> 如有规则变更，生成新的 strategy_version
+       │    -> 回到 risk budget -> target weight -> kernel -> Stage M
+       └─ 多区间、多成本场景下仍有一致改善
+            -> 批准当前 V1 strategy_version
+            -> 可选 Stage N：设计 simplified ERC candidate
+                 -> 为 candidate 生成独立 strategy_version / frozen target weight
+                 -> 使用同一个 kernel 和 Stage M 评估合同复测
+                 -> 决策门 B：candidate 是否相对当前 V1 有稳定增量？
+                      ├─ 否 -> 保留已批准的 budgeted_inverse_vol V1
+                      └─ 是 -> 批准并冻结 candidate strategy_version
+
+Stage M evaluation contract 稳定
+  -> Stage O：只读 evaluation read contract / API
+  -> Stage P：只读 Dashboard / workflow insight
+
+已批准 strategy_version + Stage P 可观察性稳定
+  -> Stage Q：paper rebalance plan
+  -> Stage R：shadow run / forward observation / post-mortem
+  -> 远期：小资金 live pilot（单独设计、单独授权）
+```
+
+### 阶段输入、输出和退出条件
+
+| 阶段 | 核心输入 | repo-visible 输出 | 退出条件 |
+| --- | --- | --- | --- |
+| Stage M | frozen strategy/baseline kernel、turnover、上游状态 | coverage + cost robustness Markdown/JSON report | gross 可复现、共同日期完整、成本场景可比、caveat 完整 |
+| 决策门 A | Stage M 报告 | 批准 V1、保持 research-only 或回修上游的书面结论 | 不以单一收益指标或当前 17 期样本自动批准策略 |
+| Stage N（条件式） | 已批准 V1、独立 risk budget / target weight candidate | 新 `strategy_version` 的 frozen artifact 与对比报告 | candidate 复用同一 kernel，且没有隐藏参数搜索 |
+| 决策门 B | V1、candidate、baseline 的同口径报告 | 保留 V1 或批准 candidate 的结论 | 风险调整后改善和换手/成本代价均被明确比较 |
+| Stage O | 稳定 evaluation report contract | read model、Pydantic response model、typed frontend contract | API 只读 artifact，不在请求时运行策略或回测 |
+| Stage P | Stage O read contract | 净值、回撤、指标、换手和 diagnostics 只读视图 | blocking diagnostic、`null` 指标和 caveat 可正确展示 |
+| Stage Q | 已批准版本的 frozen target weight、当前持仓、执行约束 | `derived.etf_aw_rebalance_plan` paper artifact | 最小交易单位、现金缓冲、no-trade band、成本过滤和人工确认边界稳定 |
+| Stage R | frozen plan、人工确认记录、后续市场数据 | shadow recommendation、forward observation、post-mortem | 不自动下单；每期建议、实际观察和偏差可追溯 |
+
+### 决策门约束
+
+1. Stage M 数据覆盖不足时，不能靠 inner join、未来数据回填或放宽 frozen vector 合同拉长样本。
+2. 当前策略成本后优势不稳定时，保持 research-only；可以建设只读 Stage O/P，但不能进入 Stage Q/R。
+3. simplified ERC 如被允许进入 Stage N，必须使用独立 `strategy_version`，不得覆盖 V1 target weight。
+4. Stage O/P 只能消费稳定 read contract；API 或前端不能触发 artifact 生成、参数搜索或回测运行。
+5. Stage Q 必须消费经决策门 A/B 明确批准的 `strategy_version`；rebalance plan 是 paper suggestion，不是订单，真实交易必须由用户人工判断。
+6. Stage R 只记录 shadow recommendation 和 forward result。任何 live pilot 都需要单独的数据、风控、执行和授权设计。
+
+### 未来日常运行流程
+
+Stage Q/R 尚未完成前，日常流程停在只读评估和人工判断：
+
+```text
+每日数据同步
+-> 数据质量与 watermark 检查
+-> 更新 sleeve daily、宏观/利率数据和适用的只读上下文
+-> 非调仓日：只更新上下文和只读观察结果
+-> 月度调仓日：冻结 risk budget
+-> risk budget health check
+-> 冻结 target weight
+-> target weight health check
+-> 更新 baseline（研究对比用途）
+-> 分别运行 strategy / baseline kernel
+-> Stage M robustness report
+-> 用户查看权重、历史表现、成本敏感性和 diagnostics
+-> 当前阶段由用户自行进行人工交易判断
+```
+
+Stage Q/R 完成后，月度链路才允许继续到：
+
+```text
+已批准且通过健康检查的 frozen target weight
+-> 读取当前持仓
+-> 生成 paper rebalance plan
+-> 执行约束与成本过滤
+-> 人工确认或拒绝
+-> 写入 shadow recommendation record
+-> forward observation
+-> post-mortem
+-> 下一调仓周期
+```
+
+这两条运行链都禁止自动下单。Dashboard 的职责是展示稳定 artifact、质量状态和 caveat，不承担策略计算或执行。
+
 ## 资料库吸收边界
 
 ### 直接吸收
@@ -337,23 +445,33 @@ Tushare / project ETL
 -> derived.etf_aw_strategy_context
 -> derived.etf_aw_risk_budget
 -> derived.etf_aw_target_weight
--> derived.etf_aw_backtest_kernel
+
+derived.etf_aw_sleeve_daily -> derived.etf_aw_baseline_weight
+
+target_weight artifact ---\
+                           -> derived.etf_aw_backtest_kernel -> backtest comparison report
+baseline_weight artifact --/
+
+strategy_context + risk_budget + target_weight + target kernel
 -> derived.etf_aw_monthly_explainability
 -> workflow context
 -> Dashboard snapshot panel
 ```
 
-### 下一阶段新增层
+### 后续目标层
 
 ```text
-artifact health check
--> risk budget availability repair
--> backtest evaluation report
--> baseline comparison report
--> shadow recommendation record
+coverage / cost robustness evaluation
+-> conditional strategy candidate comparison
+-> evaluation read contract / API
+-> read-only Dashboard / workflow insight
+-> paper rebalance plan
+-> shadow recommendation / forward observation / post-mortem
 ```
 
-新增层必须保留两个硬边界：
+具体阶段、决策门和回退方向以“后续总流程”为准。
+
+后续层必须保留以下硬边界：
 
 1. `strategy_context` 是输入上下文，不应包含目标权重或交易动作。
 2. `target_weight` 和 `trade_action` 必须来自后续明确命名的数据集，不能混入现有 Stage G 合同。
@@ -707,11 +825,14 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 10. 已增加后端命令行回测报表 Phase 0，覆盖净值、回撤、指标、换手和 diagnostics 摘要。
 11. 已增加 monthly explainability table，消费 frozen context / budget / weight / backtest artifact，并补齐 source version 追溯。
 12. 已完成 backtest evaluation baseline comparison：baseline 先生成独立 frozen weight artifact，再由同一个 kernel 分别运行策略和 baseline；旧 kernel 分区可原地升级来源字段。
-13. 再评估是否引入 simplified ERC。
-14. 已收束前端：`/etf-aw` 只作为 risk budget 只读观察面板，不继续扩展 UI。
-15. 后端 target weight 和 backtest 合同稳定后，再补前端目标权重、净值或 Dashboard 面板。
-16. 清理 ETF 全天候前端界面，保持只读、分区清晰、诊断可下钻，不把临时研究字段堆到主视图。
-17. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
+13. 下一步先单独提交 `backtest-robustness-evaluation-design.md`，再按其设计做历史覆盖审计和固定成本敏感性评估。
+14. 决策门 A 明确输出 approved 或 research-only；research-only 可以进入只读展示，但不能进入 paper / shadow。
+15. candidate 必须复用同一个 kernel 和 Stage M 评估合同，通过决策门 B 后才能晋级。
+16. evaluation 合同稳定后，再建设只读 read model、API 和 typed frontend contract。
+17. 前端只展示净值、回撤、指标、换手和 diagnostics，同时完成 `/etf-aw` 视觉清理；不提供策略运行或参数编辑入口。
+18. 只有 approved strategy_version、evaluation 和目标权重都稳定后，才新增 `rebalance-plan-design.md`，实现 paper rebalance plan 与人工确认边界。
+19. paper plan 稳定后，再新增 `shadow-run-design.md`，记录 recommendation、forward observation 和 post-mortem。
+20. 小资金 live pilot 属于远期单独阶段，不进入当前自动执行范围。
 
 ## 非目标
 
