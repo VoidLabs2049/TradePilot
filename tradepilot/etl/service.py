@@ -146,6 +146,9 @@ _ETF_AW_BACKTEST_KERNEL_DATASET = "derived.etf_aw_backtest_kernel"
 _ETF_AW_BACKTEST_KERNEL_SCHEMA_VERSION = "etf_aw_backtest_kernel_v1"
 _ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME = "equal_weight_fixture"
 _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION = "fixture_v1"
+_ETF_AW_MONTHLY_EXPLAINABILITY_PROFILE = "derived.etf_aw_monthly_explainability.build"
+_ETF_AW_MONTHLY_EXPLAINABILITY_DATASET = "derived.etf_aw_monthly_explainability"
+_ETF_AW_MONTHLY_EXPLAINABILITY_SCHEMA_VERSION = "etf_aw_monthly_explainability_v1"
 _ETF_AW_STRATEGY_NAME = "etf_aw_v1"
 _ETF_AW_STRATEGY_VERSION = "stage_g_v1"
 _ETF_AW_SLEEVE_DAILY_RETURN_LOOKBACK_DAYS = 31
@@ -548,6 +551,11 @@ class ETLService:
             )
         if profile_name == _ETF_AW_BACKTEST_KERNEL_PROFILE:
             return self._build_etf_aw_backtest_kernel(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        if profile_name == _ETF_AW_MONTHLY_EXPLAINABILITY_PROFILE:
+            return self._build_etf_aw_monthly_explainability(
                 start or _TRADING_CALENDAR_HISTORY_START,
                 end or date.today(),
             )
@@ -2629,6 +2637,123 @@ class ETLService:
             partition_date_column="observation_date",
         )
 
+    def _build_etf_aw_monthly_explainability(self, start: date, end: date) -> dict:
+        start, end = _ordered_dates(start, end)
+        context = self._read_partitioned_dataset(
+            _ETF_AW_STRATEGY_CONTEXT_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        risk_budget = self._read_partitioned_dataset(
+            _ETF_AW_RISK_BUDGET_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        target_weight = self._read_partitioned_dataset(
+            _ETF_AW_TARGET_WEIGHT_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        backtest = self._read_partitioned_dataset(
+            _ETF_AW_BACKTEST_KERNEL_DATASET,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        if context.empty or risk_budget.empty or target_weight.empty or backtest.empty:
+            return {
+                "profile_name": _ETF_AW_MONTHLY_EXPLAINABILITY_PROFILE,
+                "dataset_name": _ETF_AW_MONTHLY_EXPLAINABILITY_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather explainability inputs are missing",
+            }
+        explainability = self._make_etf_aw_monthly_explainability_frame(
+            strategy_context=context,
+            risk_budget=risk_budget,
+            target_weight=target_weight,
+            backtest_kernel=backtest,
+        )
+        if explainability.empty:
+            return {
+                "profile_name": _ETF_AW_MONTHLY_EXPLAINABILITY_PROFILE,
+                "dataset_name": _ETF_AW_MONTHLY_EXPLAINABILITY_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": "ETF all-weather explainability has no valid rebalance keys",
+            }
+        validation = _validate_monthly_explainability_frame(explainability)
+        if not all(validation.values()):
+            return {
+                "profile_name": _ETF_AW_MONTHLY_EXPLAINABILITY_PROFILE,
+                "dataset_name": _ETF_AW_MONTHLY_EXPLAINABILITY_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "validation": validation,
+                "error_message": "ETF all-weather explainability validation failed",
+            }
+        write_result = self._write_etf_aw_monthly_explainability(explainability)
+        return {
+            "profile_name": _ETF_AW_MONTHLY_EXPLAINABILITY_PROFILE,
+            "dataset_name": _ETF_AW_MONTHLY_EXPLAINABILITY_DATASET,
+            "status": RunStatus.SUCCESS.value,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "records_written": write_result.records_written,
+            "records_inserted": write_result.records_inserted,
+            "records_updated": write_result.records_updated,
+            "partitions_written": write_result.partitions_written,
+            "storage_paths": write_result.storage_paths,
+            "validation": validation,
+        }
+
+    def _make_etf_aw_monthly_explainability_frame(
+        self,
+        *,
+        strategy_context: pd.DataFrame,
+        risk_budget: pd.DataFrame,
+        target_weight: pd.DataFrame,
+        backtest_kernel: pd.DataFrame,
+    ) -> pd.DataFrame:
+        return _make_etf_aw_monthly_explainability_frame(
+            strategy_context=strategy_context,
+            risk_budget=risk_budget,
+            target_weight=target_weight,
+            backtest_kernel=backtest_kernel,
+        )
+
+    def _write_etf_aw_monthly_explainability(
+        self, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=_ETF_AW_MONTHLY_EXPLAINABILITY_DATASET,
+            zone=StorageZone.DERIVED,
+            canonical=canonical,
+            key_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+            ),
+            sort_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+                "ingested_at",
+            ),
+            partition_date_column="rebalance_date",
+        )
+
     def _bootstrap_rebalance_calendar_monthly_post_20(
         self, start: date, end: date
     ) -> dict:
@@ -4130,10 +4255,8 @@ def _stage_g_context_status(
         return "unavailable", "not_ready"
     if market_context_status == "stale":
         return "stale", "not_ready"
-    if macro_rates_context_status == "stale":
-        return "stale", "not_ready"
-    if macro_rates_context_status == "unavailable":
-        return "unavailable", "not_ready"
+    if macro_rates_context_status in {"stale", "unavailable"}:
+        return "partial", "degraded_research"
     if market_context_status == "complete" and macro_rates_context_status == "complete":
         return "complete", "research_ready"
     return "partial", "degraded_research"
@@ -4534,7 +4657,9 @@ def _risk_budget_rows(
         raw_budget = dict(_ETF_AW_RISK_BUDGET_BASE)
         reasons.append("raw_budget_floor_breach")
     total = sum(raw_budget.values())
-    tilted = {role: round(value / total, 6) for role, value in raw_budget.items()}
+    tilted = _round_role_budgets(
+        {role: value / total for role, value in raw_budget.items()}
+    )
     notes = {
         "reasons": sorted(set(reasons)),
         "source_context_status": context_status,
@@ -4575,6 +4700,24 @@ def _risk_budget_rows(
         }
         for role in ETF_AW_ROLE_ORDER
     ]
+
+
+def _round_role_budgets(budgets: dict[str, float]) -> dict[str, float]:
+    """Round sleeve budgets while keeping the monthly sum exactly stable."""
+
+    scale = 1_000_000
+    raw_units = {role: budgets[role] * scale for role in ETF_AW_ROLE_ORDER}
+    rounded_units = {role: math.floor(raw_units[role]) for role in ETF_AW_ROLE_ORDER}
+    remainder = scale - sum(rounded_units.values())
+    if remainder > 0:
+        roles = sorted(
+            ETF_AW_ROLE_ORDER,
+            key=lambda role: raw_units[role] - rounded_units[role],
+            reverse=True,
+        )
+        for role in roles[:remainder]:
+            rounded_units[role] += 1
+    return {role: rounded_units[role] / scale for role in ETF_AW_ROLE_ORDER}
 
 
 def _risk_budget_decision(
@@ -5349,6 +5492,35 @@ def _validate_target_weight_frame(frame: pd.DataFrame) -> dict[str, bool]:
     if frame.empty:
         return {
             "non_empty": False,
+            "missing_required_columns": False,
+            "no_duplicate_business_keys": False,
+            "five_roles_per_rebalance_date": False,
+            "weight_sums_valid": False,
+            "status_values_allowed": False,
+            "quality_notes_json": False,
+            "forbidden_fields_absent": False,
+            "point_in_time_sources": False,
+            "caps_respected": False,
+        }
+    required_columns = {
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_code",
+        "sleeve_role",
+        "risk_budget",
+        "raw_target_weight",
+        "constrained_target_weight",
+        "target_weight",
+        "target_weight_status",
+        "quality_notes_json",
+        "source_risk_budget_rebalance_date",
+    }
+    if not required_columns.issubset(frame.columns):
+        return {
+            "non_empty": True,
+            "missing_required_columns": False,
             "no_duplicate_business_keys": False,
             "five_roles_per_rebalance_date": False,
             "weight_sums_valid": False,
@@ -5465,11 +5637,24 @@ def _make_etf_aw_backtest_kernel_frame(
     """Build daily NAV, metric, and turnover rows for supplied monthly weights."""
 
     ingested_at = _utc_now()
+    calendar_name = _backtest_kernel_calendar_name(rebalance, weights)
+    strategy_name = _backtest_kernel_strategy_value(
+        weights, "strategy_name", _ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME
+    )
+    strategy_version = _backtest_kernel_strategy_value(
+        weights, "strategy_version", _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION
+    )
+    diagnostic_rebalance_dates = _backtest_diagnostic_rebalance_dates(
+        rebalance, weights, start
+    )
     diagnostics = _backtest_input_diagnostics(panel, rebalance, weights)
     if diagnostics["blocking"]:
         return _backtest_diagnostic_rows(
             diagnostics=diagnostics,
-            start=start,
+            calendar_name=calendar_name,
+            strategy_name=strategy_name,
+            strategy_version=strategy_version,
+            rebalance_dates=diagnostic_rebalance_dates,
             ingested_at=ingested_at,
         )
 
@@ -5494,7 +5679,10 @@ def _make_etf_aw_backtest_kernel_frame(
     if returns.empty:
         return _backtest_diagnostic_rows(
             diagnostics={"blocking": True, "reasons": ["no_daily_returns"]},
-            start=start,
+            calendar_name=calendar_name,
+            strategy_name=strategy_name,
+            strategy_version=strategy_version,
+            rebalance_dates=diagnostic_rebalance_dates,
             ingested_at=ingested_at,
         )
 
@@ -5507,19 +5695,6 @@ def _make_etf_aw_backtest_kernel_frame(
     previous_target: dict[str, float] | None = None
     monthly_returns: list[float] = []
     return_values: list[float] = []
-    calendar_name = str(weights["calendar_name"].dropna().iloc[0])
-    strategy_name = (
-        str(weights["strategy_name"].dropna().iloc[0])
-        if "strategy_name" in weights.columns
-        and not weights["strategy_name"].dropna().empty
-        else _ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME
-    )
-    strategy_version = (
-        str(weights["strategy_version"].dropna().iloc[0])
-        if "strategy_version" in weights.columns
-        and not weights["strategy_version"].dropna().empty
-        else _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION
-    )
 
     weight_by_date = {
         key: group.set_index("sleeve_code")["target_weight"].astype(float).to_dict()
@@ -5697,10 +5872,55 @@ def _backtest_input_diagnostics(
     }
 
 
+def _backtest_kernel_calendar_name(
+    rebalance: pd.DataFrame, weights: pd.DataFrame
+) -> str:
+    """Return the calendar name visible to backtest kernel diagnostics."""
+
+    if (
+        "calendar_name" in weights.columns
+        and not weights["calendar_name"].dropna().empty
+    ):
+        return str(weights["calendar_name"].dropna().iloc[0])
+    if (
+        "calendar_name" in rebalance.columns
+        and not rebalance["calendar_name"].dropna().empty
+    ):
+        return str(rebalance["calendar_name"].dropna().iloc[0])
+    return _REBALANCE_CALENDAR_NAME
+
+
+def _backtest_kernel_strategy_value(
+    weights: pd.DataFrame, column: str, fallback: str
+) -> str:
+    """Return the strategy value carried by target weights when available."""
+
+    if column in weights.columns and not weights[column].dropna().empty:
+        return str(weights[column].dropna().iloc[0])
+    return fallback
+
+
+def _backtest_diagnostic_rebalance_dates(
+    rebalance: pd.DataFrame, weights: pd.DataFrame, fallback: date
+) -> list[date]:
+    """Return rebalance-cycle dates for blocked backtest diagnostics."""
+
+    dates: set[date] = set()
+    for frame in (weights, rebalance):
+        if "rebalance_date" not in frame.columns:
+            continue
+        values = pd.to_datetime(frame["rebalance_date"], errors="coerce").dt.date
+        dates.update(value for value in values.dropna().tolist())
+    return sorted(dates) or [fallback]
+
+
 def _backtest_diagnostic_rows(
     *,
     diagnostics: dict[str, Any],
-    start: date,
+    calendar_name: str,
+    strategy_name: str,
+    strategy_version: str,
+    rebalance_dates: list[date],
     ingested_at: datetime,
 ) -> pd.DataFrame:
     """Return a validation-visible diagnostic row for blocked kernel inputs."""
@@ -5708,18 +5928,22 @@ def _backtest_diagnostic_rows(
     return pd.DataFrame(
         [
             _backtest_row(
-                calendar_name=_REBALANCE_CALENDAR_NAME,
-                strategy_name=_ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME,
-                strategy_version=_ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION,
+                calendar_name=calendar_name,
+                strategy_name=strategy_name,
+                strategy_version=strategy_version,
                 observation_type="diagnostic",
-                observation_date=start,
+                observation_date=rebalance_date,
                 metric_name="input_validation",
                 metric_value=None,
                 net_value=None,
                 portfolio_return=None,
-                quality_notes=diagnostics,
+                quality_notes={
+                    **diagnostics,
+                    "rebalance_date": rebalance_date.isoformat(),
+                },
                 ingested_at=ingested_at,
             )
+            for rebalance_date in rebalance_dates
         ]
     )
 
@@ -5787,6 +6011,558 @@ def _backtest_metric_values(
         "sharpe_ratio": sharpe_ratio,
         "max_drawdown": float(drawdown.min()),
         "monthly_periods": float(len(monthly_returns)),
+    }
+
+
+def _make_etf_aw_monthly_explainability_frame(
+    *,
+    strategy_context: pd.DataFrame,
+    risk_budget: pd.DataFrame,
+    target_weight: pd.DataFrame,
+    backtest_kernel: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build one monthly explanation row from frozen ETF all-weather artifacts."""
+
+    if (
+        strategy_context.empty
+        or risk_budget.empty
+        or target_weight.empty
+        or backtest_kernel.empty
+    ):
+        return pd.DataFrame()
+    context = _latest_context_by_rebalance(strategy_context)
+    budget = _latest_budget_groups_by_rebalance(risk_budget)
+    weights = _latest_weight_groups_by_rebalance(target_weight)
+    turnover = _backtest_turnover_by_rebalance(backtest_kernel)
+    diagnostics = _backtest_diagnostics_by_rebalance(backtest_kernel)
+    backtest_keys = set(turnover) | set(diagnostics)
+    keys = sorted(set(context) & set(budget) & set(weights) & backtest_keys)
+    rows: list[dict[str, Any]] = []
+    ingested_at = _utc_now()
+    for key in keys:
+        context_row = context[key]
+        budget_group = budget[key]
+        weight_group = weights[key]
+        rows.append(
+            _monthly_explainability_row(
+                key=key,
+                context_row=context_row,
+                budget_group=budget_group,
+                weight_group=weight_group,
+                backtest_turnover=turnover.get(key),
+                backtest_diagnostics=diagnostics.get(key, []),
+                ingested_at=ingested_at,
+            )
+        )
+    return pd.DataFrame(rows)
+
+
+def _latest_context_by_rebalance(
+    frame: pd.DataFrame,
+) -> dict[tuple[str, date], pd.Series]:
+    required = {
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "ingested_at",
+    }
+    if not required.issubset(frame.columns):
+        return {}
+    context = _normalize_rebalance_date_frame(frame)
+    context = context.dropna(subset=["calendar_name", "rebalance_date"])
+    context = context[
+        context["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+        & context["strategy_version"].astype(str).eq(_ETF_AW_STRATEGY_VERSION)
+    ].copy()
+    if context.empty:
+        return {}
+    context = context.sort_values(["rebalance_date", "ingested_at"])
+    context = context.drop_duplicates(["calendar_name", "rebalance_date"], keep="last")
+    return {
+        (str(row["calendar_name"]), row["rebalance_date"]): row
+        for _, row in context.iterrows()
+    }
+
+
+def _latest_budget_groups_by_rebalance(
+    frame: pd.DataFrame,
+) -> dict[tuple[str, date], pd.DataFrame]:
+    required = {
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_role",
+        "ingested_at",
+    }
+    if not required.issubset(frame.columns):
+        return {}
+    budget = _normalize_rebalance_date_frame(frame)
+    budget = budget.dropna(subset=["calendar_name", "rebalance_date"])
+    budget = budget[
+        budget["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+        & budget["strategy_version"]
+        .astype(str)
+        .eq(_ETF_AW_RISK_BUDGET_STRATEGY_VERSION)
+    ].copy()
+    if budget.empty:
+        return {}
+    budget = budget.sort_values(["rebalance_date", "ingested_at"])
+    budget = budget.drop_duplicates(
+        [
+            "calendar_name",
+            "rebalance_date",
+            "strategy_name",
+            "strategy_version",
+            "sleeve_role",
+        ],
+        keep="last",
+    )
+    return {
+        (str(key[0]), key[1]): group.copy()
+        for key, group in budget.groupby(["calendar_name", "rebalance_date"])
+    }
+
+
+def _latest_weight_groups_by_rebalance(
+    frame: pd.DataFrame,
+) -> dict[tuple[str, date], pd.DataFrame]:
+    required = {
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "sleeve_code",
+        "sleeve_role",
+        "ingested_at",
+    }
+    if not required.issubset(frame.columns):
+        return {}
+    weights = _normalize_rebalance_date_frame(frame)
+    weights = weights.dropna(subset=["calendar_name", "rebalance_date"])
+    weights = weights[
+        weights["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+        & weights["strategy_version"]
+        .astype(str)
+        .eq(_ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION)
+    ].copy()
+    if weights.empty:
+        return {}
+    weights = weights.sort_values(["rebalance_date", "ingested_at"])
+    weights = weights.drop_duplicates(
+        [
+            "calendar_name",
+            "rebalance_date",
+            "strategy_name",
+            "strategy_version",
+            "sleeve_code",
+        ],
+        keep="last",
+    )
+    return {
+        (str(key[0]), key[1]): group.copy()
+        for key, group in weights.groupby(["calendar_name", "rebalance_date"])
+    }
+
+
+def _backtest_turnover_by_rebalance(
+    frame: pd.DataFrame,
+) -> dict[tuple[str, date], float | None]:
+    required = {
+        "calendar_name",
+        "strategy_name",
+        "strategy_version",
+        "observation_type",
+        "observation_date",
+        "metric_name",
+        "metric_value",
+        "quality_notes_json",
+        "ingested_at",
+    }
+    if not required.issubset(frame.columns):
+        return {}
+    kernel = frame[
+        frame["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+        & frame["strategy_version"]
+        .astype(str)
+        .eq(_ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION)
+    ].copy()
+    turnover = kernel[
+        kernel["observation_type"].astype(str).eq("turnover")
+        & kernel["metric_name"].astype(str).eq("monthly_turnover")
+    ].copy()
+    turnover = turnover.sort_values(["observation_date", "ingested_at"])
+    result: dict[tuple[str, date], float | None] = {}
+    for _, row in turnover.iterrows():
+        notes = _json_object_or_value(row.get("quality_notes_json"))
+        if not isinstance(notes, dict) or "rebalance_date" not in notes:
+            continue
+        rebalance_date = _series_date(notes["rebalance_date"])
+        if rebalance_date is None:
+            continue
+        result[(str(row["calendar_name"]), rebalance_date)] = _nullable_float(
+            row.get("metric_value")
+        )
+    return result
+
+
+def _backtest_diagnostics_by_rebalance(
+    frame: pd.DataFrame,
+) -> dict[tuple[str, date], list[dict[str, Any]]]:
+    required = {
+        "calendar_name",
+        "strategy_name",
+        "strategy_version",
+        "observation_type",
+        "observation_date",
+        "metric_name",
+        "quality_notes_json",
+        "ingested_at",
+    }
+    if not required.issubset(frame.columns):
+        return {}
+    kernel = frame[
+        frame["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+        & frame["strategy_version"]
+        .astype(str)
+        .eq(_ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION)
+    ].copy()
+    diagnostics = kernel[kernel["observation_type"].astype(str).eq("diagnostic")].copy()
+    diagnostics = diagnostics.sort_values(
+        ["calendar_name", "observation_date", "metric_name", "ingested_at"]
+    )
+    result: dict[tuple[str, date], list[dict[str, Any]]] = {}
+    seen: set[tuple[str, date, str]] = set()
+    for _, row in diagnostics.iterrows():
+        notes = _json_object_or_value(row.get("quality_notes_json"))
+        if not isinstance(notes, dict):
+            continue
+        rebalance_date = _series_date(
+            notes.get("rebalance_date") or row.get("observation_date")
+        )
+        if rebalance_date is None:
+            continue
+        key = (str(row["calendar_name"]), rebalance_date)
+        item_key = (key[0], key[1], str(row["metric_name"]))
+        if item_key in seen:
+            continue
+        seen.add(item_key)
+        result.setdefault(key, []).append(notes)
+    return result
+
+
+def _monthly_explainability_row(
+    *,
+    key: tuple[str, date],
+    context_row: pd.Series,
+    budget_group: pd.DataFrame,
+    weight_group: pd.DataFrame,
+    backtest_turnover: float | None,
+    backtest_diagnostics: list[dict[str, Any]],
+    ingested_at: datetime,
+) -> dict[str, Any]:
+    calendar_name, rebalance_date = key
+    budget_status = _group_status(budget_group, "budget_status")
+    weight_status = _group_status(weight_group, "target_weight_status")
+    budget_notes = _merged_quality_notes(budget_group)
+    weight_notes = _merged_quality_notes(weight_group)
+    constraints = _target_weight_constraint_flags(weight_group)
+    target_weights = _target_weight_explanation(weight_group)
+    target_turnover = _first_non_null_float(weight_group.get("turnover_estimate", []))
+    diagnostics = {
+        "risk_budget_reasons": budget_notes["reasons"],
+        "target_weight_reasons": weight_notes["reasons"],
+        "backtest_diagnostics": backtest_diagnostics,
+    }
+    return {
+        "schema_version": _ETF_AW_MONTHLY_EXPLAINABILITY_SCHEMA_VERSION,
+        "calendar_name": calendar_name,
+        "calendar_month": rebalance_date.strftime("%Y-%m"),
+        "rebalance_date": rebalance_date,
+        "strategy_name": _ETF_AW_STRATEGY_NAME,
+        "strategy_version": _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
+        "source_context_strategy_version": _optional_text(
+            context_row.get("strategy_version")
+        ),
+        "source_risk_budget_strategy_version": _optional_text(
+            budget_group.iloc[0].get("strategy_version")
+        ),
+        "source_target_weight_strategy_version": _optional_text(
+            weight_group.iloc[0].get("strategy_version")
+        ),
+        "market_regime_label": _optional_text(context_row.get("market_regime_label")),
+        "market_state_summary": _market_state_summary(context_row),
+        "context_status": _optional_text(context_row.get("context_status")),
+        "readiness_level": _optional_text(context_row.get("readiness_level")),
+        "macro_rates_context_status": _optional_text(
+            context_row.get("macro_rates_context_status")
+        ),
+        "macro_rates_missing": bool(
+            _json_list_or_empty(context_row.get("missing_primary_fields_json"))
+            or _json_list_or_empty(context_row.get("missing_confirmatory_fields_json"))
+        ),
+        "risk_budget_status": budget_status,
+        "risk_budget_explanation_json": json.dumps(
+            {
+                "budget_basis": _optional_text(
+                    budget_group.iloc[0].get("budget_basis")
+                ),
+                "reasons": budget_notes["reasons"],
+                "source_status": budget_notes["source_status"],
+                "budgets": _budget_explanation(budget_group),
+            },
+            sort_keys=True,
+        ),
+        "target_weight_status": weight_status,
+        "target_weight_explanation_json": json.dumps(
+            {
+                "optimizer_name": _optional_text(
+                    weight_group.iloc[0].get("optimizer_name")
+                ),
+                "optimizer_basis": _optional_text(
+                    weight_group.iloc[0].get("optimizer_basis")
+                ),
+                "reasons": weight_notes["reasons"],
+                "weights": target_weights,
+            },
+            sort_keys=True,
+        ),
+        "constraint_flags_json": json.dumps(constraints, sort_keys=True),
+        "turnover_estimate": target_turnover,
+        "backtest_turnover": backtest_turnover,
+        "diagnostics_json": json.dumps(diagnostics, sort_keys=True),
+        "source_strategy_context_rebalance_date": rebalance_date,
+        "source_risk_budget_rebalance_date": _series_date(
+            weight_group.iloc[0].get("source_risk_budget_rebalance_date")
+        ),
+        "source_backtest_observation_date": _latest_backtest_source_date(
+            backtest_diagnostics, rebalance_date
+        ),
+        "ingested_at": ingested_at,
+    }
+
+
+def _group_status(frame: pd.DataFrame, column: str) -> str | None:
+    if column not in frame.columns:
+        return None
+    statuses = set(frame[column].dropna().astype(str).tolist())
+    if not statuses:
+        return None
+    if len(statuses) == 1:
+        return next(iter(statuses))
+    for status in ("unavailable", "missing", "stale", "partial", "complete"):
+        if status in statuses:
+            return status
+    return sorted(statuses)[0]
+
+
+def _merged_quality_notes(frame: pd.DataFrame) -> dict[str, Any]:
+    reasons: set[str] = set()
+    source_status: dict[str, Any] = {}
+    if "quality_notes_json" not in frame.columns:
+        return {"reasons": [], "source_status": source_status}
+    for _, row in frame.iterrows():
+        notes = _json_object_or_value(row.get("quality_notes_json"))
+        if not isinstance(notes, dict):
+            continue
+        for reason in notes.get("reasons", []):
+            reasons.add(str(reason))
+        for key in (
+            "source_context_status",
+            "source_readiness_level",
+            "source_regime_status",
+            "source_budget_status",
+        ):
+            if key in notes:
+                source_status[key] = notes[key]
+    return {"reasons": sorted(reasons), "source_status": source_status}
+
+
+def _target_weight_constraint_flags(frame: pd.DataFrame) -> dict[str, Any]:
+    floor_roles: list[str] = []
+    cap_roles: list[str] = []
+    no_trade_roles: list[str] = []
+    for _, row in frame.iterrows():
+        role = str(row.get("sleeve_role"))
+        notes = _json_object_or_value(row.get("quality_notes_json"))
+        reasons = notes.get("reasons", []) if isinstance(notes, dict) else []
+        volatility = _nullable_float(row.get("volatility_estimate"))
+        floor = _nullable_float(row.get("volatility_floor"))
+        raw = _nullable_float(row.get("raw_target_weight"))
+        constrained = _nullable_float(row.get("constrained_target_weight"))
+        target = _nullable_float(row.get("target_weight"))
+        if "volatility_floor_applied" in reasons or (
+            volatility is not None and floor is not None and volatility <= floor
+        ):
+            floor_roles.append(role)
+        if (
+            raw is not None
+            and constrained is not None
+            and abs(raw - constrained) > 1e-6
+        ):
+            cap_roles.append(role)
+        if (
+            constrained is not None
+            and target is not None
+            and abs(constrained - target) > 1e-6
+        ):
+            no_trade_roles.append(role)
+    return {
+        "vol_floor_triggered": bool(floor_roles),
+        "vol_floor_roles": _sort_sleeve_roles(floor_roles),
+        "cap_triggered": bool(cap_roles),
+        "cap_roles": _sort_sleeve_roles(cap_roles),
+        "no_trade_band_triggered": bool(no_trade_roles),
+        "no_trade_band_roles": _sort_sleeve_roles(no_trade_roles),
+    }
+
+
+def _sort_sleeve_roles(roles: Iterable[str]) -> list[str]:
+    frame = pd.DataFrame({"sleeve_role": sorted(set(roles))})
+    if frame.empty:
+        return []
+    return frame.sort_values("sleeve_role", key=etf_aw_role_sort_key)[
+        "sleeve_role"
+    ].tolist()
+
+
+def _budget_explanation(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    ordered = frame.sort_values("sleeve_role", key=etf_aw_role_sort_key)
+    return [
+        {
+            "sleeve_role": str(row["sleeve_role"]),
+            "base_budget": _nullable_float(row.get("base_budget")),
+            "delta_budget": _nullable_float(row.get("delta_budget")),
+            "risk_budget": _nullable_float(row.get("tilted_budget")),
+        }
+        for _, row in ordered.iterrows()
+    ]
+
+
+def _target_weight_explanation(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    ordered = frame.sort_values("sleeve_role", key=etf_aw_role_sort_key)
+    return [
+        {
+            "sleeve_code": str(row["sleeve_code"]),
+            "sleeve_role": str(row["sleeve_role"]),
+            "risk_budget": _nullable_float(row.get("risk_budget")),
+            "volatility_estimate": _nullable_float(row.get("volatility_estimate")),
+            "raw_target_weight": _nullable_float(row.get("raw_target_weight")),
+            "constrained_target_weight": _nullable_float(
+                row.get("constrained_target_weight")
+            ),
+            "target_weight": _nullable_float(row.get("target_weight")),
+            "target_weight_status": _optional_text(row.get("target_weight_status")),
+        }
+        for _, row in ordered.iterrows()
+    ]
+
+
+def _market_state_summary(row: pd.Series) -> str:
+    label = _optional_text(row.get("market_regime_label")) or "unknown"
+    score = _nullable_float(row.get("market_score"))
+    confidence = _nullable_float(row.get("market_confidence_score"))
+    parts = [f"regime={label}"]
+    if score is not None:
+        parts.append(f"score={score:.2f}")
+    if confidence is not None:
+        parts.append(f"confidence={confidence:.2f}")
+    return ", ".join(parts)
+
+
+def _first_non_null_float(values: Iterable[object]) -> float | None:
+    for value in values:
+        parsed = _nullable_float(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _latest_backtest_source_date(
+    diagnostics: list[dict[str, Any]], rebalance_date: date
+) -> date:
+    for item in diagnostics:
+        parsed = _series_date(item.get("observation_date"))
+        if parsed is not None:
+            return parsed
+    return rebalance_date
+
+
+def _validate_monthly_explainability_frame(frame: pd.DataFrame) -> dict[str, bool]:
+    """Validate the ETF all-weather monthly explainability output contract."""
+
+    if frame.empty:
+        return {
+            "non_empty": False,
+            "missing_required_columns": False,
+            "no_duplicate_business_keys": False,
+            "json_fields_valid": False,
+            "forbidden_fields_absent": False,
+        }
+    required_columns = {
+        "schema_version",
+        "calendar_name",
+        "calendar_month",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+        "source_context_strategy_version",
+        "source_risk_budget_strategy_version",
+        "source_target_weight_strategy_version",
+        "market_state_summary",
+        "macro_rates_missing",
+        "risk_budget_status",
+        "risk_budget_explanation_json",
+        "target_weight_status",
+        "target_weight_explanation_json",
+        "constraint_flags_json",
+        "turnover_estimate",
+        "backtest_turnover",
+        "diagnostics_json",
+    }
+    if not required_columns.issubset(frame.columns):
+        return {
+            "non_empty": True,
+            "missing_required_columns": False,
+            "no_duplicate_business_keys": False,
+            "json_fields_valid": False,
+            "forbidden_fields_absent": False,
+        }
+    key_columns = [
+        "calendar_name",
+        "rebalance_date",
+        "strategy_name",
+        "strategy_version",
+    ]
+    forbidden_fields = {
+        column
+        for column in frame.columns
+        if column
+        in {
+            "trade_action",
+            "order_instruction",
+            "rebalance_instruction",
+            "order_quantity",
+            "rebalance_plan",
+        }
+    }
+    json_columns = [
+        "risk_budget_explanation_json",
+        "target_weight_explanation_json",
+        "constraint_flags_json",
+        "diagnostics_json",
+    ]
+    return {
+        "non_empty": True,
+        "missing_required_columns": True,
+        "no_duplicate_business_keys": int(frame.duplicated(key_columns).sum()) == 0,
+        "json_fields_valid": all(
+            _is_json_text(value)
+            for column in json_columns
+            for value in frame[column].tolist()
+        ),
+        "forbidden_fields_absent": not forbidden_fields,
     }
 
 

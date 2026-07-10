@@ -214,9 +214,10 @@ monthly_periods         17
 
 优先级较高：
 
-1. 检查上游 `derived.etf_aw_risk_budget` 为什么 2025-01 到 2026-03 为 `unavailable`。
-2. 明确执行时点：如果用于调仓日收盘后或次日执行，`trade_date <= rebalance_date` 可接受；如果用于调仓日盘前执行，应改为 `trade_date < rebalance_date`。
-3. 等 complete 月份积累足够后，再做正式 backtest evaluation。
+1. 已检查上游 `derived.etf_aw_risk_budget` 为什么 2025-01 到 2026-03 为 `unavailable`：Stage G 对 market-only 场景硬降级已修复为 `partial / degraded_research`。
+2. 已明确执行时点：V1 用于调仓日收盘后或次日人工执行，因此 `trade_date <= rebalance_date` 可接受；如果未来改为调仓日盘前执行，应改为 `trade_date < rebalance_date` 并重建 artifact。
+3. 已修复 `2025-03-20` target weight 仍为 `unavailable` 的问题：根因是 risk budget rounding drift 略超 `1e-6` 校验阈值，不是波动率窗口不足。修复后当前 target weight 为 75 行 `partial`、10 行 `complete`、0 行 `unavailable`。
+4. 等 complete 月份积累足够后，再做正式 backtest evaluation。
 
 优先级中等：
 
