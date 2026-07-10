@@ -143,6 +143,26 @@ class StageIRiskBudgetTests(unittest.TestCase):
             ["bond", "cash", "equity_large", "equity_small", "gold"],
         )
 
+    def test_budget_rounding_distributes_remainder_without_breaking_floor(
+        self,
+    ) -> None:
+        from tradepilot.etl import service as etl_service
+
+        rounded = etl_service._round_role_budgets(
+            {
+                "equity_large": 0.0500004,
+                "equity_small": 0.0500004,
+                "bond": 0.2999998,
+                "gold": 0.2999997,
+                "cash": 0.2999997,
+            }
+        )
+
+        self.assertAlmostEqual(sum(rounded.values()), 1.0, places=6)
+        self.assertGreaterEqual(rounded["equity_large"], 0.05)
+        self.assertGreaterEqual(rounded["equity_small"], 0.05)
+        self.assertLessEqual(rounded["cash"], 0.3)
+
     def test_future_source_date_fails_point_in_time_validation(self) -> None:
         frame = self.service._make_etf_aw_risk_budget_frame(
             pd.DataFrame(

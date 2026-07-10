@@ -183,7 +183,7 @@ class StageGStrategyContextTests(unittest.TestCase):
         self.assertEqual(row["readiness_level"], "not_ready")
         self.assertEqual(row["market_context_status"], "stale")
 
-    def test_stale_macro_rates_context_makes_strategy_context_stale(self) -> None:
+    def test_stale_macro_rates_context_makes_strategy_context_partial(self) -> None:
         self._write_stale_macro_rates_context()
         self._run_pipeline(self._complete_rows())
 
@@ -194,8 +194,8 @@ class StageGStrategyContextTests(unittest.TestCase):
         )
 
         row = self._read_context_file(2024, 7).iloc[0]
-        self.assertEqual(row["context_status"], "stale")
-        self.assertEqual(row["readiness_level"], "not_ready")
+        self.assertEqual(row["context_status"], "partial")
+        self.assertEqual(row["readiness_level"], "degraded_research")
         self.assertEqual(row["market_context_status"], "complete")
         self.assertEqual(row["macro_rates_context_status"], "stale")
         notes = json.loads(row["point_in_time_notes_json"])
