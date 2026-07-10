@@ -350,7 +350,7 @@ def backtest_kernel(
         result = service._build_etf_aw_backtest_kernel(
             start,
             end,
-            weight_source_type="baseline_weight",
+            weight_source_type="baseline",
             baseline_name="static_inverse_vol",
             baseline_version="static_inverse_vol_v1",
         )

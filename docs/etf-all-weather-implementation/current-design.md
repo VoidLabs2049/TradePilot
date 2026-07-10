@@ -263,6 +263,20 @@ strategy_context
 
 该层是进入 Dashboard / workflow insight 前的解释层，不是 baseline evaluation，也不是 rebalance plan。
 
+### Stage L：静态 inverse-vol 回测基线
+
+已实现 `derived.etf_aw_baseline_weight.build` 和双权重源回测：
+
+- baseline 使用最近 63 个交易日收益估计波动率，至少要求 42 个有效观测，并沿用 `0.005` volatility floor。
+- 每个 rebalance date 必须生成 5 个完整、非负且权重和为 1 的 frozen sleeve 权重；不写出 partial baseline。
+- `derived.etf_aw_backtest_kernel` 可分别消费 `target_weight` 和 `baseline`，并保留 `weight_source_type` 与 `source_weight_dataset`。
+- `backtest-report` 可输出两条策略的指标、换手、diagnostics 和差值。
+- 旧 backtest kernel 分区缺少权重来源字段时，会按原有语义补为 `target_weight` / `derived.etf_aw_target_weight` 后再 upsert，不需要删除历史分区。
+
+默认 lakehouse 已完成 2025-01 到 2026-05 重建：baseline weight 为 85 行，策略和 baseline kernel 各为 349 行，artifact 与 kernel 健康检查均通过。当前策略累计收益为 `21.491%`，静态 inverse-vol baseline 为 `21.434%`；策略年化波动和月均换手略高，Sharpe 略低。该结果只覆盖 17 个调仓周期且尚未计入交易成本，应作为工程基线和增量诊断，不作为长期策略优劣结论。
+
+该阶段仍不新增 backtest read model、API 或前端多策略对比图。
+
 ## 资料库吸收边界
 
 ### 直接吸收
@@ -692,7 +706,7 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 9. 已按 `etf-aw-cli-design.md` 补齐 `build-risk-budget`、`health-check risk-budget`、`build-target-weight`、`health-check target-weight`、`backtest-kernel`、`backtest-report` 的命令边界。
 10. 已增加后端命令行回测报表 Phase 0，覆盖净值、回撤、指标、换手和 diagnostics 摘要。
 11. 已增加 monthly explainability table，消费 frozen context / budget / weight / backtest artifact，并补齐 source version 追溯。
-12. 下一步做 backtest evaluation baseline comparison，baseline 必须先生成独立 frozen weight artifact，不能在 backtest loop 中临时调参。
+12. 已完成 backtest evaluation baseline comparison：baseline 先生成独立 frozen weight artifact，再由同一个 kernel 分别运行策略和 baseline；旧 kernel 分区可原地升级来源字段。
 13. 再评估是否引入 simplified ERC。
 14. 已收束前端：`/etf-aw` 只作为 risk budget 只读观察面板，不继续扩展 UI。
 15. 后端 target weight 和 backtest 合同稳定后，再补前端目标权重、净值或 Dashboard 面板。

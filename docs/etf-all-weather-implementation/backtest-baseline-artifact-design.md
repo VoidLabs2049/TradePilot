@@ -135,7 +135,7 @@ optimizer_name = risk_parity_like
 | 权重来源 | `strategy_name` | `strategy_version` | `weight_source_type` | `source_weight_dataset` |
 | --- | --- | --- | --- | --- |
 | 当前策略 | 沿用 `derived.etf_aw_target_weight.strategy_name` | 沿用 `derived.etf_aw_target_weight.strategy_version` | `target_weight` | `derived.etf_aw_target_weight` |
-| 静态 inverse-vol baseline | `static_inverse_vol` | `static_inverse_vol_v1` | `baseline_weight` | `derived.etf_aw_baseline_weight` |
+| 静态 inverse-vol baseline | `static_inverse_vol` | `static_inverse_vol_v1` | `baseline` | `derived.etf_aw_baseline_weight` |
 
 `weight_source_type` 和 `source_weight_dataset` 应写入 backtest kernel 输出。这样 read model 和 report 不需要从 `strategy_name` 反推来源，也可以清楚地区分当前策略权重和 baseline 权重。
 

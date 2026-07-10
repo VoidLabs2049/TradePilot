@@ -152,6 +152,18 @@ _ETF_AW_BASELINE_WEIGHT_SCHEMA_VERSION = "etf_aw_baseline_weight_v1"
 _ETF_AW_BASELINE_WEIGHT_CONTRACT_VERSION = "etf_aw_baseline_weight_contract_v1"
 _ETF_AW_BASELINE_NAME = "static_inverse_vol"
 _ETF_AW_BASELINE_VERSION = "static_inverse_vol_v1"
+_ETF_AW_BASELINE_VOL_WINDOW = 63
+_ETF_AW_BASELINE_MIN_OBSERVATIONS = 42
+_ETF_AW_BASELINE_PANEL_LOOKBACK_DAYS = _ETF_AW_BASELINE_VOL_WINDOW * 3
+_ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET = "target_weight"
+_ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE = "baseline"
+_ETF_AW_BACKTEST_WEIGHT_SOURCE_ALIASES = {
+    "baseline_weight": _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE,
+}
+_ETF_AW_BACKTEST_WEIGHT_SOURCES = {
+    _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET,
+    _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE,
+}
 _ETF_AW_MONTHLY_EXPLAINABILITY_PROFILE = "derived.etf_aw_monthly_explainability.build"
 _ETF_AW_MONTHLY_EXPLAINABILITY_DATASET = "derived.etf_aw_monthly_explainability"
 _ETF_AW_MONTHLY_EXPLAINABILITY_SCHEMA_VERSION = "etf_aw_monthly_explainability_v1"
@@ -839,23 +851,31 @@ class ETLService:
         frame = canonical.copy()
         frame["updated_at"] = _utc_now()
         self.conn.register("stage_b_calendar", frame)
-        existing = int(self.conn.execute("""
+        existing = int(
+            self.conn.execute(
+                """
                 SELECT COUNT(*) FROM canonical_trading_calendar
                 WHERE (exchange, trade_date) IN (
                     SELECT exchange, trade_date FROM stage_b_calendar
                 )
-                """).fetchone()[0])
-        self.conn.execute("""
+                """
+            ).fetchone()[0]
+        )
+        self.conn.execute(
+            """
             DELETE FROM canonical_trading_calendar
             WHERE (exchange, trade_date) IN (
                 SELECT exchange, trade_date FROM stage_b_calendar
             )
-            """)
-        self.conn.execute("""
+            """
+        )
+        self.conn.execute(
+            """
             INSERT INTO canonical_trading_calendar
             SELECT exchange, trade_date, is_open, pretrade_date, updated_at
             FROM stage_b_calendar
-            """)
+            """
+        )
         self.conn.unregister("stage_b_calendar")
         return CanonicalWriteResult(
             records_written=len(frame),
@@ -869,25 +889,33 @@ class ETLService:
         frame = canonical.copy()
         frame["updated_at"] = _utc_now()
         self.conn.register("stage_b_instruments", frame)
-        existing = int(self.conn.execute("""
+        existing = int(
+            self.conn.execute(
+                """
                 SELECT COUNT(*) FROM canonical_instruments
                 WHERE instrument_id IN (
                     SELECT instrument_id FROM stage_b_instruments
                 )
-                """).fetchone()[0])
-        self.conn.execute("""
+                """
+            ).fetchone()[0]
+        )
+        self.conn.execute(
+            """
             DELETE FROM canonical_instruments
             WHERE instrument_id IN (
                 SELECT instrument_id FROM stage_b_instruments
             )
-            """)
-        self.conn.execute("""
+            """
+        )
+        self.conn.execute(
+            """
             INSERT INTO canonical_instruments
             SELECT instrument_id, source_instrument_id, instrument_name,
                    instrument_type, exchange, list_date, delist_date,
                    is_active, source_name, updated_at
             FROM stage_b_instruments
-            """)
+            """
+        )
         self.conn.unregister("stage_b_instruments")
         return CanonicalWriteResult(
             records_written=len(frame),
@@ -973,6 +1001,7 @@ class ETLService:
         key_columns: tuple[str, ...],
         sort_columns: tuple[str, ...],
         partition_date_column: str = "trade_date",
+        existing_column_defaults: dict[str, object] | None = None,
     ) -> CanonicalWriteResult:
         if canonical.empty:
             return CanonicalWriteResult()
@@ -994,6 +1023,9 @@ class ETLService:
             partition_frame = partition.drop(columns=["year", "month"]).copy()
             if final_path.exists():
                 existing = pd.read_parquet(final_path)
+                for column, default in (existing_column_defaults or {}).items():
+                    if column not in existing.columns:
+                        existing[column] = default
                 merged = pd.concat([existing, partition_frame], ignore_index=True)
                 existing_keys = _business_keys(existing, key_columns)
             else:
@@ -1430,13 +1462,16 @@ class ETLService:
         frame["updated_at"] = now
         self.conn.register("stage_c_etf_aw_sleeves", frame)
         try:
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 DELETE FROM canonical_sleeves
                 WHERE sleeve_code IN (
                     SELECT sleeve_code FROM stage_c_etf_aw_sleeves
                 )
-                """)
-            self.conn.execute("""
+                """
+            )
+            self.conn.execute(
+                """
                 INSERT INTO canonical_sleeves (
                     sleeve_code, sleeve_name, sleeve_type, is_active, updated_at,
                     sleeve_role, listing_exchange, benchmark_name, list_date,
@@ -1446,7 +1481,8 @@ class ETLService:
                        sleeve_role, listing_exchange, benchmark_name, list_date,
                        exposure_note, created_at
                 FROM stage_c_etf_aw_sleeves
-                """)
+                """
+            )
         finally:
             self.conn.unregister("stage_c_etf_aw_sleeves")
 
@@ -1469,7 +1505,8 @@ class ETLService:
         )
         self.conn.register("stage_c_etf_aw_instruments", frame)
         try:
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 INSERT INTO canonical_instruments (
                     instrument_id, source_instrument_id, instrument_name,
                     instrument_type, exchange, list_date, delist_date, is_active,
@@ -1482,28 +1519,35 @@ class ETLService:
                 LEFT JOIN canonical_instruments c
                   ON s.instrument_id = c.instrument_id
                 WHERE c.instrument_id IS NULL
-                """)
+                """
+            )
         finally:
             self.conn.unregister("stage_c_etf_aw_instruments")
 
     def _validate_etf_aw_sleeves(self) -> dict[str, bool]:
         self.conn.register("stage_c_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            rows = self.conn.execute("""
+            rows = self.conn.execute(
+                """
                 SELECT s.sleeve_code, s.sleeve_role, s.listing_exchange,
                        s.exposure_note, s.is_active
                 FROM canonical_sleeves s
                 JOIN stage_c_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 ORDER BY s.sleeve_code
-                """).fetchall()
-            instrument_count = int(self.conn.execute("""
+                """
+            ).fetchall()
+            instrument_count = int(
+                self.conn.execute(
+                    """
                     SELECT COUNT(*)
                     FROM canonical_instruments i
                     JOIN stage_c_etf_aw_codes c
                       ON i.instrument_id = c.sleeve_code
                     WHERE i.instrument_type = 'etf'
-                    """).fetchone()[0])
+                    """
+                ).fetchone()[0]
+            )
         finally:
             self.conn.unregister("stage_c_etf_aw_codes")
         active_codes = [row[0] for row in rows if row[4] is True]
@@ -1632,13 +1676,15 @@ class ETLService:
     ) -> pd.DataFrame:
         self.conn.register("stage_c_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            sleeves = self.conn.execute("""
+            sleeves = self.conn.execute(
+                """
                 SELECT s.sleeve_code, s.sleeve_role
                 FROM canonical_sleeves s
                 JOIN stage_c_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 WHERE s.is_active = TRUE
-                """).fetchdf()
+                """
+            ).fetchdf()
         finally:
             self.conn.unregister("stage_c_etf_aw_codes")
         daily = daily.copy()
@@ -1791,7 +1837,8 @@ class ETLService:
         return frame
 
     def _latest_market_watermarks(self) -> dict[str, date | None]:
-        rows = self.conn.execute("""
+        rows = self.conn.execute(
+            """
             SELECT dataset_name, latest_fetched_date
             FROM etl_source_watermarks
             WHERE dataset_name IN (
@@ -1799,7 +1846,8 @@ class ETLService:
                 'market.etf_adj_factor',
                 'reference.trading_calendar'
             )
-            """).fetchall()
+            """
+        ).fetchall()
         return {str(row[0]): row[1] for row in rows}
 
     def _make_etf_aw_rebalance_snapshot_frame(
@@ -1843,13 +1891,15 @@ class ETLService:
     def _active_etf_aw_sleeves_frame(self) -> pd.DataFrame:
         self.conn.register("stage_d_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            frame = self.conn.execute("""
+            frame = self.conn.execute(
+                """
                 SELECT s.sleeve_code, s.sleeve_role
                 FROM canonical_sleeves s
                 JOIN stage_d_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 WHERE s.is_active = TRUE
-                """).fetchdf()
+                """
+            ).fetchdf()
         finally:
             self.conn.unregister("stage_d_etf_aw_codes")
         if frame.empty:
@@ -2444,7 +2494,7 @@ class ETLService:
             )
         panel = self._read_partitioned_dataset(
             "derived.etf_aw_sleeve_daily",
-            start - timedelta(days=_ETF_AW_TARGET_WEIGHT_PANEL_LOOKBACK_DAYS),
+            start - timedelta(days=_ETF_AW_BASELINE_PANEL_LOOKBACK_DAYS),
             end,
             StorageZone.DERIVED,
         )
@@ -2618,22 +2668,62 @@ class ETLService:
         baseline_version: str = _ETF_AW_BASELINE_VERSION,
     ) -> dict:
         start, end = _ordered_dates(start, end)
+        requested_weight_source_type = weight_source_type
+        weight_source_type = _normalize_backtest_weight_source_type(
+            requested_weight_source_type
+        )
+        if weight_source_type is None:
+            return {
+                "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
+                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "weight_source_type": str(requested_weight_source_type),
+                "source_weight_dataset": None,
+                "error_message": "ETF all-weather weight_source_type is invalid",
+            }
+        source_dataset = (
+            _ETF_AW_TARGET_WEIGHT_DATASET
+            if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET
+            else _ETF_AW_BASELINE_WEIGHT_DATASET
+        )
         profile_name = (
             _ETF_AW_BACKTEST_KERNEL_PROFILE
-            if weight_source_type == "target_weight"
-            else f"{_ETF_AW_BACKTEST_KERNEL_PROFILE}.{baseline_name}"
+            if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET
+            else (
+                f"{_ETF_AW_BACKTEST_KERNEL_PROFILE}."
+                f"{baseline_name}.{baseline_version}"
+            )
         )
-        rebalance = self._read_rebalance_calendar(start, end)
-        if rebalance.empty:
-            return {
+
+        def _failed(error_message: str, **extra: Any) -> dict:
+            result = {
                 "profile_name": profile_name,
                 "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
                 "status": RunStatus.FAILED.value,
                 "requested_start": start.isoformat(),
                 "requested_end": end.isoformat(),
                 "records_written": 0,
-                "error_message": "canonical rebalance calendar is missing",
+                "weight_source_type": weight_source_type,
+                "source_weight_dataset": source_dataset,
+                "error_message": error_message,
             }
+            if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE:
+                result["baseline_name"] = baseline_name
+                result["baseline_version"] = baseline_version
+            result.update(extra)
+            return result
+
+        if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE and (
+            not str(baseline_name).strip() or not str(baseline_version).strip()
+        ):
+            return _failed("ETF all-weather baseline name/version is required")
+
+        rebalance = self._read_rebalance_calendar(start, end)
+        if rebalance.empty:
+            return _failed("canonical rebalance calendar is missing")
         panel = self._read_partitioned_dataset(
             "derived.etf_aw_sleeve_daily",
             start,
@@ -2641,17 +2731,8 @@ class ETLService:
             StorageZone.DERIVED,
         )
         if panel.empty:
-            return {
-                "profile_name": profile_name,
-                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
-                "status": RunStatus.FAILED.value,
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "records_written": 0,
-                "error_message": "derived sleeve daily panel is missing",
-            }
-        if weight_source_type == "baseline_weight":
-            source_dataset = _ETF_AW_BASELINE_WEIGHT_DATASET
+            return _failed("derived sleeve daily panel is missing")
+        if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE:
             weights = self._read_partitioned_dataset(
                 source_dataset,
                 start,
@@ -2666,7 +2747,6 @@ class ETLService:
                 weights["strategy_name"] = weights["baseline_name"].astype(str)
                 weights["strategy_version"] = weights["baseline_version"].astype(str)
         else:
-            source_dataset = _ETF_AW_TARGET_WEIGHT_DATASET
             weights = self._read_partitioned_dataset(
                 source_dataset,
                 start,
@@ -2674,15 +2754,7 @@ class ETLService:
                 StorageZone.DERIVED,
             )
         if weights.empty:
-            return {
-                "profile_name": profile_name,
-                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
-                "status": RunStatus.FAILED.value,
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "records_written": 0,
-                "error_message": f"ETF all-weather {weight_source_type} is missing",
-            }
+            return _failed(f"ETF all-weather {weight_source_type} is missing")
         weights["weight_source_type"] = weight_source_type
         weights["source_weight_dataset"] = source_dataset
         backtest = self._make_etf_aw_backtest_kernel_frame(
@@ -2694,18 +2766,12 @@ class ETLService:
         )
         validation = _validate_backtest_kernel_frame(backtest)
         if not all(validation.values()):
-            return {
-                "profile_name": profile_name,
-                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
-                "status": RunStatus.FAILED.value,
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "records_written": 0,
-                "validation": validation,
-                "error_message": "ETF all-weather backtest kernel validation failed",
-            }
+            return _failed(
+                "ETF all-weather backtest kernel validation failed",
+                validation=validation,
+            )
         write_result = self._write_etf_aw_backtest_kernel(backtest)
-        return {
+        result = {
             "profile_name": profile_name,
             "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
             "status": RunStatus.SUCCESS.value,
@@ -2721,6 +2787,10 @@ class ETLService:
             "source_weight_dataset": source_dataset,
             "observation_type_counts": _value_counts_dict(backtest["observation_type"]),
         }
+        if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE:
+            result["baseline_name"] = baseline_name
+            result["baseline_version"] = baseline_version
+        return result
 
     def _make_etf_aw_backtest_kernel_frame(
         self,
@@ -2771,6 +2841,10 @@ class ETLService:
                 "ingested_at",
             ),
             partition_date_column="observation_date",
+            existing_column_defaults={
+                "weight_source_type": _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET,
+                "source_weight_dataset": _ETF_AW_TARGET_WEIGHT_DATASET,
+            },
         )
 
     def _build_etf_aw_monthly_explainability(self, start: date, end: date) -> dict:
@@ -3044,7 +3118,8 @@ class ETLService:
                 """,
                 [_REBALANCE_CALENDAR_NAME],
             )
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 INSERT INTO canonical_rebalance_calendar (
                     calendar_name, calendar_month, rebalance_date, effective_date,
                     notes, updated_at
@@ -3052,7 +3127,8 @@ class ETLService:
                 SELECT calendar_name, calendar_month, rebalance_date, effective_date,
                        notes, updated_at
                 FROM stage_c_rebalance_calendar
-                """)
+                """
+            )
         finally:
             self.conn.unregister("stage_c_rebalance_calendar")
 
@@ -5481,7 +5557,11 @@ def _target_weight_budget_group_valid(
 
 
 def _target_weight_volatility(
-    panel: pd.DataFrame, rebalance_date: date
+    panel: pd.DataFrame,
+    rebalance_date: date,
+    *,
+    window_days: int = _ETF_AW_TARGET_WEIGHT_VOL_WINDOW,
+    min_observations: int = _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS,
 ) -> tuple[dict[str, float], dict[str, date | None], dict[str, list[str]]]:
     vol_by_role: dict[str, float] = {}
     source_max_by_role: dict[str, date | None] = {}
@@ -5500,11 +5580,9 @@ def _target_weight_volatility(
             if not sleeve_panel.empty
             else None
         )
-        returns = (
-            sleeve_panel["daily_return"].dropna().tail(_ETF_AW_TARGET_WEIGHT_VOL_WINDOW)
-        )
+        returns = sleeve_panel["daily_return"].dropna().tail(window_days)
         reasons: list[str] = []
-        if len(returns) < _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS:
+        if len(returns) < min_observations:
             volatility = _ETF_AW_TARGET_WEIGHT_VOL_FLOOR
             reasons.extend(
                 [
@@ -5622,6 +5700,16 @@ def _role_code(role: str) -> str:
     return ETF_AW_SLEEVE_CODE_BY_ROLE[role]
 
 
+def _normalize_backtest_weight_source_type(value: str) -> str | None:
+    """Return the canonical backtest weight source type when supported."""
+
+    text = str(value)
+    text = _ETF_AW_BACKTEST_WEIGHT_SOURCE_ALIASES.get(text, text)
+    if text in _ETF_AW_BACKTEST_WEIGHT_SOURCES:
+        return text
+    return None
+
+
 def _make_etf_aw_baseline_weight_frame(
     *, rebalance: pd.DataFrame, panel: pd.DataFrame
 ) -> pd.DataFrame:
@@ -5646,7 +5734,10 @@ def _make_etf_aw_baseline_weight_frame(
     for _, calendar_row in calendar.iterrows():
         rebalance_date = calendar_row["rebalance_date"]
         vol_by_role, source_max_by_role, reasons_by_role = _target_weight_volatility(
-            panel, rebalance_date
+            panel,
+            rebalance_date,
+            window_days=_ETF_AW_BASELINE_VOL_WINDOW,
+            min_observations=_ETF_AW_BASELINE_MIN_OBSERVATIONS,
         )
         if any(
             "insufficient_volatility_observations" in reasons
@@ -5669,8 +5760,8 @@ def _make_etf_aw_baseline_weight_frame(
                     "sleeve_code": code,
                     "sleeve_role": role,
                     "target_weight": rounded[role],
-                    "estimation_window_days": _ETF_AW_TARGET_WEIGHT_VOL_WINDOW,
-                    "min_observation_days": _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS,
+                    "estimation_window_days": _ETF_AW_BASELINE_VOL_WINDOW,
+                    "min_observation_days": _ETF_AW_BASELINE_MIN_OBSERVATIONS,
                     "volatility_estimate": round(vol_by_role[role], 6),
                     "optimizer_name": _ETF_AW_BASELINE_NAME,
                     "optimizer_basis": (
@@ -5681,10 +5772,8 @@ def _make_etf_aw_baseline_weight_frame(
                         {
                             "reasons": sorted(set(reasons_by_role.get(role, []))),
                             "volatility_floor": _ETF_AW_TARGET_WEIGHT_VOL_FLOOR,
-                            "volatility_window": _ETF_AW_TARGET_WEIGHT_VOL_WINDOW,
-                            "minimum_observations": (
-                                _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS
-                            ),
+                            "volatility_window": _ETF_AW_BASELINE_VOL_WINDOW,
+                            "minimum_observations": (_ETF_AW_BASELINE_MIN_OBSERVATIONS),
                         },
                         sort_keys=True,
                     ),

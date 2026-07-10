@@ -68,6 +68,8 @@ class StageLBaselineWeightTests(unittest.TestCase):
         self.assertEqual(len(frame), 5)
         self.assertEqual(set(frame["baseline_name"]), {"static_inverse_vol"})
         self.assertEqual(set(frame["baseline_version"]), {"static_inverse_vol_v1"})
+        self.assertEqual(set(frame["estimation_window_days"]), {63})
+        self.assertEqual(set(frame["min_observation_days"]), {42})
         self.assertAlmostEqual(float(frame["target_weight"].sum()), 1.0, places=6)
         self.assertTrue((frame["target_weight"] >= 0.0).all())
         notes = json.loads(frame.iloc[0]["quality_notes_json"])

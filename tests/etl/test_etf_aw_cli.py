@@ -130,7 +130,7 @@ class EtfAwCliTests(unittest.TestCase):
                     1.005,
                     strategy_name="static_inverse_vol",
                     strategy_version="static_inverse_vol_v1",
-                    weight_source_type="baseline_weight",
+                    weight_source_type="baseline",
                     source_weight_dataset="derived.etf_aw_baseline_weight",
                 ),
                 self._backtest_row(
@@ -141,7 +141,7 @@ class EtfAwCliTests(unittest.TestCase):
                     None,
                     strategy_name="static_inverse_vol",
                     strategy_version="static_inverse_vol_v1",
-                    weight_source_type="baseline_weight",
+                    weight_source_type="baseline",
                     source_weight_dataset="derived.etf_aw_baseline_weight",
                 ),
                 self._backtest_row(
@@ -152,7 +152,7 @@ class EtfAwCliTests(unittest.TestCase):
                     None,
                     strategy_name="static_inverse_vol",
                     strategy_version="static_inverse_vol_v1",
-                    weight_source_type="baseline_weight",
+                    weight_source_type="baseline",
                     source_weight_dataset="derived.etf_aw_baseline_weight",
                 ),
                 self._backtest_row(
@@ -163,7 +163,7 @@ class EtfAwCliTests(unittest.TestCase):
                     None,
                     strategy_name="static_inverse_vol",
                     strategy_version="static_inverse_vol_v1",
-                    weight_source_type="baseline_weight",
+                    weight_source_type="baseline",
                     source_weight_dataset="derived.etf_aw_baseline_weight",
                 ),
                 self._backtest_row(
@@ -174,7 +174,7 @@ class EtfAwCliTests(unittest.TestCase):
                     None,
                     strategy_name="static_inverse_vol",
                     strategy_version="static_inverse_vol_v1",
-                    weight_source_type="baseline_weight",
+                    weight_source_type="baseline",
                     source_weight_dataset="derived.etf_aw_baseline_weight",
                 ),
             ]
