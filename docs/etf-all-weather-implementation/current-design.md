@@ -40,7 +40,7 @@ TradePilot ETF 全天候不是 ETF 涨跌预测器，而是低频风险配置系
 
 ## 最新开发规划吸收
 
-当前 ETF 全天候实现应按“后端基础框架先行，前端体验后置”的节奏推进。已新增的 ETF risk budget 页面只作为只读观察面板，用于检查 frozen artifact 是否可读、公式是否直观；它不代表 target weight、交易建议或回测评估已经完成。
+当前 ETF 全天候实现应按“后端基础框架先行，前端体验后置”的节奏推进。已新增的 ETF risk budget 页面只作为只读观察面板，用于检查 frozen artifact 是否可读、公式是否直观；target weight、baseline 和 gross backtest kernel 已完成，但稳健性评估、订单草案和模拟盘观察尚未完成。
 
 MVP 的日常工作流是：
 
@@ -71,7 +71,10 @@ strategy_context
 -> health check
 -> derived.etf_aw_target_weight
 -> health check
--> backtest kernel / evaluation report
+-> backtest kernel
+-> robustness evaluation report
+-> paper rebalance plan
+-> simulated fill / forward observation
 ```
 
 回测只能消费已经写出的风险预算和目标权重 artifact。回测内核和评估层不得在运行过程中重新估计 regime、重新生成 risk budget、重新优化 target weight 或动态搜索参数。
@@ -277,20 +280,38 @@ strategy_context
 
 该阶段仍不新增 backtest read model、API 或前端多策略对比图。
 
-### Stage M：回测稳健性评估（设计中）
+### Stage M：回测稳健性评估（设计完成，待实现）
 
-下一阶段拟单独提交 `backtest-robustness-evaluation-design.md`，其设计范围为：
+`backtest-robustness-evaluation-design.md` 已完成，其实现范围为：
 
 - 先审计当前策略与 baseline 的真实 point-in-time 可比区间、调仓周期数、状态分布和缺失原因。
 - 保持 gross backtest kernel 不变，在 evaluation/report 层增加固定成本敏感性网格。
 - 明确 previous-target turnover、初始建仓成本不可观测和短样本 caveat。
 - 用扩展样本和成本后结果决定是否值得设计 simplified ERC。
 
-该阶段仍只建设后端 CLI 和 repo-visible 报告，不新增 read model、API、前端或交易动作。
+该阶段仍只建设后端 CLI 和 repo-visible 报告，不新增 read model、API、前端或交易动作。详细合同见 `backtest-robustness-evaluation-design.md`。
+
+### Stage N：模拟盘订单草案（设计完成，待实现）
+
+Stage N 消费已冻结的目标权重、当前持仓、现金、账户总资产和最新可用价格，生成 `derived.etf_aw_rebalance_plan`。V1 固定 A 股 ETF 每手 100 份和 `cash_buffer_ratio = 0.01`，只输出 `DRAFT` 计划，不连接券商 API，不自动提交真实订单。
+
+订单计算必须满足：
+
+- 最新目标权重包含完整 5-sleeve，且权重和偏离 `1.0` 不超过 `1e-6`。
+- BUY 和 SELL 均按交易单位向下取整；SELL 不得超过 `available_quantity`。
+- 买入后保留固定现金缓冲；不足一手时输出 `HOLD` 和 `below_lot_size` warning。
+- symbol、价格、持仓映射、可用现金或可用持仓缺失时阻断计划。
+- 同一计划日期、策略版本和来源调仓日期不得重复生成非 cancelled 计划。
+
+该阶段不负责策略研究、回测、真实佣金估算、盘口/滑点建模或自动成交。
+
+### Stage O：模拟盘观察（设计完成，待实现）
+
+Stage O 记录模拟成交状态、成交价和数量、持仓、现金、组合净值、目标与实际权重偏离、当日/累计收益、相对 baseline 收益及人工备注。先使用 repo-visible 记录完成可追溯闭环，竞品式绩效与归因界面后置。
 
 ## 后续总流程
 
-以下 Stage M-R 是后续规划标签，不代表已经实现。每一阶段必须满足退出条件后才能进入下一阶段；如果决策门不通过，应回到明确的上游层生成新版本 artifact，不能在评估循环中临时调参。
+以下 Stage M-O 是近期交付标签，不代表已经实现。每一阶段必须满足退出条件后才能进入下一阶段；如果回测结论不足，应明确保留 research-only caveat，不能在评估循环中临时调参。
 
 ### 研发与交付主线
 
@@ -298,60 +319,35 @@ strategy_context
 Stage L 已完成：baseline artifact + 双 kernel + comparison report
   -> Stage M1：point-in-time 历史覆盖审计
   -> Stage M2：固定成本敏感性评估
-  -> 决策门 A：当前动态 risk budget 是否有稳健增量价值？
-       ├─ 数据覆盖不足
-       │    -> 补 point-in-time 数据或积累 forward research observation
-       │    -> 重建 frozen artifact
-       │    -> 回到 Stage M
-       ├─ 成本后优势不稳定
-       │    -> 当前 V1 保持 research-only，不进入 paper / shadow
-       │    -> 可选择复核 regime / risk-budget mapper、partial 状态和 confidence clamp
-       │    -> 如有规则变更，生成新的 strategy_version
-       │    -> 回到 risk budget -> target weight -> kernel -> Stage M
-       └─ 多区间、多成本场景下仍有一致改善
-            -> 批准当前 V1 strategy_version
-            -> 可选 Stage N：设计 simplified ERC candidate
-                 -> 为 candidate 生成独立 strategy_version / frozen target weight
-                 -> 使用同一个 kernel 和 Stage M 评估合同复测
-                 -> 决策门 B：candidate 是否相对当前 V1 有稳定增量？
-                      ├─ 否 -> 保留已批准的 budgeted_inverse_vol V1
-                      └─ 是 -> 批准并冻结 candidate strategy_version
-
-Stage M evaluation contract 稳定
-  -> Stage O：只读 evaluation read contract / API
-  -> Stage P：只读 Dashboard / workflow insight
-
-已批准 strategy_version + Stage P 可观察性稳定
-  -> Stage Q：paper rebalance plan
-  -> Stage R：shadow run / forward observation / post-mortem
+  -> Stage N：paper rebalance plan + DRAFT order artifact
+  -> 人工确认 / simulated fill
+  -> Stage O：daily forward observation / post-mortem
   -> 远期：小资金 live pilot（单独设计、单独授权）
 ```
+
+Stage M 后可并行形成研究决策：数据覆盖不足时补 point-in-time 数据；成本后优势不稳定时保留 V1 的 research-only 定位并复核上游规则；只有多区间、多成本结果一致时，才设计 simplified ERC candidate。candidate 必须使用独立 `strategy_version` 和同一 kernel / evaluation 合同，不占用 Stage N/O 的模拟盘交付编号。
 
 ### 阶段输入、输出和退出条件
 
 | 阶段 | 核心输入 | repo-visible 输出 | 退出条件 |
 | --- | --- | --- | --- |
 | Stage M | frozen strategy/baseline kernel、turnover、上游状态 | coverage + cost robustness Markdown/JSON report | gross 可复现、共同日期完整、成本场景可比、caveat 完整 |
-| 决策门 A | Stage M 报告 | 批准 V1、保持 research-only 或回修上游的书面结论 | 不以单一收益指标或当前 17 期样本自动批准策略 |
-| Stage N（条件式） | 已批准 V1、独立 risk budget / target weight candidate | 新 `strategy_version` 的 frozen artifact 与对比报告 | candidate 复用同一 kernel，且没有隐藏参数搜索 |
-| 决策门 B | V1、candidate、baseline 的同口径报告 | 保留 V1 或批准 candidate 的结论 | 风险调整后改善和换手/成本代价均被明确比较 |
-| Stage O | 稳定 evaluation report contract | read model、Pydantic response model、typed frontend contract | API 只读 artifact，不在请求时运行策略或回测 |
-| Stage P | Stage O read contract | 净值、回撤、指标、换手和 diagnostics 只读视图 | blocking diagnostic、`null` 指标和 caveat 可正确展示 |
-| Stage Q | 已批准版本的 frozen target weight、当前持仓、执行约束 | `derived.etf_aw_rebalance_plan` paper artifact | 最小交易单位、现金缓冲、no-trade band、成本过滤和人工确认边界稳定 |
-| Stage R | frozen plan、人工确认记录、后续市场数据 | shadow recommendation、forward observation、post-mortem | 不自动下单；每期建议、实际观察和偏差可追溯 |
+| Stage N | frozen target weight、当前持仓、现金、价格和交易单位 | `derived.etf_aw_rebalance_plan`、JSON/Markdown order draft | 权重、现金、持仓、价格和手数约束通过；只生成 `DRAFT` |
+| Stage O | frozen plan、模拟成交记录、后续市场数据 | daily observation、forward performance、post-mortem | 不自动下单；计划、模拟成交、净值和偏差可追溯 |
+| 可选研究分支 | Stage M 报告、独立 candidate artifact | 新 `strategy_version` 与同口径对比报告 | 不覆盖 V1，不隐藏参数搜索，不阻塞 Stage N/O 工程验证 |
 
 ### 决策门约束
 
 1. Stage M 数据覆盖不足时，不能靠 inner join、未来数据回填或放宽 frozen vector 合同拉长样本。
-2. 当前策略成本后优势不稳定时，保持 research-only；可以建设只读 Stage O/P，但不能进入 Stage Q/R。
-3. simplified ERC 如被允许进入 Stage N，必须使用独立 `strategy_version`，不得覆盖 V1 target weight。
-4. Stage O/P 只能消费稳定 read contract；API 或前端不能触发 artifact 生成、参数搜索或回测运行。
-5. Stage Q 必须消费经决策门 A/B 明确批准的 `strategy_version`；rebalance plan 是 paper suggestion，不是订单，真实交易必须由用户人工判断。
-6. Stage R 只记录 shadow recommendation 和 forward result。任何 live pilot 都需要单独的数据、风控、执行和授权设计。
+2. 当前策略成本后优势不稳定时，Stage M 必须保留 research-only caveat；Stage N/O 仅用于验证工程闭环和积累 forward evidence，不得宣称策略已被证明有效。
+3. simplified ERC candidate 必须使用独立 `strategy_version`，不得覆盖 V1 target weight，也不得阻塞近期模拟盘工程验证。
+4. API 或前端不能触发 artifact 生成、参数搜索、回测运行或订单提交。
+5. Stage N 的 rebalance plan 是 paper order draft，真实交易必须由用户人工判断；V1 不存在券商下单路径。
+6. Stage O 只记录 simulated fill 和 forward result。任何 live pilot 都需要单独的数据、风控、执行和授权设计。
 
 ### 未来日常运行流程
 
-Stage Q/R 尚未完成前，日常流程停在只读评估和人工判断：
+Stage N/O 尚未完成前，日常流程停在只读评估和人工判断：
 
 ```text
 每日数据同步
@@ -369,15 +365,15 @@ Stage Q/R 尚未完成前，日常流程停在只读评估和人工判断：
 -> 当前阶段由用户自行进行人工交易判断
 ```
 
-Stage Q/R 完成后，月度链路才允许继续到：
+Stage N/O 完成后，月度链路才允许继续到：
 
 ```text
 已批准且通过健康检查的 frozen target weight
 -> 读取当前持仓
--> 生成 paper rebalance plan
--> 执行约束与成本过滤
--> 人工确认或拒绝
--> 写入 shadow recommendation record
+-> 生成 DRAFT paper rebalance plan
+-> 手数、现金缓冲和可用持仓检查
+-> 人工确认或拒绝模拟成交
+-> 写入 simulated fill record
 -> forward observation
 -> post-mortem
 -> 下一调仓周期
@@ -463,10 +459,9 @@ strategy_context + risk_budget + target_weight + target kernel
 ```text
 coverage / cost robustness evaluation
 -> conditional strategy candidate comparison
--> evaluation read contract / API
--> read-only Dashboard / workflow insight
 -> paper rebalance plan
--> shadow recommendation / forward observation / post-mortem
+-> simulated fill / forward observation / post-mortem
+-> later: evaluation read contract / API / read-only Dashboard
 ```
 
 具体阶段、决策门和回退方向以“后续总流程”为准。
@@ -755,41 +750,36 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - WARN：单 sleeve 因 vol floor 或缺失数据被降级。
    - WARN：连续多个 rebalance date 的 target weight 完全不变，需要人工确认是中性回落还是计算未更新。
 
-### 延后文档
+### 近期交付文档
 
 5. `rebalance-plan-design.md`
 
-   只有在 `target-weight-design.md` 对应实现稳定后再写。
+   target weight 已稳定，按 Stage N 最小订单草案边界补写。
 
    范围：
 
    - 当前持仓输入。
    - 目标权重到 paper rebalance plan。
-   - 换手估算。
-   - 成本过滤。
-   - no-trade band。
-   - 最小交易金额和 ETF 最小交易单位。
-   - 现金缓冲。
-   - 不自动下单的人工确认边界。
+   - A 股 ETF 100 份交易单位和固定 1% 现金缓冲。
+   - BUY / SELL 向下取整、可用持仓与现金阻断。
+   - `DRAFT` artifact、幂等键和人工确认边界。
+   - 不接券商 API，不自动提交真实订单。
 
-6. `backtest-evaluation-design.md`
+6. `backtest-robustness-evaluation-design.md`
 
-   拆成两段推进。Phase 1 可在现有回测内核输出之上先定义 read endpoint 和单策略可视化；Phase 2 在 `target-weight-design.md` 对应实现能通过前置回测内核验收后，再做完整基线对标和评估层扩展。
+   设计已完成，直接在现有双策略 kernel 之上实现 Stage M，不先建设 read endpoint 或前端。
 
    范围：
 
-   - 单策略净值、回撤、指标卡片和换手展示合同。
-   - diagnostic 行到前端降级横幅的映射。
-   - 等权、静态 inverse-vol、静态风险平价基线。
-   - 成本和换手假设。
-   - 参数扰动。
-   - 日频有效权重输出。
-   - 月度 explainability report。
-   - Dashboard 净值展示边界。
+   - strategy 与静态 inverse-vol baseline 的共同覆盖审计。
+   - 0 / 5 / 10 / 20 bps 固定成本敏感性。
+   - gross / net 指标、换手和差值。
+   - sleeve 日期缺口、短样本、初始建仓成本和成交时点 caveat。
+   - Markdown / JSON repo-visible 报告。
 
 7. `shadow-run-design.md`
 
-   只有在 rebalance plan 能稳定生成后再写。
+   Stage N 最小计划稳定后补写 Stage O 观察合同。
 
    范围：
 
@@ -825,14 +815,14 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 10. 已增加后端命令行回测报表 Phase 0，覆盖净值、回撤、指标、换手和 diagnostics 摘要。
 11. 已增加 monthly explainability table，消费 frozen context / budget / weight / backtest artifact，并补齐 source version 追溯。
 12. 已完成 backtest evaluation baseline comparison：baseline 先生成独立 frozen weight artifact，再由同一个 kernel 分别运行策略和 baseline；旧 kernel 分区可原地升级来源字段。
-13. 下一步先单独提交 `backtest-robustness-evaluation-design.md`，再按其设计做历史覆盖审计和固定成本敏感性评估。
-14. 决策门 A 明确输出 approved 或 research-only；research-only 可以进入只读展示，但不能进入 paper / shadow。
-15. candidate 必须复用同一个 kernel 和 Stage M 评估合同，通过决策门 B 后才能晋级。
-16. evaluation 合同稳定后，再建设只读 read model、API 和 typed frontend contract。
-17. 前端只展示净值、回撤、指标、换手和 diagnostics，同时完成 `/etf-aw` 视觉清理；不提供策略运行或参数编辑入口。
-18. 只有 approved strategy_version、evaluation 和目标权重都稳定后，才新增 `rebalance-plan-design.md`，实现 paper rebalance plan 与人工确认边界。
-19. paper plan 稳定后，再新增 `shadow-run-design.md`，记录 recommendation、forward observation 和 post-mortem。
-20. 小资金 live pilot 属于远期单独阶段，不进入当前自动执行范围。
+13. `backtest-robustness-evaluation-design.md` 已完成，下一步按其合同实现历史覆盖审计和固定成本敏感性评估。
+14. 实现 Stage N 纯函数订单计划，覆盖买入、卖出、不足一手、现金不足、持仓不足和重复计划。
+15. 增加 Stage N CLI，输出 `DRAFT` JSON/Markdown 或 Parquet artifact，不接 API、前端或券商。
+16. 实现 Stage M coverage + cost robustness report，gross 场景必须严格复现 kernel。
+17. 跑通 target weight -> robustness report -> rebalance plan -> paper order draft 的端到端流程。
+18. 周一盘前执行 Go / No-Go：权重、价格、持仓、现金、手数、caveat 和复现信息全部通过后，才记录 simulated fill。
+19. Stage O 记录持仓、现金、净值、权重偏离、相对 baseline 收益和异常备注；短样本结论继续标记 research-only。
+20. simplified ERC、read API、前端绩效归因和小资金 live pilot 均后置，不阻塞 Stage M/N/O 最小闭环。
 
 ## 非目标
 
