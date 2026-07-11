@@ -549,8 +549,12 @@ def _backtest_report(frame: pd.DataFrame) -> dict:
         ),
     )
     report = {"strategies": grouped, "comparison": _baseline_comparison(grouped)}
-    if grouped:
-        report.update(grouped[0])
+    target = next(
+        (item for item in grouped if item.get("weight_source_type") == "target_weight"),
+        None,
+    )
+    if target is not None:
+        report.update(target)
     return report
 
 
@@ -569,6 +573,8 @@ def _single_backtest_report(frame: pd.DataFrame, values: dict[str, object]) -> d
         daily_nav = daily_nav.sort_values("observation_date")
         latest_nav = float(daily_nav.iloc[-1]["net_value"])
     turnover_values = turnover["metric_value"].dropna().astype(float)
+    nav_range = _observation_range(daily_nav)
+    turnover_range = _observation_range(turnover)
     return {
         "strategy_name": str(values.get("strategy_name")),
         "strategy_version": str(values.get("strategy_version")),
@@ -583,6 +589,10 @@ def _single_backtest_report(frame: pd.DataFrame, values: dict[str, object]) -> d
         "average_turnover": (
             float(turnover_values.mean()) if not turnover_values.empty else None
         ),
+        "daily_nav_start": nav_range[0],
+        "daily_nav_end": nav_range[1],
+        "turnover_start": turnover_range[0],
+        "turnover_end": turnover_range[1],
         "diagnostics": [
             json.loads(value)
             for value in diagnostics["quality_notes_json"].tolist()
@@ -601,21 +611,24 @@ def _baseline_comparison(strategies: list[dict]) -> dict | None:
         None,
     )
     baseline = next(
-        (
-            item
-            for item in strategies
-            if item.get("strategy_name") == "static_inverse_vol"
-            and item.get("strategy_version") == "static_inverse_vol_v1"
-        ),
+        (item for item in strategies if item.get("weight_source_type") == "baseline"),
         None,
     )
     if target is None or baseline is None:
         return None
+    common_turnover_start, common_turnover_end = _common_range(
+        target.get("turnover_start"),
+        target.get("turnover_end"),
+        baseline.get("turnover_start"),
+        baseline.get("turnover_end"),
+    )
     return {
         "target_strategy_name": target["strategy_name"],
         "target_strategy_version": target["strategy_version"],
         "baseline_strategy_name": baseline["strategy_name"],
         "baseline_strategy_version": baseline["strategy_version"],
+        "common_turnover_start": common_turnover_start,
+        "common_turnover_end": common_turnover_end,
         "total_return_diff": _metric_diff(target, baseline, "total_return"),
         "max_drawdown_diff": _metric_diff(target, baseline, "max_drawdown"),
         "annualized_volatility_diff": _metric_diff(
@@ -627,6 +640,31 @@ def _baseline_comparison(strategies: list[dict]) -> dict | None:
         "target_diagnostics": target.get("diagnostics", []),
         "baseline_diagnostics": baseline.get("diagnostics", []),
     }
+
+
+def _observation_range(frame: pd.DataFrame) -> tuple[str | None, str | None]:
+    if frame.empty:
+        return None, None
+    values = pd.to_datetime(frame["observation_date"], errors="coerce").dropna()
+    if values.empty:
+        return None, None
+    return values.min().date().isoformat(), values.max().date().isoformat()
+
+
+def _common_range(
+    left_start: object,
+    left_end: object,
+    right_start: object,
+    right_end: object,
+) -> tuple[str | None, str | None]:
+    values = [left_start, left_end, right_start, right_end]
+    if any(value is None for value in values):
+        return None, None
+    start = max(str(left_start), str(right_start))
+    end = min(str(left_end), str(right_end))
+    if start > end:
+        return None, None
+    return start, end
 
 
 def _metric_diff(target: dict, baseline: dict, metric_name: str) -> float | None:

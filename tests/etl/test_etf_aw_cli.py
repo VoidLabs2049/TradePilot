@@ -210,10 +210,71 @@ class EtfAwCliTests(unittest.TestCase):
         self.assertEqual(payload["daily_nav_rows"], 1)
         self.assertEqual(payload["metrics"]["total_return"], 0.01)
         self.assertEqual(len(payload["strategies"]), 2)
+        self.assertEqual(payload["comparison"]["common_turnover_start"], "2024-07-22")
+        self.assertEqual(payload["comparison"]["common_turnover_end"], "2024-07-22")
         self.assertAlmostEqual(payload["comparison"]["total_return_diff"], 0.005)
         self.assertAlmostEqual(
             payload["comparison"]["annualized_volatility_diff"], 0.02
         )
+
+    def test_backtest_report_does_not_flatten_baseline_only_payload(self) -> None:
+        frame = pd.DataFrame(
+            [
+                self._backtest_row(
+                    "daily_nav",
+                    date(2024, 7, 22),
+                    "net_value",
+                    1.005,
+                    1.005,
+                    strategy_name="static_inverse_vol",
+                    strategy_version="static_inverse_vol_v1",
+                    weight_source_type="baseline",
+                    source_weight_dataset="derived.etf_aw_baseline_weight",
+                ),
+                self._backtest_row(
+                    "metric",
+                    date(2024, 7, 22),
+                    "total_return",
+                    0.005,
+                    None,
+                    strategy_name="static_inverse_vol",
+                    strategy_version="static_inverse_vol_v1",
+                    weight_source_type="baseline",
+                    source_weight_dataset="derived.etf_aw_baseline_weight",
+                ),
+            ]
+        )
+        write_dataset_parquet(
+            frame,
+            "derived.etf_aw_backtest_kernel",
+            StorageZone.DERIVED,
+            [("year", 2024), ("month", "07")],
+            lakehouse_root=self.lakehouse_root,
+        )
+
+        result = self.runner.invoke(
+            main,
+            [
+                "backtest-report",
+                "--start-date",
+                "2024-07-01",
+                "--end-date",
+                "2024-07-31",
+                "--format",
+                "json",
+                "--db-path",
+                str(self.db_path),
+                "--lakehouse-root",
+                str(self.lakehouse_root),
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        payload = json.loads(result.output)
+        self.assertNotIn("strategy_name", payload)
+        self.assertIsNone(payload["comparison"])
+        self.assertEqual(len(payload["strategies"]), 1)
+        self.assertEqual(payload["strategies"][0]["weight_source_type"], "baseline")
 
     def _context_row(self, rebalance_date: date) -> dict:
         return {

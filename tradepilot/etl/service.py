@@ -851,23 +851,31 @@ class ETLService:
         frame = canonical.copy()
         frame["updated_at"] = _utc_now()
         self.conn.register("stage_b_calendar", frame)
-        existing = int(self.conn.execute("""
+        existing = int(
+            self.conn.execute(
+                """
                 SELECT COUNT(*) FROM canonical_trading_calendar
                 WHERE (exchange, trade_date) IN (
                     SELECT exchange, trade_date FROM stage_b_calendar
                 )
-                """).fetchone()[0])
-        self.conn.execute("""
+                """
+            ).fetchone()[0]
+        )
+        self.conn.execute(
+            """
             DELETE FROM canonical_trading_calendar
             WHERE (exchange, trade_date) IN (
                 SELECT exchange, trade_date FROM stage_b_calendar
             )
-            """)
-        self.conn.execute("""
+            """
+        )
+        self.conn.execute(
+            """
             INSERT INTO canonical_trading_calendar
             SELECT exchange, trade_date, is_open, pretrade_date, updated_at
             FROM stage_b_calendar
-            """)
+            """
+        )
         self.conn.unregister("stage_b_calendar")
         return CanonicalWriteResult(
             records_written=len(frame),
@@ -881,25 +889,33 @@ class ETLService:
         frame = canonical.copy()
         frame["updated_at"] = _utc_now()
         self.conn.register("stage_b_instruments", frame)
-        existing = int(self.conn.execute("""
+        existing = int(
+            self.conn.execute(
+                """
                 SELECT COUNT(*) FROM canonical_instruments
                 WHERE instrument_id IN (
                     SELECT instrument_id FROM stage_b_instruments
                 )
-                """).fetchone()[0])
-        self.conn.execute("""
+                """
+            ).fetchone()[0]
+        )
+        self.conn.execute(
+            """
             DELETE FROM canonical_instruments
             WHERE instrument_id IN (
                 SELECT instrument_id FROM stage_b_instruments
             )
-            """)
-        self.conn.execute("""
+            """
+        )
+        self.conn.execute(
+            """
             INSERT INTO canonical_instruments
             SELECT instrument_id, source_instrument_id, instrument_name,
                    instrument_type, exchange, list_date, delist_date,
                    is_active, source_name, updated_at
             FROM stage_b_instruments
-            """)
+            """
+        )
         self.conn.unregister("stage_b_instruments")
         return CanonicalWriteResult(
             records_written=len(frame),
@@ -1446,13 +1462,16 @@ class ETLService:
         frame["updated_at"] = now
         self.conn.register("stage_c_etf_aw_sleeves", frame)
         try:
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 DELETE FROM canonical_sleeves
                 WHERE sleeve_code IN (
                     SELECT sleeve_code FROM stage_c_etf_aw_sleeves
                 )
-                """)
-            self.conn.execute("""
+                """
+            )
+            self.conn.execute(
+                """
                 INSERT INTO canonical_sleeves (
                     sleeve_code, sleeve_name, sleeve_type, is_active, updated_at,
                     sleeve_role, listing_exchange, benchmark_name, list_date,
@@ -1462,7 +1481,8 @@ class ETLService:
                        sleeve_role, listing_exchange, benchmark_name, list_date,
                        exposure_note, created_at
                 FROM stage_c_etf_aw_sleeves
-                """)
+                """
+            )
         finally:
             self.conn.unregister("stage_c_etf_aw_sleeves")
 
@@ -1485,7 +1505,8 @@ class ETLService:
         )
         self.conn.register("stage_c_etf_aw_instruments", frame)
         try:
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 INSERT INTO canonical_instruments (
                     instrument_id, source_instrument_id, instrument_name,
                     instrument_type, exchange, list_date, delist_date, is_active,
@@ -1498,28 +1519,35 @@ class ETLService:
                 LEFT JOIN canonical_instruments c
                   ON s.instrument_id = c.instrument_id
                 WHERE c.instrument_id IS NULL
-                """)
+                """
+            )
         finally:
             self.conn.unregister("stage_c_etf_aw_instruments")
 
     def _validate_etf_aw_sleeves(self) -> dict[str, bool]:
         self.conn.register("stage_c_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            rows = self.conn.execute("""
+            rows = self.conn.execute(
+                """
                 SELECT s.sleeve_code, s.sleeve_role, s.listing_exchange,
                        s.exposure_note, s.is_active
                 FROM canonical_sleeves s
                 JOIN stage_c_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 ORDER BY s.sleeve_code
-                """).fetchall()
-            instrument_count = int(self.conn.execute("""
+                """
+            ).fetchall()
+            instrument_count = int(
+                self.conn.execute(
+                    """
                     SELECT COUNT(*)
                     FROM canonical_instruments i
                     JOIN stage_c_etf_aw_codes c
                       ON i.instrument_id = c.sleeve_code
                     WHERE i.instrument_type = 'etf'
-                    """).fetchone()[0])
+                    """
+                ).fetchone()[0]
+            )
         finally:
             self.conn.unregister("stage_c_etf_aw_codes")
         active_codes = [row[0] for row in rows if row[4] is True]
@@ -1648,13 +1676,15 @@ class ETLService:
     ) -> pd.DataFrame:
         self.conn.register("stage_c_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            sleeves = self.conn.execute("""
+            sleeves = self.conn.execute(
+                """
                 SELECT s.sleeve_code, s.sleeve_role
                 FROM canonical_sleeves s
                 JOIN stage_c_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 WHERE s.is_active = TRUE
-                """).fetchdf()
+                """
+            ).fetchdf()
         finally:
             self.conn.unregister("stage_c_etf_aw_codes")
         daily = daily.copy()
@@ -1807,7 +1837,8 @@ class ETLService:
         return frame
 
     def _latest_market_watermarks(self) -> dict[str, date | None]:
-        rows = self.conn.execute("""
+        rows = self.conn.execute(
+            """
             SELECT dataset_name, latest_fetched_date
             FROM etl_source_watermarks
             WHERE dataset_name IN (
@@ -1815,7 +1846,8 @@ class ETLService:
                 'market.etf_adj_factor',
                 'reference.trading_calendar'
             )
-            """).fetchall()
+            """
+        ).fetchall()
         return {str(row[0]): row[1] for row in rows}
 
     def _make_etf_aw_rebalance_snapshot_frame(
@@ -1859,13 +1891,15 @@ class ETLService:
     def _active_etf_aw_sleeves_frame(self) -> pd.DataFrame:
         self.conn.register("stage_d_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            frame = self.conn.execute("""
+            frame = self.conn.execute(
+                """
                 SELECT s.sleeve_code, s.sleeve_role
                 FROM canonical_sleeves s
                 JOIN stage_d_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 WHERE s.is_active = TRUE
-                """).fetchdf()
+                """
+            ).fetchdf()
         finally:
             self.conn.unregister("stage_d_etf_aw_codes")
         if frame.empty:
@@ -2460,7 +2494,7 @@ class ETLService:
             )
         panel = self._read_partitioned_dataset(
             "derived.etf_aw_sleeve_daily",
-            start - timedelta(days=_ETF_AW_BASELINE_PANEL_LOOKBACK_DAYS),
+            start - timedelta(days=_ETF_AW_TARGET_WEIGHT_PANEL_LOOKBACK_DAYS),
             end,
             StorageZone.DERIVED,
         )
@@ -2561,7 +2595,7 @@ class ETLService:
             return _failed("canonical rebalance calendar is missing")
         panel = self._read_partitioned_dataset(
             "derived.etf_aw_sleeve_daily",
-            start - timedelta(days=_ETF_AW_TARGET_WEIGHT_PANEL_LOOKBACK_DAYS),
+            start - timedelta(days=_ETF_AW_BASELINE_PANEL_LOOKBACK_DAYS),
             end,
             StorageZone.DERIVED,
         )
@@ -2698,27 +2732,22 @@ class ETLService:
         )
         if panel.empty:
             return _failed("derived sleeve daily panel is missing")
-        if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE:
-            weights = self._read_partitioned_dataset(
-                source_dataset,
-                start,
-                end,
-                StorageZone.DERIVED,
-            )
-            if not weights.empty:
-                weights = weights[
-                    weights["baseline_name"].astype(str).eq(baseline_name)
-                    & weights["baseline_version"].astype(str).eq(baseline_version)
-                ].copy()
-                weights["strategy_name"] = weights["baseline_name"].astype(str)
-                weights["strategy_version"] = weights["baseline_version"].astype(str)
-        else:
-            weights = self._read_partitioned_dataset(
-                source_dataset,
-                start,
-                end,
-                StorageZone.DERIVED,
-            )
+        weights = self._read_partitioned_dataset(
+            source_dataset,
+            start,
+            end,
+            StorageZone.DERIVED,
+        )
+        if (
+            weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE
+            and not weights.empty
+        ):
+            weights = weights[
+                weights["baseline_name"].astype(str).eq(baseline_name)
+                & weights["baseline_version"].astype(str).eq(baseline_version)
+            ].copy()
+            weights["strategy_name"] = weights["baseline_name"].astype(str)
+            weights["strategy_version"] = weights["baseline_version"].astype(str)
         if weights.empty:
             return _failed(f"ETF all-weather {weight_source_type} is missing")
         weights["weight_source_type"] = weight_source_type
@@ -3084,7 +3113,8 @@ class ETLService:
                 """,
                 [_REBALANCE_CALENDAR_NAME],
             )
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 INSERT INTO canonical_rebalance_calendar (
                     calendar_name, calendar_month, rebalance_date, effective_date,
                     notes, updated_at
@@ -3092,7 +3122,8 @@ class ETLService:
                 SELECT calendar_name, calendar_month, rebalance_date, effective_date,
                        notes, updated_at
                 FROM stage_c_rebalance_calendar
-                """)
+                """
+            )
         finally:
             self.conn.unregister("stage_c_rebalance_calendar")
 
@@ -5749,14 +5780,8 @@ def _make_etf_aw_baseline_weight_frame(
 
 
 def _static_inverse_vol_weights(vol_by_role: dict[str, float]) -> dict[str, float]:
-    scores = {
-        role: 1.0 / max(vol_by_role[role], _ETF_AW_TARGET_WEIGHT_VOL_FLOOR)
-        for role in ETF_AW_SLEEVE_ROLE_ORDER
-    }
-    total = sum(scores.values())
-    if total <= 0.0:
-        return {}
-    return {role: scores[role] / total for role in ETF_AW_SLEEVE_ROLE_ORDER}
+    risk_budget = {role: 1.0 for role in ETF_AW_SLEEVE_ROLE_ORDER}
+    return _budgeted_inverse_vol_weights(risk_budget, vol_by_role)
 
 
 def _validate_baseline_weight_frame(frame: pd.DataFrame) -> dict[str, bool]:
