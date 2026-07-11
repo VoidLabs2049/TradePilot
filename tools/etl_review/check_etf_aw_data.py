@@ -115,23 +115,19 @@ def main(db_path: Path, lakehouse_root: Path) -> None:
 
 
 def _load_data(conn: duckdb.DuckDBPyConnection, lakehouse_root: Path) -> LoadedData:
-    sleeves = conn.execute(
-        """
+    sleeves = conn.execute("""
         SELECT sleeve_code, sleeve_role, listing_exchange, exposure_note, is_active
         FROM canonical_sleeves
         WHERE is_active = TRUE
-        """
-    ).fetchdf()
+        """).fetchdf()
     calendar = conn.execute(
         "SELECT exchange, trade_date, is_open FROM canonical_trading_calendar"
     ).fetchdf()
     calendar["trade_date"] = _date_series(calendar, "trade_date")
-    rebalance_calendar = conn.execute(
-        """
+    rebalance_calendar = conn.execute("""
         SELECT calendar_name, calendar_month, rebalance_date, effective_date
         FROM canonical_rebalance_calendar
-        """
-    ).fetchdf()
+        """).fetchdf()
     watermarks = conn.execute(
         "SELECT dataset_name, latest_fetched_date FROM etl_source_watermarks"
     ).fetchdf()
