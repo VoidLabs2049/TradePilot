@@ -23,7 +23,7 @@ jobs:
           python -m pip install pre-commit
 
       - name: Run Black check via pre-commit
-        run: pre-commit run black --all-files --show-diff-on-failure
+        run: pre-commit run black --all-files
 
   python-tests:
     name: Python tests
