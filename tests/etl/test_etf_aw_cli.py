@@ -398,8 +398,6 @@ class EtfAwCliTests(unittest.TestCase):
                 "json",
                 "--output",
                 str(output),
-                "--db-path",
-                str(self.db_path),
                 "--lakehouse-root",
                 str(self.lakehouse_root),
             ],
@@ -475,8 +473,6 @@ class EtfAwCliTests(unittest.TestCase):
                 "json",
                 "--output",
                 str(output),
-                "--db-path",
-                str(self.db_path),
                 "--lakehouse-root",
                 str(self.lakehouse_root),
             ],
@@ -561,8 +557,6 @@ class EtfAwCliTests(unittest.TestCase):
                 "json",
                 "--output",
                 str(output),
-                "--db-path",
-                str(self.db_path),
                 "--lakehouse-root",
                 str(self.lakehouse_root),
             ],
@@ -577,6 +571,12 @@ class EtfAwCliTests(unittest.TestCase):
             payload["coverage"]["blocking_reasons"],
         )
         self.assertIsNone(payload["strategies"][0]["scenarios"][0]["net_total_return"])
+
+    def test_backtest_robustness_report_help_omits_db_path(self) -> None:
+        result = self.runner.invoke(main, ["backtest-robustness-report", "--help"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("--db-path", result.output)
 
     def _context_row(self, rebalance_date: date) -> dict:
         return {

@@ -17,6 +17,7 @@ from tradepilot.etl import update_etf_aw_data
 from tradepilot.etl.models import RunStatus, StorageZone
 from tradepilot.etl.service import (
     ETLService,
+    _backtest_metric_values,
     _validate_baseline_weight_frame,
     _validate_risk_budget_frame,
     _validate_target_weight_frame,
@@ -467,12 +468,6 @@ def backtest_report(
     required=True,
 )
 @click.option(
-    "--db-path",
-    type=click.Path(path_type=Path, dir_okay=False),
-    default=DB_PATH,
-    show_default=True,
-)
-@click.option(
     "--lakehouse-root",
     type=click.Path(path_type=Path, file_okay=False),
     default=LAKEHOUSE_ROOT,
@@ -487,12 +482,10 @@ def backtest_robustness_report(
     end_date: str,
     output_format: str,
     output_path: Path,
-    db_path: Path,
     lakehouse_root: Path,
 ) -> None:
     """Write the Stage M robustness report from frozen backtest artifacts."""
 
-    del db_path
     start = _parse_date(start_date, "start-date")
     end = _parse_date(end_date, "end-date")
     with _lakehouse_service(lakehouse_root) as service:
@@ -1147,8 +1140,8 @@ def _robustness_scenario(
             for gross_return, cost in zip(returns, costs, strict=True)
         ]
         estimated_cost_sum = sum(cost for cost in costs if cost is not None)
-    nav = _nav_from_returns(net_returns)
-    metrics = _metrics_from_nav_and_returns(nav, net_returns)
+    final_nav = float((1.0 + pd.Series(net_returns, dtype=float)).prod())
+    metrics = _backtest_metric_values(net_returns, [], final_nav)
     average_turnover = sum(turnover.values()) / len(turnover) if turnover else None
     base.update(
         {
@@ -1310,49 +1303,6 @@ def _cost_fractions(
         else:
             costs.append(2.0 * turnover.get(current_date, 0.0) * rate)
     return costs
-
-
-def _metrics_from_nav_and_returns(nav: list[float], returns: list[float]) -> dict:
-    if not nav:
-        return {
-            "total_return": None,
-            "annualized_return": None,
-            "annualized_volatility": None,
-            "sharpe_ratio": None,
-            "max_drawdown": None,
-        }
-    total_return = nav[-1] - 1.0
-    annualized_return = nav[-1] ** (252 / len(nav)) - 1.0
-    volatility = float(pd.Series(returns).std(ddof=1)) * math.sqrt(252)
-    sharpe = (
-        None
-        if volatility == 0.0 or math.isnan(volatility)
-        else annualized_return / volatility
-    )
-    running_max = []
-    current_max = 0.0
-    for value in nav:
-        current_max = max(current_max, value)
-        running_max.append(current_max)
-    drawdowns = [
-        (value / high) - 1.0 for value, high in zip(nav, running_max, strict=True)
-    ]
-    return {
-        "total_return": total_return,
-        "annualized_return": annualized_return,
-        "annualized_volatility": None if math.isnan(volatility) else volatility,
-        "sharpe_ratio": sharpe,
-        "max_drawdown": min(drawdowns),
-    }
-
-
-def _nav_from_returns(returns: list[float]) -> list[float]:
-    nav = []
-    current = 1.0
-    for value in returns:
-        current *= 1.0 + value
-        nav.append(current)
-    return nav
 
 
 def _cost_blocking_reasons(
