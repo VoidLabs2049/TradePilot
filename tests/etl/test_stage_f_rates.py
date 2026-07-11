@@ -225,14 +225,12 @@ class StageFRatesTests(unittest.TestCase):
             "percent",
         )
         self.assertTrue(all(frame["quality_status"].eq("pass_with_caveat")))
-        watermark = self.conn.execute(
-            """
+        watermark = self.conn.execute("""
             SELECT latest_fetched_date
             FROM etl_source_watermarks
             WHERE dataset_name = 'rates.daily_rates'
               AND source_name = 'tushare'
-            """
-        ).fetchone()
+            """).fetchone()
         self.assertEqual(watermark[0], date(2026, 4, 20))
 
     def test_tushare_client_pivots_yc_cb_long_format_curve_points(self) -> None:
@@ -287,14 +285,12 @@ class StageFRatesTests(unittest.TestCase):
             pd.to_datetime(frame["effective_date"]).dt.date.tolist(),
             [date(2026, 4, 20)] * 2,
         )
-        watermark = self.conn.execute(
-            """
+        watermark = self.conn.execute("""
             SELECT latest_fetched_date
             FROM etl_source_watermarks
             WHERE dataset_name = 'rates.lpr'
               AND source_name = 'tushare'
-            """
-        ).fetchone()
+            """).fetchone()
         self.assertEqual(watermark[0], date(2026, 4, 20))
 
     def test_lpr_normalizer_falls_back_to_day_20_and_next_open_day(self) -> None:
@@ -485,15 +481,13 @@ class StageFRatesTests(unittest.TestCase):
                 )
         self.conn.register("stage_f_calendar_rows", pd.DataFrame(rows))
         try:
-            self.conn.execute(
-                """
+            self.conn.execute("""
                 INSERT INTO canonical_trading_calendar (
                     exchange, trade_date, is_open, pretrade_date, updated_at
                 )
                 SELECT exchange, trade_date, is_open, pretrade_date, updated_at
                 FROM stage_f_calendar_rows
-                """
-            )
+                """)
         finally:
             self.conn.unregister("stage_f_calendar_rows")
 
