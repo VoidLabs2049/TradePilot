@@ -21,14 +21,16 @@ class UpdateEtfAwDataTests(unittest.TestCase):
     def test_build_update_plan_uses_watermarks_and_repair_days(self) -> None:
         conn = duckdb.connect(":memory:")
         self._create_watermark_table(conn)
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO etl_source_watermarks (
                 dataset_name, latest_fetched_date, updated_at
             ) VALUES
                 ('market.etf_daily', DATE '2026-05-29', CURRENT_TIMESTAMP),
                 ('market.etf_adj_factor', DATE '2026-05-29', CURRENT_TIMESTAMP),
                 ('reference.trading_calendar', DATE '2026-05-31', CURRENT_TIMESTAMP)
-            """)
+            """
+        )
 
         plan = build_update_plan(
             conn=conn,
@@ -55,7 +57,8 @@ class UpdateEtfAwDataTests(unittest.TestCase):
     ) -> None:
         conn = duckdb.connect(":memory:")
         self._create_watermark_table(conn)
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO etl_source_watermarks (
                 dataset_name, latest_fetched_date, updated_at
             ) VALUES
@@ -66,7 +69,8 @@ class UpdateEtfAwDataTests(unittest.TestCase):
                 ('rates.lpr', DATE '2026-06-01', CURRENT_TIMESTAMP),
                 ('rates.gov_curve_points', DATE '2026-06-01', CURRENT_TIMESTAMP),
                 ('reference.trading_calendar', DATE '2026-06-01', CURRENT_TIMESTAMP)
-            """)
+            """
+        )
 
         with TemporaryDirectory() as temp_dir:
             plan = build_update_plan(
@@ -94,12 +98,14 @@ class UpdateEtfAwDataTests(unittest.TestCase):
     ) -> None:
         conn = duckdb.connect(":memory:")
         self._create_watermark_table(conn)
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO etl_source_watermarks (
                 dataset_name, latest_fetched_date, updated_at
             ) VALUES
                 ('market.etf_daily', DATE '2026-06-01', CURRENT_TIMESTAMP)
-            """)
+            """
+        )
 
         with TemporaryDirectory() as temp_dir:
             lakehouse = Path(temp_dir) / "lakehouse"
@@ -125,12 +131,14 @@ class UpdateEtfAwDataTests(unittest.TestCase):
     def test_build_update_plan_repairs_first_missing_lakehouse_month(self) -> None:
         conn = duckdb.connect(":memory:")
         self._create_watermark_table(conn)
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO etl_source_watermarks (
                 dataset_name, latest_fetched_date, updated_at
             ) VALUES
                 ('market.etf_daily', DATE '2026-06-01', CURRENT_TIMESTAMP)
-            """)
+            """
+        )
 
         with TemporaryDirectory() as temp_dir:
             lakehouse = Path(temp_dir) / "lakehouse"
@@ -156,13 +164,15 @@ class UpdateEtfAwDataTests(unittest.TestCase):
     def test_build_update_plan_full_refresh_ignores_watermarks(self) -> None:
         conn = duckdb.connect(":memory:")
         self._create_watermark_table(conn)
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO etl_source_watermarks (
                 dataset_name, latest_fetched_date, updated_at
             ) VALUES
                 ('market.etf_daily', DATE '2026-06-01', CURRENT_TIMESTAMP),
                 ('rates.lpr', DATE '2026-06-01', CURRENT_TIMESTAMP)
-            """)
+            """
+        )
 
         plan = build_update_plan(
             conn=conn,
@@ -271,7 +281,8 @@ class UpdateEtfAwDataTests(unittest.TestCase):
         self.assertIn("canonical_trading_calendar", tables)
 
     def _create_watermark_table(self, conn: duckdb.DuckDBPyConnection) -> None:
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE etl_source_watermarks (
                 dataset_name VARCHAR,
                 source_name VARCHAR,
@@ -280,7 +291,8 @@ class UpdateEtfAwDataTests(unittest.TestCase):
                 latest_successful_run_id BIGINT,
                 updated_at TIMESTAMP
             )
-            """)
+            """
+        )
 
     def _write_lakehouse_dates(
         self,
