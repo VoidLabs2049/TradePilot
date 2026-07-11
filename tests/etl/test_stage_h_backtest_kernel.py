@@ -67,6 +67,10 @@ class StageHBacktestKernelTests(unittest.TestCase):
         self.assertIn("daily_nav", set(frame["observation_type"]))
         self.assertIn("metric", set(frame["observation_type"]))
         self.assertIn("turnover", set(frame["observation_type"]))
+        self.assertEqual(set(frame["weight_source_type"]), {"target_weight"})
+        self.assertEqual(
+            set(frame["source_weight_dataset"]), {"derived.etf_aw_target_weight"}
+        )
         metrics = frame[frame["observation_type"] == "metric"]
         self.assertIn("max_drawdown", set(metrics["metric_name"]))
         self.assertIn("sharpe_ratio", set(metrics["metric_name"]))
@@ -100,11 +104,61 @@ class StageHBacktestKernelTests(unittest.TestCase):
                     "calendar_name",
                     "strategy_name",
                     "strategy_version",
+                    "weight_source_type",
                     "observation_type",
                     "observation_date",
                     "metric_name",
                 ]
             ).any()
+        )
+
+    def test_baseline_upgrades_legacy_target_weight_kernel_partition(self) -> None:
+        self._insert_rebalance(date(2024, 1, 22))
+        self._write_sleeve_daily(date(2024, 1, 22), date(2024, 1, 31))
+        self._write_target_weights([date(2024, 1, 22)])
+        target = self.service.run_bootstrap(
+            "derived.etf_aw_backtest_kernel.build",
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        self.assertEqual(target["status"], RunStatus.SUCCESS.value, target)
+        path = (
+            self.lakehouse_root
+            / "derived"
+            / "derived.etf_aw_backtest_kernel"
+            / "2024"
+            / "01"
+            / "part-00000.parquet"
+        )
+        legacy = pd.read_parquet(path).drop(
+            columns=["weight_source_type", "source_weight_dataset"]
+        )
+        legacy.to_parquet(path, index=False)
+        history = self._sleeve_daily_frame(date(2023, 10, 2), date(2024, 1, 31))
+        varied = history["trade_date"].eq(date(2024, 1, 24))
+        history.loc[varied, ["pct_chg", "adj_pct_chg"]] *= 2.0
+        self.service._write_etf_aw_sleeve_daily(history)
+        baseline = self.service.run_bootstrap(
+            "derived.etf_aw_baseline_weight.build",
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+
+        result = self.service._build_etf_aw_backtest_kernel(
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+            weight_source_type="baseline",
+        )
+
+        self.assertEqual(baseline["status"], RunStatus.SUCCESS.value)
+        self.assertEqual(result["status"], RunStatus.SUCCESS.value, result)
+        frame = self._read_backtest_file(2024, 1)
+        self.assertEqual(
+            set(frame["weight_source_type"]), {"target_weight", "baseline"}
+        )
+        self.assertEqual(
+            set(frame["source_weight_dataset"]),
+            {"derived.etf_aw_target_weight", "derived.etf_aw_baseline_weight"},
         )
 
     def test_bootstrap_requires_target_weight_artifact(self) -> None:
@@ -120,7 +174,91 @@ class StageHBacktestKernelTests(unittest.TestCase):
         self.assertEqual(result["status"], RunStatus.FAILED.value)
         self.assertEqual(
             result["error_message"],
-            "ETF all-weather target weight is missing",
+            "ETF all-weather target_weight is missing",
+        )
+
+    def test_backtest_kernel_rejects_unknown_weight_source_type(self) -> None:
+        result = self.service._build_etf_aw_backtest_kernel(
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+            weight_source_type="baseline-weight",
+        )
+
+        self.assertEqual(result["status"], RunStatus.FAILED.value)
+        self.assertEqual(result["weight_source_type"], "baseline-weight")
+        self.assertEqual(
+            result["error_message"],
+            "ETF all-weather weight_source_type is invalid",
+        )
+
+    def test_target_weight_backtest_ignores_baseline_identity(self) -> None:
+        self._insert_rebalance(date(2024, 1, 22))
+        self._write_sleeve_daily(date(2024, 1, 22), date(2024, 1, 31))
+
+        result = self.service._build_etf_aw_backtest_kernel(
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+            weight_source_type="target_weight",
+            baseline_name="",
+            baseline_version="",
+        )
+
+        self.assertEqual(result["status"], RunStatus.FAILED.value)
+        self.assertEqual(result["weight_source_type"], "target_weight")
+        self.assertNotIn("baseline_name", result)
+        self.assertEqual(
+            result["error_message"],
+            "ETF all-weather target_weight is missing",
+        )
+
+    def test_baseline_backtest_failure_includes_baseline_source_context(
+        self,
+    ) -> None:
+        self._insert_rebalance(date(2024, 1, 22))
+        self._write_sleeve_daily(date(2024, 1, 22), date(2024, 1, 31))
+
+        result = self.service._build_etf_aw_backtest_kernel(
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+            weight_source_type="baseline",
+            baseline_name="static_inverse_vol",
+            baseline_version="static_inverse_vol_v1",
+        )
+
+        self.assertEqual(result["status"], RunStatus.FAILED.value)
+        self.assertEqual(
+            result["profile_name"],
+            (
+                "derived.etf_aw_backtest_kernel.build."
+                "static_inverse_vol.static_inverse_vol_v1"
+            ),
+        )
+        self.assertEqual(result["weight_source_type"], "baseline")
+        self.assertEqual(result["baseline_name"], "static_inverse_vol")
+        self.assertEqual(result["baseline_version"], "static_inverse_vol_v1")
+        self.assertEqual(
+            result["source_weight_dataset"],
+            "derived.etf_aw_baseline_weight",
+        )
+        self.assertEqual(
+            result["error_message"],
+            "ETF all-weather baseline is missing",
+        )
+
+    def test_baseline_backtest_requires_baseline_identity(self) -> None:
+        result = self.service._build_etf_aw_backtest_kernel(
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+            weight_source_type="baseline",
+            baseline_name="",
+            baseline_version="static_inverse_vol_v1",
+        )
+
+        self.assertEqual(result["status"], RunStatus.FAILED.value)
+        self.assertEqual(result["weight_source_type"], "baseline")
+        self.assertEqual(
+            result["error_message"],
+            "ETF all-weather baseline name/version is required",
         )
 
     def test_duplicate_weight_rows_block_pure_kernel(self) -> None:
