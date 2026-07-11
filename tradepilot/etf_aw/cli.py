@@ -960,6 +960,10 @@ def _robustness_coverage(
         name_column="baseline_name",
         version_column="baseline_version",
     )
+    if target_daily_dates and not target_weight_dates:
+        blocking.append("target weight is incomplete inside comparable range")
+    if baseline_daily_dates and not baseline_weight_dates:
+        blocking.append("baseline weight is incomplete inside comparable range")
     comparable_start, comparable_end = _comparable_range(
         [
             min(target_daily_dates) if target_daily_dates else None,
@@ -1004,7 +1008,7 @@ def _robustness_coverage(
         if baseline_missing_weights:
             blocking.append("baseline weight is incomplete inside comparable range")
     diagnostics = _diagnostics(target_frame) + _diagnostics(baseline_frame)
-    if diagnostics:
+    if _blocking_diagnostics(diagnostics):
         blocking.append("backtest kernel contains blocking diagnostic rows")
     strategy_status_counts = _value_counts(
         inputs["target_weight"], "target_weight_status"
@@ -1101,7 +1105,7 @@ def _robustness_scenario(
     cost_bps: int,
     blocked: bool,
 ) -> dict:
-    gross_metrics = _kernel_metrics(frame)
+    gross_metrics = _kernel_metrics(frame, coverage)
     base = {
         "cost_scenario": scenario_name,
         "cost_bps_per_executed_notional": cost_bps,
@@ -1224,20 +1228,46 @@ def _daily_nav(frame: pd.DataFrame, coverage: dict) -> pd.DataFrame:
         & (rows["observation_date"] <= end)
     ].copy()
     rows = rows.sort_values("observation_date")
+    fallback_returns = (
+        rows["net_value"]
+        .astype(float)
+        .pct_change()
+        .fillna(rows["net_value"].astype(float) - 1.0)
+    )
     if "portfolio_return" not in rows.columns:
-        rows["portfolio_return"] = (
-            rows["net_value"]
-            .astype(float)
-            .pct_change()
-            .fillna(rows["net_value"].astype(float) - 1.0)
+        rows["portfolio_return"] = fallback_returns
+    else:
+        rows["portfolio_return"] = pd.to_numeric(
+            rows["portfolio_return"], errors="coerce"
+        )
+        rows["portfolio_return"] = rows["portfolio_return"].where(
+            rows["portfolio_return"].apply(
+                lambda value: _finite_float(value) is not None
+            ),
+            fallback_returns,
         )
     return rows
 
 
-def _kernel_metrics(frame: pd.DataFrame) -> dict[str, float | None]:
+def _kernel_metrics(frame: pd.DataFrame, coverage: dict) -> dict[str, float | None]:
     if frame.empty:
         return {}
+    if coverage["comparable_start_date"] is None:
+        return {}
+    start = date.fromisoformat(coverage["comparable_start_date"])
+    end = date.fromisoformat(coverage["comparable_end_date"])
     metrics = frame[frame["observation_type"].astype(str).eq("metric")]
+    metrics = metrics.copy()
+    metrics["observation_date"] = pd.to_datetime(
+        metrics["observation_date"], errors="coerce"
+    ).dt.date
+    metrics = metrics[
+        metrics["observation_date"].notna()
+        & (metrics["observation_date"] >= start)
+        & (metrics["observation_date"] <= end)
+    ].copy()
+    metrics = metrics.sort_values(["metric_name", "observation_date"])
+    metrics = metrics.drop_duplicates(["metric_name"], keep="last")
     return {
         str(row["metric_name"]): _finite_float(row["metric_value"])
         for _, row in metrics.iterrows()
@@ -1356,6 +1386,7 @@ def _complete_weight_dates(
         name_column,
         version_column,
         "sleeve_code",
+        "target_weight",
     }
     if not required.issubset(frame.columns):
         return set()
@@ -1369,9 +1400,23 @@ def _complete_weight_dates(
     ).dt.date
     result = set()
     for rebalance_date, group in rows.groupby("rebalance_date"):
-        if len(set(group["sleeve_code"].astype(str))) == 5:
+        if _complete_weight_group(group):
             result.add(rebalance_date)
     return result
+
+
+def _complete_weight_group(group: pd.DataFrame) -> bool:
+    if len(set(group["sleeve_code"].astype(str))) != 5:
+        return False
+    for status_column in ("target_weight_status", "baseline_weight_status"):
+        if status_column in group.columns and not all(
+            group[status_column].astype(str).eq("complete")
+        ):
+            return False
+    weights = [_finite_float(value) for value in group["target_weight"].tolist()]
+    if any(value is None or value < 0.0 for value in weights):
+        return False
+    return abs(sum(value or 0.0 for value in weights) - 1.0) <= 1e-6
 
 
 def _missing_weight_periods(
@@ -1417,6 +1462,18 @@ def _diagnostics(frame: pd.DataFrame) -> list[dict]:
         if isinstance(value, str):
             result.append(json.loads(value))
     return result
+
+
+def _blocking_diagnostics(diagnostics: list[dict]) -> list[dict]:
+    blocking = []
+    for item in diagnostics:
+        severity = str(item.get("severity", "")).lower()
+        status = str(item.get("status", "")).lower()
+        if item.get("blocking") is True or severity in {"error", "fail", "blocking"}:
+            blocking.append(item)
+        elif status in {"error", "fail", "blocked", "blocking"}:
+            blocking.append(item)
+    return blocking
 
 
 def _value_counts(frame: pd.DataFrame, column: str) -> dict[str, int]:
