@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
@@ -12,6 +12,12 @@ from click.testing import CliRunner
 import pandas as pd
 
 from tradepilot.etf_aw.cli import main
+from tradepilot.etf_aw.shadow_run import (
+    ClosePriceItem,
+    PriceSnapshotInput,
+    build_shadow_observation_rows,
+    derive_plan_status,
+)
 from tradepilot.etl.models import StorageZone
 from tradepilot.etl.storage import write_dataset_parquet
 
@@ -400,6 +406,97 @@ class StageOShadowRunTests(unittest.TestCase):
         )
         self.assertEqual(len(observation), 10)
 
+    def test_observation_uses_price_as_of_for_active_plan(self) -> None:
+        future_plan = self._plan_frame().copy()
+        future_plan["plan_id"] = "future-plan"
+        future_plan["target_weight"] = 0.4
+        decisions = pd.DataFrame(
+            [
+                {
+                    "plan_id": self.plan_id,
+                    "account_id": "paper-main",
+                    "decision": "CONFIRMED",
+                    "decided_at": pd.Timestamp("2024-07-22 16:00:00+00:00"),
+                },
+                {
+                    "plan_id": "future-plan",
+                    "account_id": "paper-main",
+                    "decision": "CONFIRMED",
+                    "decided_at": pd.Timestamp("2024-07-24 10:00:00+00:00"),
+                },
+            ]
+        )
+
+        rows, _ = build_shadow_observation_rows(
+            account_id="paper-main",
+            observation_date=date(2024, 7, 23),
+            price_snapshot=self._price_snapshot("2024-07-23T15:00:00+00:00"),
+            baseline=None,
+            note="",
+            seed=self._seed_frame(),
+            observations=pd.DataFrame(),
+            decisions=decisions,
+            fills=pd.DataFrame(),
+            plans=pd.concat([self._plan_frame(), future_plan], ignore_index=True),
+            generated_at=datetime(2024, 7, 25, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(set(rows["target_plan_id"]), {self.plan_id})
+
+    def test_observation_fill_window_uses_previous_price_as_of(self) -> None:
+        prior = self._prior_observation_frame(
+            generated_at="2024-07-23T22:00:00+00:00",
+            price_as_of="2024-07-23T15:00:00+00:00",
+        )
+        fills = pd.DataFrame(
+            [
+                {
+                    "fill_id": "late-fill",
+                    "account_id": "paper-main",
+                    "plan_id": self.plan_id,
+                    "symbol": "510300.SH",
+                    "order_side": "BUY",
+                    "fill_at": pd.Timestamp("2024-07-23 16:00:00+00:00"),
+                    "fill_quantity": 100,
+                    "fill_notional": 100.0,
+                }
+            ]
+        )
+
+        rows, review = build_shadow_observation_rows(
+            account_id="paper-main",
+            observation_date=date(2024, 7, 24),
+            price_snapshot=self._price_snapshot("2024-07-24T15:00:00+00:00"),
+            baseline=None,
+            note="",
+            seed=self._seed_frame(),
+            observations=prior,
+            decisions=pd.DataFrame(),
+            fills=fills,
+            plans=pd.DataFrame(),
+        )
+
+        equity_row = rows[rows["symbol"].astype(str).eq("510300.SH")].iloc[0]
+        self.assertEqual(int(equity_row["quantity"]), 1100)
+        self.assertAlmostEqual(float(equity_row["cash"]), 900.0)
+        self.assertEqual(review["applied_fill_ids"], ["late-fill"])
+
+    def test_cancelled_decision_derives_cancelled_status(self) -> None:
+        decisions = pd.DataFrame(
+            [
+                {
+                    "plan_id": self.plan_id,
+                    "decision": "CANCELLED",
+                    "decided_at": pd.Timestamp("2024-07-22 16:00:00+00:00"),
+                }
+            ]
+        )
+
+        self.assertEqual(
+            derive_plan_status(self._plan_frame(), pd.DataFrame(), decisions),
+            "CANCELLED",
+        )
+
     def _run_ok(self, args: list[str]) -> None:
         full_args = [*args, "--lakehouse-root", str(self.lakehouse_root)]
         result = self.runner.invoke(main, full_args)
@@ -435,6 +532,53 @@ class StageOShadowRunTests(unittest.TestCase):
                 ],
             },
         )
+
+    def _seed_frame(self) -> pd.DataFrame:
+        rows = []
+        for symbol, role, quantity, market_value in [
+            ("510300.SH", "equity_large", 1000, 1000.0),
+            ("159845.SZ", "equity_small", 1000, 2000.0),
+            ("511010.SH", "bond", 1000, 3000.0),
+            ("518850.SH", "gold", 1000, 2500.0),
+            ("159001.SZ", "cash", 1000, 1500.0),
+        ]:
+            rows.append(
+                {
+                    "account_id": "paper-main",
+                    "seed_at": pd.Timestamp("2024-07-22 15:00:00+00:00"),
+                    "seed_date": date(2024, 7, 22),
+                    "cash": 1000.0,
+                    "total_asset": 11000.0,
+                    "sleeve_role": role,
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "market_value": market_value,
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def _price_snapshot(self, price_as_of: str) -> PriceSnapshotInput:
+        return PriceSnapshotInput(
+            price_as_of=pd.Timestamp(price_as_of).to_pydatetime(),
+            prices=[
+                ClosePriceItem(symbol="510300.SH", close_price=1.0),
+                ClosePriceItem(symbol="159845.SZ", close_price=2.0),
+                ClosePriceItem(symbol="511010.SH", close_price=3.0),
+                ClosePriceItem(symbol="518850.SH", close_price=2.5),
+                ClosePriceItem(symbol="159001.SZ", close_price=1.5),
+            ],
+        )
+
+    def _prior_observation_frame(
+        self, *, generated_at: str, price_as_of: str
+    ) -> pd.DataFrame:
+        rows = self._seed_frame().copy()
+        rows["observation_date"] = date(2024, 7, 23)
+        rows["generated_at"] = pd.Timestamp(generated_at)
+        rows["review_metadata_json"] = json.dumps({"price_as_of": price_as_of})
+        rows["close_price"] = [1.0, 2.0, 3.0, 2.5, 1.5]
+        rows["actual_weight"] = rows["market_value"] / 11000.0
+        return rows
 
     def _write_local_shadow_inputs(self) -> None:
         target_rows = []

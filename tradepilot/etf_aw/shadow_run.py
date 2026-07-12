@@ -421,8 +421,8 @@ def build_shadow_observation_rows(
     ):
         raise ShadowRunError(["observation_date_regression"])
     price_by_symbol = validate_close_prices(price_snapshot, observation_date)
-    previous_generated_at = (
-        pd.Timestamp(prior.iloc[0]["generated_at"]).to_pydatetime()
+    previous_price_as_of = (
+        _observation_price_as_of(prior.iloc[0])
         if prior is not None
         else pd.Timestamp(seed.iloc[0]["seed_at"]).to_pydatetime()
     )
@@ -431,7 +431,7 @@ def build_shadow_observation_rows(
     applicable_fills = _applicable_fills(
         fills,
         account_id=account_id,
-        after=previous_generated_at,
+        after=previous_price_as_of,
         at_or_before=price_snapshot.price_as_of,
     )
     applied = apply_fills(
@@ -439,7 +439,9 @@ def build_shadow_observation_rows(
         cash=cash,
         fills=applicable_fills,
     )
-    active_plan = active_confirmed_plan(decisions, plans, account_id, generated)
+    active_plan = active_confirmed_plan(
+        decisions, plans, account_id, price_snapshot.price_as_of
+    )
     target_by_symbol = _target_weights(active_plan)
     market_values = {
         symbol: applied.quantities[symbol] * price_by_symbol[symbol]
@@ -493,8 +495,8 @@ def build_shadow_observation_rows(
                 "target_plan_id": (
                     None if active_plan.empty else str(active_plan.iloc[0]["plan_id"])
                 ),
-                "strategy_name": _active_strategy_name(active_plan, seed),
-                "strategy_version": _active_strategy_version(active_plan, seed),
+                "strategy_name": _active_strategy_name(active_plan),
+                "strategy_version": _active_strategy_version(active_plan),
                 "sleeve_role": role,
                 "symbol": symbol,
                 "close_price": price_by_symbol[symbol],
@@ -510,7 +512,9 @@ def build_shadow_observation_rows(
                 "baseline_daily_return": baseline_daily_return,
                 "baseline_cumulative_return": baseline_cumulative_return,
                 "relative_cumulative_return": relative_cumulative_return,
-                "derived_plan_status": derive_plan_status(active_plan, fills),
+                "derived_plan_status": derive_plan_status(
+                    active_plan, fills, decisions
+                ),
                 "warnings_json": json.dumps(_dedupe(warnings), ensure_ascii=False),
                 "note": note,
                 "review_metadata_json": json.dumps(
@@ -615,12 +619,24 @@ def apply_fills(
     return AppliedFillResult(result_quantities, result_cash, applied_ids)
 
 
-def derive_plan_status(plan: pd.DataFrame, fills: pd.DataFrame) -> str | None:
+def derive_plan_status(
+    plan: pd.DataFrame, fills: pd.DataFrame, decisions: pd.DataFrame | None = None
+) -> str | None:
     """Derive the read-only Stage O status for one plan."""
 
     if plan.empty:
         return None
     plan_id = str(plan.iloc[0]["plan_id"])
+    decision = (
+        latest_decision_for_plan(decisions, plan_id)
+        if decisions is not None and not decisions.empty
+        else None
+    )
+    if (
+        decision is not None
+        and decision.get("decision") == PaperDecision.CANCELLED.value
+    ):
+        return DerivedPlanStatus.CANCELLED.value
     relevant = (
         fills[fills["plan_id"].astype(str).eq(plan_id)]
         if not fills.empty
@@ -664,16 +680,18 @@ def active_confirmed_plan(
 
     if decisions.empty or plans.empty:
         return pd.DataFrame()
-    rows = decisions[
-        decisions["account_id"].astype(str).eq(account_id)
-        & decisions["decision"].astype(str).eq(PaperDecision.CONFIRMED.value)
-    ].copy()
+    rows = decisions[decisions["account_id"].astype(str).eq(account_id)].copy()
     if rows.empty:
         return pd.DataFrame()
     rows["decided_at"] = pd.to_datetime(rows["decided_at"], errors="coerce")
     rows = rows[
         rows["decided_at"].notna() & (rows["decided_at"] <= pd.Timestamp(as_of))
     ]
+    if rows.empty:
+        return pd.DataFrame()
+    rows = rows.sort_values(["plan_id", "decided_at"])
+    rows = rows.groupby("plan_id", as_index=False).tail(1)
+    rows = rows[rows["decision"].astype(str).eq(PaperDecision.CONFIRMED.value)]
     if rows.empty:
         return pd.DataFrame()
     plan_id = str(rows.sort_values(["decided_at", "plan_id"]).iloc[-1]["plan_id"])
@@ -753,7 +771,7 @@ def build_post_mortem(
         "plan_id": plan_id,
         "account_id": account_id,
         "decision": _jsonable_record(latest_decision_for_plan(decisions, plan_id)),
-        "derived_status": derive_plan_status(plan, fills),
+        "derived_status": derive_plan_status(plan, fills, decisions),
         "fill_quality": rows,
         "observation_range": {
             "start_date": None if not dates else dates[0].isoformat(),
@@ -998,6 +1016,16 @@ def _state_quantities(frame: pd.DataFrame) -> dict[str, int]:
     return {str(row["symbol"]): int(row["quantity"]) for _, row in frame.iterrows()}
 
 
+def _observation_price_as_of(row: pd.Series) -> datetime:
+    metadata = row.get("review_metadata_json")
+    if isinstance(metadata, str) and metadata.strip():
+        payload = json.loads(metadata)
+        price_as_of = payload.get("price_as_of")
+        if price_as_of:
+            return pd.Timestamp(price_as_of).to_pydatetime()
+    return pd.Timestamp(row["generated_at"]).to_pydatetime()
+
+
 def _applicable_fills(
     fills: pd.DataFrame, *, account_id: str, after: datetime, at_or_before: datetime
 ) -> pd.DataFrame:
@@ -1021,15 +1049,13 @@ def _target_weights(plan: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def _active_strategy_name(active_plan: pd.DataFrame, seed: pd.DataFrame) -> str | None:
+def _active_strategy_name(active_plan: pd.DataFrame) -> str | None:
     if not active_plan.empty:
         return str(active_plan.iloc[0]["strategy_name"])
     return None
 
 
-def _active_strategy_version(
-    active_plan: pd.DataFrame, seed: pd.DataFrame
-) -> str | None:
+def _active_strategy_version(active_plan: pd.DataFrame) -> str | None:
     if not active_plan.empty:
         return str(active_plan.iloc[0]["strategy_version"])
     return None

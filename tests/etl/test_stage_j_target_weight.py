@@ -150,6 +150,22 @@ class StageJTargetWeightTests(unittest.TestCase):
 
         self.assertTrue(frame.empty)
 
+    def test_missing_all_v1_panel_rows_blocks_without_key_error(self) -> None:
+        rebalance_date = date(2024, 7, 22)
+        budget = pd.DataFrame(
+            [
+                self._budget_row(rebalance_date, role, 0.2, "complete")
+                for role in ETF_AW_SLEEVE_ROLE_ORDER
+            ]
+        )
+        panel = self._panel(rebalance_date, missing_role=None, observations=80)
+        panel["sleeve_code"] = "000000.SH"
+        panel["instrument_id"] = "000000.SH"
+
+        frame = self.service._make_etf_aw_target_weight_frame(budget, panel)
+
+        self.assertTrue(frame.empty)
+
     def test_no_trade_band_keeps_small_diffs_but_not_large_diffs(self) -> None:
         constrained = {
             "equity_large": 0.201,
@@ -503,13 +519,15 @@ class StageJTargetWeightTests(unittest.TestCase):
 
     def test_update_plan_runs_target_weight_after_risk_budget(self) -> None:
         conn = duckdb.connect(":memory:")
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE etl_source_watermarks (
                 dataset_name VARCHAR PRIMARY KEY,
                 latest_fetched_date DATE,
                 updated_at TIMESTAMP
             )
-        """)
+        """
+        )
 
         plan = update_module.build_update_plan(
             conn=conn,

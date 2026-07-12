@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+import math
 
 from fastapi import APIRouter, Query
 import pandas as pd
@@ -160,6 +161,12 @@ def update_etf_aw_local_shadow(
     end_date: date | None = None,
 ) -> dict:
     """Update the research shadow account from local lakehouse artifacts."""
+    if initial_asset <= 0 or not math.isfinite(initial_asset):
+        return {
+            "state": "invalid",
+            "blocking_reasons": ["invalid_initial_asset"],
+            "diagnostics": {"initial_asset": str(initial_asset)},
+        }
     try:
         result = update_local_shadow_artifacts(
             account_id=account_id,

@@ -1376,6 +1376,10 @@ def _append_local_shadow_observations(
                     account_obs["observation_date"], errors="coerce"
                 ).dt.date.max(),
             )
+    seed = read_shadow_dataset(lakehouse_root, SHADOW_ACCOUNT_SEED_DATASET)
+    decisions = read_shadow_dataset(lakehouse_root, PAPER_DECISION_DATASET)
+    fills = read_shadow_dataset(lakehouse_root, PAPER_FILL_DATASET)
+    plans = read_shadow_dataset(lakehouse_root, REBALANCE_PLAN_DATASET)
     written = 0
     for observation_date in [
         value for value in complete_dates if start_after < value <= resolved_end
@@ -1386,13 +1390,11 @@ def _append_local_shadow_observations(
             price_snapshot=_local_price_snapshot(sleeve_daily, observation_date),
             baseline=_local_baseline_observation(baseline, observation_date),
             note="local lakehouse research shadow observation",
-            seed=read_shadow_dataset(lakehouse_root, SHADOW_ACCOUNT_SEED_DATASET),
-            observations=read_shadow_dataset(
-                lakehouse_root, SHADOW_OBSERVATION_DATASET
-            ),
-            decisions=read_shadow_dataset(lakehouse_root, PAPER_DECISION_DATASET),
-            fills=read_shadow_dataset(lakehouse_root, PAPER_FILL_DATASET),
-            plans=read_shadow_dataset(lakehouse_root, REBALANCE_PLAN_DATASET),
+            seed=seed,
+            observations=observations,
+            decisions=decisions,
+            fills=fills,
+            plans=plans,
             generated_at=datetime.combine(
                 observation_date, time(hour=15), tzinfo=timezone.utc
             ),
@@ -1405,6 +1407,11 @@ def _append_local_shadow_observations(
                 ("year", observation_date.year),
                 ("month", f"{observation_date.month:02d}"),
             ],
+        )
+        observations = (
+            frame
+            if observations.empty
+            else pd.concat([observations, frame], ignore_index=True)
         )
         written += 1
     return written

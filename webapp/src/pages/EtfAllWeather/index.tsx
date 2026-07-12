@@ -145,19 +145,44 @@ export default function EtfAllWeather() {
     setLoading(true);
     setError(null);
     const requestedAccountId = selectedAccountId || accountId || "etf-aw-paper";
+    const failures: string[] = [];
     try {
-      const [budgetData, shadowData, performanceData, statusData] = await Promise.all([
+      const [budgetResult, shadowResult, performanceResult, statusResult] = await Promise.allSettled([
         getLatestEtfAwRiskBudget(),
         getEtfAwShadowReport(requestedAccountId),
         getEtfAwLocalPerformance(),
         getEtfAwShadowStatus(requestedAccountId),
       ]);
-      setRiskBudget(budgetData);
-      setShadow(shadowData);
-      setPerformance(performanceData);
-      setShadowStatus(statusData);
-      if (!accountId && shadowData.accounts.length > 0) {
-        setAccountId(shadowData.accounts[0]);
+
+      if (budgetResult.status === "fulfilled") {
+        setRiskBudget(budgetResult.value);
+      } else {
+        setRiskBudget(null);
+        failures.push(`风险预算：${budgetResult.reason instanceof Error ? budgetResult.reason.message : "读取失败"}`);
+      }
+      if (shadowResult.status === "fulfilled") {
+        setShadow(shadowResult.value);
+        if (!accountId && shadowResult.value.accounts.length > 0) {
+          setAccountId(shadowResult.value.accounts[0]);
+        }
+      } else {
+        setShadow(null);
+        failures.push(`模拟盘：${shadowResult.reason instanceof Error ? shadowResult.reason.message : "读取失败"}`);
+      }
+      if (performanceResult.status === "fulfilled") {
+        setPerformance(performanceResult.value);
+      } else {
+        setPerformance(null);
+        failures.push(`本地绩效：${performanceResult.reason instanceof Error ? performanceResult.reason.message : "读取失败"}`);
+      }
+      if (statusResult.status === "fulfilled") {
+        setShadowStatus(statusResult.value);
+      } else {
+        setShadowStatus(null);
+        failures.push(`模拟盘状态：${statusResult.reason instanceof Error ? statusResult.reason.message : "读取失败"}`);
+      }
+      if (failures.length > 0) {
+        setError(failures.join(" / "));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "ETF 全天候风险预算读取失败");
@@ -221,14 +246,17 @@ export default function EtfAllWeather() {
       ? [{ date: row.observation_date, series: "相对收益", value: row.relative_cumulative_return }]
       : []),
   ]);
+  const primaryStrategy =
+    (performance?.metrics || []).find((row) => row.strategy !== "static_inverse_vol")?.strategy ||
+    performance?.metrics?.[0]?.strategy;
   const performanceSeries = (performance?.series || []).map((row) => ({
     date: row.date,
-    series: row.strategy === "etf_aw_v1" ? "ETF 全天候" : "静态风险平价 Baseline",
+    series: row.strategy === primaryStrategy ? "ETF 全天候" : "静态风险平价 Baseline",
     value: row.period_return,
   }));
   const strategyMetrics = Object.fromEntries(
     (performance?.metrics || [])
-      .filter((row) => row.strategy === "etf_aw_v1")
+      .filter((row) => row.strategy === primaryStrategy)
       .map((row) => [row.metric, row.value]),
   );
   const priceByRole = Object.fromEntries(
