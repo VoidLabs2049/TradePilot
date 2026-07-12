@@ -371,15 +371,13 @@ class StageIRiskBudgetTests(unittest.TestCase):
         )
 
     def _create_watermark_table(self, conn: duckdb.DuckDBPyConnection) -> None:
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE etl_source_watermarks (
                 dataset_name VARCHAR PRIMARY KEY,
                 latest_fetched_date DATE,
                 updated_at TIMESTAMP
             )
-        """
-        )
+        """)
 
 
 if __name__ == "__main__":
