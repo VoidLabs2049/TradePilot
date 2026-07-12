@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 import calendar
 import json
@@ -15,6 +15,8 @@ import pandas as pd
 from tradepilot import db as tradepilot_db
 from tradepilot.config import DB_PATH, LAKEHOUSE_ROOT
 from tradepilot.etf_aw.rebalance_plan import (
+    AccountPosition,
+    AccountSnapshot,
     REBALANCE_PLAN_DATASET,
     build_rebalance_plan as build_rebalance_plan_frame,
     load_account_snapshot,
@@ -22,7 +24,36 @@ from tradepilot.etf_aw.rebalance_plan import (
     plan_to_json_payload,
     plan_to_markdown,
 )
+from tradepilot.etf_aw.shadow_run import (
+    BaselineObservationInput,
+    ClosePriceItem,
+    PAPER_DECISION_DATASET,
+    PAPER_FILL_DATASET,
+    PriceSnapshotInput,
+    SHADOW_ACCOUNT_SEED_DATASET,
+    SHADOW_OBSERVATION_DATASET,
+    ShadowRunError,
+    append_dataset,
+    build_decision_row,
+    build_fill_row,
+    build_performance_report,
+    build_post_mortem,
+    build_shadow_observation_rows,
+    build_shadow_seed_rows,
+    load_baseline_observation_input,
+    load_decision_input,
+    load_fill_input,
+    load_price_snapshot_input,
+    performance_report_html,
+    post_mortem_markdown,
+    read_shadow_dataset,
+)
 from tradepilot.etl import update_etf_aw_data
+from tradepilot.etl.etf_aw_universe import (
+    ETF_AW_SLEEVE_CODE_BY_ROLE,
+    ETF_AW_SLEEVE_CODES,
+    ETF_AW_SLEEVE_ROLE_ORDER,
+)
 from tradepilot.etl.models import RunStatus, StorageZone
 from tradepilot.etl.service import (
     ETLService,
@@ -539,6 +570,373 @@ def build_rebalance_plan(
     click.echo(f"markdown={markdown_path}")
 
 
+@main.command("initialize-shadow-account")
+@click.option("--plan-id", required=True, type=str)
+@click.option(
+    "--account-snapshot",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    required=True,
+)
+@click.option(
+    "--lakehouse-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=LAKEHOUSE_ROOT,
+    show_default=True,
+)
+def initialize_shadow_account(
+    plan_id: str,
+    account_snapshot: Path,
+    lakehouse_root: Path,
+) -> None:
+    """Freeze the Stage O shadow account seed for one account."""
+
+    try:
+        plans = read_shadow_dataset(lakehouse_root, REBALANCE_PLAN_DATASET)
+        plan = _stage_o_plan(plans, plan_id)
+        account = load_account_snapshot(account_snapshot)
+        existing_seed = read_shadow_dataset(lakehouse_root, SHADOW_ACCOUNT_SEED_DATASET)
+        if (
+            not existing_seed.empty
+            and existing_seed["account_id"].astype(str).eq(account.account_id).any()
+        ):
+            raise ShadowRunError(["missing_or_duplicate_seed"])
+        seed_date = _stage_o_plan_date(plan)
+        frame = build_shadow_seed_rows(
+            plan=plan,
+            account=account,
+            account_snapshot_path=account_snapshot,
+            seed_date=seed_date,
+        )
+        artifact = append_dataset(
+            lakehouse_root=lakehouse_root,
+            dataset_name=SHADOW_ACCOUNT_SEED_DATASET,
+            frame=frame,
+            partition_parts=[("account_id", account.account_id)],
+        )
+    except ShadowRunError as exc:
+        _raise_shadow_run_error(exc)
+    click.echo(f"account_id={account.account_id} seed_date={seed_date.isoformat()}")
+    click.echo(f"artifact={artifact}")
+
+
+@main.command("update-local-shadow")
+@click.option("--account-id", default="etf-aw-paper", show_default=True)
+@click.option("--initial-asset", type=float, default=1_000_000.0, show_default=True)
+@click.option("--seed-date", type=str, default=None)
+@click.option("--end-date", type=str, default=None)
+@click.option(
+    "--lakehouse-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=LAKEHOUSE_ROOT,
+    show_default=True,
+)
+def update_local_shadow(
+    account_id: str,
+    initial_asset: float,
+    seed_date: str | None,
+    end_date: str | None,
+    lakehouse_root: Path,
+) -> None:
+    """Update a research-only shadow account from local lakehouse artifacts."""
+
+    if initial_asset <= 0 or not math.isfinite(initial_asset):
+        raise click.ClickException("initial-asset must be finite and positive")
+    try:
+        result = update_local_shadow_artifacts(
+            account_id=account_id,
+            initial_asset=initial_asset,
+            seed_date=(
+                None if seed_date is None else _parse_date(seed_date, "seed-date")
+            ),
+            end_date=None if end_date is None else _parse_date(end_date, "end-date"),
+            lakehouse_root=lakehouse_root,
+        )
+    except ShadowRunError as exc:
+        _raise_shadow_run_error(exc)
+    click.echo(
+        "account_id={} seed_date={} seed_created={} observations_written={}".format(
+            result["account_id"],
+            result["seed_date"],
+            str(result["seed_created"]).lower(),
+            result["observations_written"],
+        )
+    )
+    if result["seed_artifact"]:
+        click.echo(f"seed_artifact={result['seed_artifact']}")
+
+
+@main.command("record-paper-decision")
+@click.option(
+    "--decision",
+    "decision_path",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    required=True,
+)
+@click.option(
+    "--lakehouse-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=LAKEHOUSE_ROOT,
+    show_default=True,
+)
+def record_paper_decision(decision_path: Path, lakehouse_root: Path) -> None:
+    """Append one manual paper decision for a Stage N plan."""
+
+    try:
+        decision = load_decision_input(decision_path)
+        plans = read_shadow_dataset(lakehouse_root, REBALANCE_PLAN_DATASET)
+        plan = _stage_o_plan(plans, decision.plan_id)
+        decisions = read_shadow_dataset(lakehouse_root, PAPER_DECISION_DATASET)
+        fills = read_shadow_dataset(lakehouse_root, PAPER_FILL_DATASET)
+        if (
+            not decisions.empty
+            and decisions["plan_id"].astype(str).eq(decision.plan_id).any()
+        ):
+            raise ShadowRunError(["duplicate_decision"])
+        if (
+            decision.decision.value == "CANCELLED"
+            and not fills.empty
+            and fills["plan_id"].astype(str).eq(decision.plan_id).any()
+        ):
+            raise ShadowRunError(["fill_before_confirmation"])
+        frame = build_decision_row(plan=plan, decision=decision)
+        artifact = append_dataset(
+            lakehouse_root=lakehouse_root,
+            dataset_name=PAPER_DECISION_DATASET,
+            frame=frame,
+            partition_parts=[("plan_id", decision.plan_id)],
+        )
+    except ShadowRunError as exc:
+        _raise_shadow_run_error(exc)
+    click.echo(f"plan_id={decision.plan_id} decision={decision.decision.value}")
+    click.echo(f"artifact={artifact}")
+
+
+@main.command("record-paper-fill")
+@click.option(
+    "--fill",
+    "fill_path",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    required=True,
+)
+@click.option(
+    "--lakehouse-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=LAKEHOUSE_ROOT,
+    show_default=True,
+)
+def record_paper_fill(fill_path: Path, lakehouse_root: Path) -> None:
+    """Append one manual paper fill for a confirmed Stage N plan."""
+
+    try:
+        fill = load_fill_input(fill_path)
+        plans = read_shadow_dataset(lakehouse_root, REBALANCE_PLAN_DATASET)
+        plan = _stage_o_plan(plans, fill.plan_id)
+        decisions = read_shadow_dataset(lakehouse_root, PAPER_DECISION_DATASET)
+        fills = read_shadow_dataset(lakehouse_root, PAPER_FILL_DATASET)
+        frame = build_fill_row(
+            plan=plan,
+            decisions=decisions,
+            existing_fills=fills,
+            fill=fill,
+        )
+        artifact = append_dataset(
+            lakehouse_root=lakehouse_root,
+            dataset_name=PAPER_FILL_DATASET,
+            frame=frame,
+            partition_parts=[("plan_id", fill.plan_id)],
+        )
+    except ShadowRunError as exc:
+        _raise_shadow_run_error(exc)
+    click.echo(f"fill_id={fill.fill_id} plan_id={fill.plan_id}")
+    click.echo(f"artifact={artifact}")
+
+
+@main.command("build-shadow-observation")
+@click.option("--account-id", required=True, type=str)
+@click.option("--observation-date", required=True, type=str)
+@click.option(
+    "--price-snapshot",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    required=True,
+)
+@click.option(
+    "--baseline-observation",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    default=None,
+)
+@click.option(
+    "--note",
+    "note_path",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    default=None,
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+)
+@click.option(
+    "--lakehouse-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=LAKEHOUSE_ROOT,
+    show_default=True,
+)
+def build_shadow_observation(
+    account_id: str,
+    observation_date: str,
+    price_snapshot: Path,
+    baseline_observation: Path | None,
+    note_path: Path | None,
+    output_dir: Path,
+    lakehouse_root: Path,
+) -> None:
+    """Build one Stage O daily shadow account observation."""
+
+    parsed_date = _parse_date(observation_date, "observation-date")
+    try:
+        price = load_price_snapshot_input(price_snapshot)
+        baseline = (
+            None
+            if baseline_observation is None
+            else load_baseline_observation_input(baseline_observation)
+        )
+        note = (
+            "" if note_path is None else note_path.read_text(encoding="utf-8").strip()
+        )
+        frame, review = build_shadow_observation_rows(
+            account_id=account_id,
+            observation_date=parsed_date,
+            price_snapshot=price,
+            baseline=baseline,
+            note=note,
+            seed=read_shadow_dataset(lakehouse_root, SHADOW_ACCOUNT_SEED_DATASET),
+            observations=read_shadow_dataset(
+                lakehouse_root, SHADOW_OBSERVATION_DATASET
+            ),
+            decisions=read_shadow_dataset(lakehouse_root, PAPER_DECISION_DATASET),
+            fills=read_shadow_dataset(lakehouse_root, PAPER_FILL_DATASET),
+            plans=read_shadow_dataset(lakehouse_root, REBALANCE_PLAN_DATASET),
+        )
+        artifact = append_dataset(
+            lakehouse_root=lakehouse_root,
+            dataset_name=SHADOW_OBSERVATION_DATASET,
+            frame=frame,
+            partition_parts=[
+                ("year", parsed_date.year),
+                ("month", f"{parsed_date.month:02d}"),
+            ],
+        )
+    except ShadowRunError as exc:
+        _raise_shadow_run_error(exc)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    review_path = output_dir / f"shadow-observation-{account_id}-{parsed_date}.json"
+    review_path.write_text(
+        json.dumps(review, sort_keys=True, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    click.echo(
+        f"account_id={account_id} observation_date={parsed_date.isoformat()} rows={len(frame)}"
+    )
+    click.echo(f"total_asset={review['total_asset']:.2f}")
+    click.echo(f"artifact={artifact}")
+    click.echo(f"review={review_path}")
+
+
+@main.command("shadow-post-mortem")
+@click.option("--plan-id", required=True, type=str)
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+)
+@click.option(
+    "--lakehouse-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=LAKEHOUSE_ROOT,
+    show_default=True,
+)
+def shadow_post_mortem(plan_id: str, output_dir: Path, lakehouse_root: Path) -> None:
+    """Write a read-only Stage O post-mortem for one plan."""
+
+    try:
+        payload = build_post_mortem(
+            plan_id,
+            read_shadow_dataset(lakehouse_root, REBALANCE_PLAN_DATASET),
+            read_shadow_dataset(lakehouse_root, PAPER_DECISION_DATASET),
+            read_shadow_dataset(lakehouse_root, PAPER_FILL_DATASET),
+            read_shadow_dataset(lakehouse_root, SHADOW_OBSERVATION_DATASET),
+        )
+    except ShadowRunError as exc:
+        _raise_shadow_run_error(exc)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / f"shadow-post-mortem-{plan_id}.json"
+    md_path = output_dir / f"shadow-post-mortem-{plan_id}.md"
+    json_path.write_text(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    md_path.write_text(post_mortem_markdown(payload), encoding="utf-8")
+    click.echo(f"plan_id={plan_id} status={payload['derived_status']}")
+    click.echo(f"json={json_path}")
+    click.echo(f"markdown={md_path}")
+
+
+@main.command("shadow-performance-report")
+@click.option("--account-id", required=True, type=str)
+@click.option("--start-date", required=True, type=str)
+@click.option("--end-date", required=True, type=str)
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+)
+@click.option(
+    "--lakehouse-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=LAKEHOUSE_ROOT,
+    show_default=True,
+)
+def shadow_performance_report(
+    account_id: str,
+    start_date: str,
+    end_date: str,
+    output_dir: Path,
+    lakehouse_root: Path,
+) -> None:
+    """Write read-only shadow-performance-report HTML and JSON files."""
+
+    start = _parse_date(start_date, "start-date")
+    end = _parse_date(end_date, "end-date")
+    try:
+        payload = build_performance_report(
+            account_id=account_id,
+            start=start,
+            end=end,
+            seed=read_shadow_dataset(lakehouse_root, SHADOW_ACCOUNT_SEED_DATASET),
+            observations=read_shadow_dataset(
+                lakehouse_root, SHADOW_OBSERVATION_DATASET
+            ),
+            fills=read_shadow_dataset(lakehouse_root, PAPER_FILL_DATASET),
+            plans=read_shadow_dataset(lakehouse_root, REBALANCE_PLAN_DATASET),
+        )
+    except ShadowRunError as exc:
+        _raise_shadow_run_error(exc)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"shadow-performance-report-{account_id}-{start}-{end}"
+    json_path = output_dir / f"{stem}.json"
+    html_path = output_dir / f"{stem}.html"
+    json_path.write_text(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    html_path.write_text(performance_report_html(payload), encoding="utf-8")
+    click.echo(
+        f"account_id={account_id} observations={payload['integrity']['observation_count']}"
+    )
+    click.echo(f"json={json_path}")
+    click.echo(f"html={html_path}")
+
+
 @main.command("backtest-report")
 @click.option("--start-date", required=True, type=str)
 @click.option("--end-date", required=True, type=str)
@@ -794,6 +1192,336 @@ def _raise_rebalance_plan_error(
     payload = {
         "blocking_reasons": blocking_reasons,
         "diagnostics": diagnostics,
+    }
+    click.echo(json.dumps(payload, sort_keys=True, ensure_ascii=False), err=True)
+    raise SystemExit(1)
+
+
+def _stage_o_plan(plans: pd.DataFrame, plan_id: str) -> pd.DataFrame:
+    """Return one complete Stage N plan for Stage O commands."""
+
+    if plans.empty or "plan_id" not in plans.columns:
+        raise ShadowRunError(["missing_plan"])
+    plan = plans[plans["plan_id"].astype(str).eq(plan_id)].copy()
+    if plan.empty:
+        raise ShadowRunError(["missing_plan"])
+    return plan
+
+
+def _stage_o_plan_date(plan: pd.DataFrame) -> date:
+    """Return the Stage N plan date for seed partitioning and validation."""
+
+    if "plan_date" not in plan.columns:
+        raise ShadowRunError(["missing_plan"])
+    value = pd.to_datetime(plan.iloc[0]["plan_date"], errors="coerce")
+    if pd.isna(value):
+        raise ShadowRunError(["missing_plan"])
+    return value.date()
+
+
+def update_local_shadow_artifacts(
+    *,
+    account_id: str,
+    initial_asset: float,
+    seed_date: date | None,
+    end_date: date | None,
+    lakehouse_root: Path,
+) -> dict[str, object]:
+    """Update a research shadow account from local lakehouse artifacts."""
+
+    target_weight = read_shadow_dataset(lakehouse_root, "derived.etf_aw_target_weight")
+    sleeve_daily = read_shadow_dataset(lakehouse_root, "derived.etf_aw_sleeve_daily")
+    baseline = read_shadow_dataset(lakehouse_root, "derived.etf_aw_backtest_kernel")
+    existing_seed = read_shadow_dataset(lakehouse_root, SHADOW_ACCOUNT_SEED_DATASET)
+    seed_created = False
+    account_seed = (
+        existing_seed[existing_seed["account_id"].astype(str).eq(account_id)].copy()
+        if not existing_seed.empty and "account_id" in existing_seed.columns
+        else pd.DataFrame()
+    )
+    if account_seed.empty:
+        seed_frame, resolved_seed_date = _local_shadow_seed_frame(
+            target_weight=target_weight,
+            sleeve_daily=sleeve_daily,
+            account_id=account_id,
+            initial_asset=initial_asset,
+            seed_date=seed_date,
+        )
+        seed_artifact = append_dataset(
+            lakehouse_root=lakehouse_root,
+            dataset_name=SHADOW_ACCOUNT_SEED_DATASET,
+            frame=seed_frame,
+            partition_parts=[("account_id", account_id)],
+        )
+        seed_created = True
+    else:
+        resolved_seed_date = pd.Timestamp(account_seed.iloc[0]["seed_date"]).date()
+        seed_artifact = ""
+    written = _append_local_shadow_observations(
+        lakehouse_root=lakehouse_root,
+        account_id=account_id,
+        seed_date=resolved_seed_date,
+        end_date=end_date,
+        sleeve_daily=sleeve_daily,
+        baseline=baseline,
+    )
+    return {
+        "account_id": account_id,
+        "seed_date": resolved_seed_date.isoformat(),
+        "seed_created": seed_created,
+        "observations_written": written,
+        "seed_artifact": seed_artifact,
+    }
+
+
+def _local_shadow_seed_frame(
+    *,
+    target_weight: pd.DataFrame,
+    sleeve_daily: pd.DataFrame,
+    account_id: str,
+    initial_asset: float,
+    seed_date: date | None,
+) -> tuple[pd.DataFrame, date]:
+    """Build a research-only shadow seed from local target weights and closes."""
+
+    if target_weight.empty:
+        raise ShadowRunError(["missing_target_weight"])
+    if sleeve_daily.empty:
+        raise ShadowRunError(["missing_or_invalid_close_price"])
+    weights = target_weight.copy()
+    weights["rebalance_date"] = pd.to_datetime(
+        weights["rebalance_date"], errors="coerce"
+    ).dt.date
+    weights = weights[weights["target_weight_status"].astype(str).eq("complete")]
+    complete_dates = _complete_weight_dates_for_seed(weights)
+    if not complete_dates:
+        raise ShadowRunError(["missing_target_weight"])
+    resolved_seed_date = seed_date or complete_dates[-1]
+    eligible = [value for value in complete_dates if value <= resolved_seed_date]
+    if not eligible:
+        raise ShadowRunError(["missing_target_weight"])
+    source_weight_date = eligible[-1]
+    selected_weights = weights[weights["rebalance_date"].eq(source_weight_date)].copy()
+    prices = _local_close_prices(sleeve_daily, resolved_seed_date)
+    positions = []
+    market_value_sum = 0.0
+    for role in ETF_AW_SLEEVE_ROLE_ORDER:
+        symbol = ETF_AW_SLEEVE_CODE_BY_ROLE[role]
+        row = selected_weights[selected_weights["sleeve_code"].astype(str).eq(symbol)]
+        if len(row) != 1:
+            raise ShadowRunError(["missing_target_weight"])
+        price = prices[symbol]
+        target_notional = initial_asset * float(row.iloc[0]["target_weight"])
+        quantity = int(target_notional // (price * 100)) * 100
+        market_value = quantity * price
+        market_value_sum += market_value
+        positions.append(
+            AccountPosition(
+                symbol=symbol,
+                quantity=quantity,
+                available_quantity=quantity,
+                market_value=market_value,
+            )
+        )
+    snapshot_at = datetime.combine(
+        resolved_seed_date, time(hour=15), tzinfo=timezone.utc
+    )
+    account = AccountSnapshot(
+        account_id=account_id,
+        snapshot_at=snapshot_at.isoformat(),
+        cash=initial_asset - market_value_sum,
+        total_asset=initial_asset,
+        positions=positions,
+    )
+    plan = selected_weights.rename(columns={"sleeve_code": "symbol"}).copy()
+    plan["account_id"] = account_id
+    plan["plan_id"] = f"local-target-weight:{source_weight_date.isoformat()}"
+    return (
+        build_shadow_seed_rows(
+            plan=plan,
+            account=account,
+            account_snapshot_path=Path("local-lakehouse"),
+            seed_date=resolved_seed_date,
+            recorded_at=snapshot_at,
+        ),
+        resolved_seed_date,
+    )
+
+
+def _append_local_shadow_observations(
+    *,
+    lakehouse_root: Path,
+    account_id: str,
+    seed_date: date,
+    end_date: date | None,
+    sleeve_daily: pd.DataFrame,
+    baseline: pd.DataFrame,
+) -> int:
+    """Append missing research shadow observations from local lakehouse closes."""
+
+    complete_dates = _complete_price_dates(sleeve_daily)
+    if not complete_dates:
+        raise ShadowRunError(["missing_or_invalid_close_price"])
+    resolved_end = end_date or complete_dates[-1]
+    observations = read_shadow_dataset(lakehouse_root, SHADOW_OBSERVATION_DATASET)
+    start_after = seed_date
+    if not observations.empty and "account_id" in observations.columns:
+        account_obs = observations[
+            observations["account_id"].astype(str).eq(account_id)
+        ]
+        if not account_obs.empty:
+            start_after = max(
+                seed_date,
+                pd.to_datetime(
+                    account_obs["observation_date"], errors="coerce"
+                ).dt.date.max(),
+            )
+    written = 0
+    for observation_date in [
+        value for value in complete_dates if start_after < value <= resolved_end
+    ]:
+        frame, _ = build_shadow_observation_rows(
+            account_id=account_id,
+            observation_date=observation_date,
+            price_snapshot=_local_price_snapshot(sleeve_daily, observation_date),
+            baseline=_local_baseline_observation(baseline, observation_date),
+            note="local lakehouse research shadow observation",
+            seed=read_shadow_dataset(lakehouse_root, SHADOW_ACCOUNT_SEED_DATASET),
+            observations=read_shadow_dataset(
+                lakehouse_root, SHADOW_OBSERVATION_DATASET
+            ),
+            decisions=read_shadow_dataset(lakehouse_root, PAPER_DECISION_DATASET),
+            fills=read_shadow_dataset(lakehouse_root, PAPER_FILL_DATASET),
+            plans=read_shadow_dataset(lakehouse_root, REBALANCE_PLAN_DATASET),
+            generated_at=datetime.combine(
+                observation_date, time(hour=15), tzinfo=timezone.utc
+            ),
+        )
+        append_dataset(
+            lakehouse_root=lakehouse_root,
+            dataset_name=SHADOW_OBSERVATION_DATASET,
+            frame=frame,
+            partition_parts=[
+                ("year", observation_date.year),
+                ("month", f"{observation_date.month:02d}"),
+            ],
+        )
+        written += 1
+    return written
+
+
+def _complete_weight_dates_for_seed(weights: pd.DataFrame) -> list[date]:
+    """Return complete target-weight rebalance dates usable as seed sources."""
+
+    return [
+        value
+        for value in sorted(weights["rebalance_date"].dropna().unique())
+        if set(
+            weights.loc[weights["rebalance_date"].eq(value), "sleeve_code"].astype(str)
+        )
+        == set(ETF_AW_SLEEVE_CODES)
+    ]
+
+
+def _complete_price_dates(sleeve_daily: pd.DataFrame) -> list[date]:
+    """Return dates with valid close prices for every frozen sleeve."""
+
+    rows = sleeve_daily.copy()
+    rows["trade_date"] = pd.to_datetime(rows["trade_date"], errors="coerce").dt.date
+    rows = rows[
+        rows["trade_date"].notna()
+        & rows["sleeve_code"].astype(str).isin(ETF_AW_SLEEVE_CODES)
+        & pd.to_numeric(rows["close"], errors="coerce").gt(0)
+    ]
+    return [
+        value
+        for value in sorted(rows["trade_date"].dropna().unique())
+        if set(rows.loc[rows["trade_date"].eq(value), "sleeve_code"].astype(str))
+        == set(ETF_AW_SLEEVE_CODES)
+    ]
+
+
+def _local_close_prices(
+    sleeve_daily: pd.DataFrame, trade_date: date
+) -> dict[str, float]:
+    """Return local close prices for one complete ETF AW trade date."""
+
+    rows = sleeve_daily.copy()
+    rows["trade_date"] = pd.to_datetime(rows["trade_date"], errors="coerce").dt.date
+    rows = rows[rows["trade_date"].eq(trade_date)]
+    prices = {
+        str(row["sleeve_code"]): float(row["close"]) for _, row in rows.iterrows()
+    }
+    missing = [
+        symbol
+        for symbol in ETF_AW_SLEEVE_CODES
+        if symbol not in prices
+        or not math.isfinite(prices[symbol])
+        or prices[symbol] <= 0
+    ]
+    if missing:
+        raise ShadowRunError(
+            ["missing_or_invalid_close_price"], {"missing_symbols": missing}
+        )
+    return prices
+
+
+def _local_price_snapshot(
+    sleeve_daily: pd.DataFrame, observation_date: date
+) -> PriceSnapshotInput:
+    """Build a Stage O price snapshot from local sleeve daily closes."""
+
+    prices = _local_close_prices(sleeve_daily, observation_date)
+    price_as_of = datetime.combine(observation_date, time(hour=15), tzinfo=timezone.utc)
+    return PriceSnapshotInput(
+        price_as_of=price_as_of,
+        prices=[
+            ClosePriceItem(
+                symbol=symbol,
+                close_price=prices[symbol],
+                price_trade_date=observation_date,
+            )
+            for symbol in ETF_AW_SLEEVE_CODES
+        ],
+    )
+
+
+def _local_baseline_observation(
+    baseline: pd.DataFrame, observation_date: date
+) -> BaselineObservationInput | None:
+    """Build an optional baseline observation from the local backtest kernel."""
+
+    if baseline.empty:
+        return None
+    rows = baseline.copy()
+    rows["observation_date"] = pd.to_datetime(
+        rows["observation_date"], errors="coerce"
+    ).dt.date
+    rows = rows[
+        rows["observation_date"].eq(observation_date)
+        & rows["strategy_name"].astype(str).eq("static_inverse_vol")
+        & rows["strategy_version"].astype(str).eq("static_inverse_vol_v1")
+        & rows["observation_type"].astype(str).eq("daily_nav")
+    ]
+    if rows.empty:
+        return None
+    row = rows.sort_values("ingested_at").iloc[-1]
+    return BaselineObservationInput(
+        observation_date=observation_date,
+        strategy_name="static_inverse_vol",
+        strategy_version="static_inverse_vol_v1",
+        baseline_daily_return=float(row["portfolio_return"]),
+        baseline_net_value=float(row["net_value"]),
+        source_artifact="derived.etf_aw_backtest_kernel",
+    )
+
+
+def _raise_shadow_run_error(error: ShadowRunError) -> None:
+    """Print machine-readable Stage O diagnostics and fail the CLI command."""
+
+    payload = {
+        "blocking_reasons": error.reasons,
+        "diagnostics": error.diagnostics,
     }
     click.echo(json.dumps(payload, sort_keys=True, ensure_ascii=False), err=True)
     raise SystemExit(1)
