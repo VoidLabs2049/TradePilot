@@ -40,7 +40,7 @@ TradePilot ETF 全天候不是 ETF 涨跌预测器，而是低频风险配置系
 
 ## 最新开发规划吸收
 
-当前 ETF 全天候实现应按“后端基础框架先行，前端体验后置”的节奏推进。已新增的 ETF risk budget 页面只作为只读观察面板，用于检查 frozen artifact 是否可读、公式是否直观；它不代表 target weight、交易建议或回测评估已经完成。
+当前 ETF 全天候实现应按“后端基础框架先行，前端体验后置”的节奏推进。已新增的 ETF risk budget 页面只作为只读观察面板，用于检查 frozen artifact 是否可读、公式是否直观；target weight、baseline 和 gross backtest kernel 已完成，但稳健性评估、订单草案和模拟盘观察尚未完成。
 
 MVP 的日常工作流是：
 
@@ -71,7 +71,10 @@ strategy_context
 -> health check
 -> derived.etf_aw_target_weight
 -> health check
--> backtest kernel / evaluation report
+-> backtest kernel
+-> robustness evaluation report
+-> paper rebalance plan
+-> simulated fill / forward observation
 ```
 
 回测只能消费已经写出的风险预算和目标权重 artifact。回测内核和评估层不得在运行过程中重新估计 regime、重新生成 risk budget、重新优化 target weight 或动态搜索参数。
@@ -263,6 +266,121 @@ strategy_context
 
 该层是进入 Dashboard / workflow insight 前的解释层，不是 baseline evaluation，也不是 rebalance plan。
 
+### Stage L：静态 inverse-vol 回测基线
+
+已实现 `derived.etf_aw_baseline_weight.build` 和双权重源回测：
+
+- baseline 使用最近 63 个交易日收益估计波动率，至少要求 42 个有效观测，并沿用 `0.005` volatility floor。
+- 每个 rebalance date 必须生成 5 个完整、非负且权重和为 1 的 frozen sleeve 权重；不写出 partial baseline。
+- `derived.etf_aw_backtest_kernel` 可分别消费 `target_weight` 和 `baseline`，并保留 `weight_source_type` 与 `source_weight_dataset`。
+- `backtest-report` 可输出两条策略的指标、换手、diagnostics 和差值。
+- 旧 backtest kernel 分区缺少权重来源字段时，会按原有语义补为 `target_weight` / `derived.etf_aw_target_weight` 后再 upsert，不需要删除历史分区。
+
+默认 lakehouse 已完成 2025-01 到 2026-05 重建：baseline weight 为 85 行，策略和 baseline kernel 各为 349 行，artifact 与 kernel 健康检查均通过。当前策略累计收益为 `21.491%`，静态 inverse-vol baseline 为 `21.434%`；策略年化波动和月均换手略高，Sharpe 略低。该结果只覆盖 17 个调仓周期且尚未计入交易成本，应作为工程基线和增量诊断，不作为长期策略优劣结论。
+
+该阶段仍不新增 backtest read model、API 或前端多策略对比图。
+
+### Stage M：回测稳健性评估（设计完成，待实现）
+
+`backtest-robustness-evaluation-design.md` 已完成，其实现范围为：
+
+- 先审计当前策略与 baseline 的真实 point-in-time 可比区间、调仓周期数、状态分布和缺失原因。
+- 保持 gross backtest kernel 不变，在 evaluation/report 层增加固定成本敏感性网格。
+- 明确 previous-target turnover、初始建仓成本不可观测和短样本 caveat。
+- 用扩展样本和成本后结果决定是否值得设计 simplified ERC。
+
+该阶段仍只建设后端 CLI 和 repo-visible 报告，不新增 read model、API、前端或交易动作。详细合同见 `backtest-robustness-evaluation-design.md`。
+
+### Stage N：模拟盘订单草案（设计完成，待实现）
+
+Stage N 消费已冻结的目标权重、当前持仓、现金、账户总资产和最新可用价格，生成 `derived.etf_aw_rebalance_plan`。V1 固定 A 股 ETF 每手 100 份和 `cash_buffer_ratio = 0.01`，只输出 `DRAFT` 计划，不连接券商 API，不自动提交真实订单。
+
+订单计算必须满足：
+
+- 最新目标权重包含完整 5-sleeve，且权重和偏离 `1.0` 不超过 `1e-6`。
+- BUY 和 SELL 均按交易单位向下取整；SELL 不得超过 `available_quantity`。
+- 买入后保留固定现金缓冲；不足一手时输出 `HOLD` 和 `below_lot_size` warning。
+- symbol、价格、持仓映射、可用现金或可用持仓缺失时阻断计划。
+- 同一计划日期、策略版本和来源调仓日期不得重复生成非 cancelled 计划。
+
+该阶段不负责策略研究、回测、真实佣金估算、盘口/滑点建模或自动成交。
+
+### Stage O：模拟盘观察（设计完成，待实现）
+
+Stage O 记录模拟成交状态、成交价和数量、持仓、现金、组合净值、目标与实际权重偏离、当日/累计收益、相对 baseline 收益及人工备注。先使用 repo-visible 记录完成可追溯闭环，竞品式绩效与归因界面后置。
+
+## 后续总流程
+
+以下 Stage M-O 是近期交付标签，不代表已经实现。每一阶段必须满足退出条件后才能进入下一阶段；如果回测结论不足，应明确保留 research-only caveat，不能在评估循环中临时调参。
+
+### 研发与交付主线
+
+```text
+Stage L 已完成：baseline artifact + 双 kernel + comparison report
+  -> Stage M1：point-in-time 历史覆盖审计
+  -> Stage M2：固定成本敏感性评估
+  -> Stage N：paper rebalance plan + DRAFT order artifact
+  -> 人工确认 / simulated fill
+  -> Stage O：daily forward observation / post-mortem
+  -> 远期：小资金 live pilot（单独设计、单独授权）
+```
+
+Stage M 后可并行形成研究决策：数据覆盖不足时补 point-in-time 数据；成本后优势不稳定时保留 V1 的 research-only 定位并复核上游规则；只有多区间、多成本结果一致时，才设计 simplified ERC candidate。candidate 必须使用独立 `strategy_version` 和同一 kernel / evaluation 合同，不占用 Stage N/O 的模拟盘交付编号。
+
+### 阶段输入、输出和退出条件
+
+| 阶段 | 核心输入 | repo-visible 输出 | 退出条件 |
+| --- | --- | --- | --- |
+| Stage M | frozen strategy/baseline kernel、turnover、上游状态 | coverage + cost robustness Markdown/JSON report | gross 可复现、共同日期完整、成本场景可比、caveat 完整 |
+| Stage N | frozen target weight、当前持仓、现金、价格和交易单位 | `derived.etf_aw_rebalance_plan`、JSON/Markdown order draft | 权重、现金、持仓、价格和手数约束通过；只生成 `DRAFT` |
+| Stage O | frozen plan、模拟成交记录、后续市场数据 | daily observation、forward performance、post-mortem | 不自动下单；计划、模拟成交、净值和偏差可追溯 |
+| 可选研究分支 | Stage M 报告、独立 candidate artifact | 新 `strategy_version` 与同口径对比报告 | 不覆盖 V1，不隐藏参数搜索，不阻塞 Stage N/O 工程验证 |
+
+### 决策门约束
+
+1. Stage M 数据覆盖不足时，不能靠 inner join、未来数据回填或放宽 frozen vector 合同拉长样本。
+2. 当前策略成本后优势不稳定时，Stage M 必须保留 research-only caveat；Stage N/O 仅用于验证工程闭环和积累 forward evidence，不得宣称策略已被证明有效。
+3. simplified ERC candidate 必须使用独立 `strategy_version`，不得覆盖 V1 target weight，也不得阻塞近期模拟盘工程验证。
+4. API 或前端不能触发 artifact 生成、参数搜索、回测运行或订单提交。
+5. Stage N 的 rebalance plan 是 paper order draft，真实交易必须由用户人工判断；V1 不存在券商下单路径。
+6. Stage O 只记录 simulated fill 和 forward result。任何 live pilot 都需要单独的数据、风控、执行和授权设计。
+
+### 未来日常运行流程
+
+Stage N/O 尚未完成前，日常流程停在只读评估和人工判断：
+
+```text
+每日数据同步
+-> 数据质量与 watermark 检查
+-> 更新 sleeve daily、宏观/利率数据和适用的只读上下文
+-> 非调仓日：只更新上下文和只读观察结果
+-> 月度调仓日：冻结 risk budget
+-> risk budget health check
+-> 冻结 target weight
+-> target weight health check
+-> 更新 baseline（研究对比用途）
+-> 分别运行 strategy / baseline kernel
+-> Stage M robustness report
+-> 用户查看权重、历史表现、成本敏感性和 diagnostics
+-> 当前阶段由用户自行进行人工交易判断
+```
+
+Stage N/O 完成后，月度链路才允许继续到：
+
+```text
+已批准且通过健康检查的 frozen target weight
+-> 读取当前持仓
+-> 生成 DRAFT paper rebalance plan
+-> 手数、现金缓冲和可用持仓检查
+-> 人工确认或拒绝模拟成交
+-> 写入 simulated fill record
+-> forward observation
+-> post-mortem
+-> 下一调仓周期
+```
+
+这两条运行链都禁止自动下单。Dashboard 的职责是展示稳定 artifact、质量状态和 caveat，不承担策略计算或执行。
+
 ## 资料库吸收边界
 
 ### 直接吸收
@@ -323,23 +441,32 @@ Tushare / project ETL
 -> derived.etf_aw_strategy_context
 -> derived.etf_aw_risk_budget
 -> derived.etf_aw_target_weight
--> derived.etf_aw_backtest_kernel
+
+derived.etf_aw_sleeve_daily -> derived.etf_aw_baseline_weight
+
+target_weight artifact ---\
+                           -> derived.etf_aw_backtest_kernel -> backtest comparison report
+baseline_weight artifact --/
+
+strategy_context + risk_budget + target_weight + target kernel
 -> derived.etf_aw_monthly_explainability
 -> workflow context
 -> Dashboard snapshot panel
 ```
 
-### 下一阶段新增层
+### 后续目标层
 
 ```text
-artifact health check
--> risk budget availability repair
--> backtest evaluation report
--> baseline comparison report
--> shadow recommendation record
+coverage / cost robustness evaluation
+-> conditional strategy candidate comparison
+-> paper rebalance plan
+-> simulated fill / forward observation / post-mortem
+-> later: evaluation read contract / API / read-only Dashboard
 ```
 
-新增层必须保留两个硬边界：
+具体阶段、决策门和回退方向以“后续总流程”为准。
+
+后续层必须保留以下硬边界：
 
 1. `strategy_context` 是输入上下文，不应包含目标权重或交易动作。
 2. `target_weight` 和 `trade_action` 必须来自后续明确命名的数据集，不能混入现有 Stage G 合同。
@@ -623,41 +750,36 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
    - WARN：单 sleeve 因 vol floor 或缺失数据被降级。
    - WARN：连续多个 rebalance date 的 target weight 完全不变，需要人工确认是中性回落还是计算未更新。
 
-### 延后文档
+### 近期交付文档
 
 5. `rebalance-plan-design.md`
 
-   只有在 `target-weight-design.md` 对应实现稳定后再写。
+   target weight 已稳定，按 Stage N 最小订单草案边界补写。
 
    范围：
 
    - 当前持仓输入。
    - 目标权重到 paper rebalance plan。
-   - 换手估算。
-   - 成本过滤。
-   - no-trade band。
-   - 最小交易金额和 ETF 最小交易单位。
-   - 现金缓冲。
-   - 不自动下单的人工确认边界。
+   - A 股 ETF 100 份交易单位和固定 1% 现金缓冲。
+   - BUY / SELL 向下取整、可用持仓与现金阻断。
+   - `DRAFT` artifact、幂等键和人工确认边界。
+   - 不接券商 API，不自动提交真实订单。
 
-6. `backtest-evaluation-design.md`
+6. `backtest-robustness-evaluation-design.md`
 
-   拆成两段推进。Phase 1 可在现有回测内核输出之上先定义 read endpoint 和单策略可视化；Phase 2 在 `target-weight-design.md` 对应实现能通过前置回测内核验收后，再做完整基线对标和评估层扩展。
+   设计已完成，直接在现有双策略 kernel 之上实现 Stage M，不先建设 read endpoint 或前端。
 
    范围：
 
-   - 单策略净值、回撤、指标卡片和换手展示合同。
-   - diagnostic 行到前端降级横幅的映射。
-   - 等权、静态 inverse-vol、静态风险平价基线。
-   - 成本和换手假设。
-   - 参数扰动。
-   - 日频有效权重输出。
-   - 月度 explainability report。
-   - Dashboard 净值展示边界。
+   - strategy 与静态 inverse-vol baseline 的共同覆盖审计。
+   - 0 / 5 / 10 / 20 bps 固定成本敏感性。
+   - gross / net 指标、换手和差值。
+   - sleeve 日期缺口、短样本、初始建仓成本和成交时点 caveat。
+   - Markdown / JSON repo-visible 报告。
 
 7. `shadow-run-design.md`
 
-   只有在 rebalance plan 能稳定生成后再写。
+   Stage N 最小计划稳定后补写 Stage O 观察合同。
 
    范围：
 
@@ -692,12 +814,15 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 9. 已按 `etf-aw-cli-design.md` 补齐 `build-risk-budget`、`health-check risk-budget`、`build-target-weight`、`health-check target-weight`、`backtest-kernel`、`backtest-report` 的命令边界。
 10. 已增加后端命令行回测报表 Phase 0，覆盖净值、回撤、指标、换手和 diagnostics 摘要。
 11. 已增加 monthly explainability table，消费 frozen context / budget / weight / backtest artifact，并补齐 source version 追溯。
-12. 下一步做 backtest evaluation baseline comparison，baseline 必须先生成独立 frozen weight artifact，不能在 backtest loop 中临时调参。
-13. 再评估是否引入 simplified ERC。
-14. 已收束前端：`/etf-aw` 只作为 risk budget 只读观察面板，不继续扩展 UI。
-15. 后端 target weight 和 backtest 合同稳定后，再补前端目标权重、净值或 Dashboard 面板。
-16. 清理 ETF 全天候前端界面，保持只读、分区清晰、诊断可下钻，不把临时研究字段堆到主视图。
-17. 目标权重稳定后，再新增 `rebalance-plan-design.md`。
+12. 已完成 backtest evaluation baseline comparison：baseline 先生成独立 frozen weight artifact，再由同一个 kernel 分别运行策略和 baseline；旧 kernel 分区可原地升级来源字段。
+13. `backtest-robustness-evaluation-design.md` 已完成，下一步按其合同实现历史覆盖审计和固定成本敏感性评估。
+14. 实现 Stage N 纯函数订单计划，覆盖买入、卖出、不足一手、现金不足、持仓不足和重复计划。
+15. 增加 Stage N CLI，输出 `DRAFT` JSON/Markdown 或 Parquet artifact，不接 API、前端或券商。
+16. 实现 Stage M coverage + cost robustness report，gross 场景必须严格复现 kernel。
+17. 跑通 target weight -> robustness report -> rebalance plan -> paper order draft 的端到端流程。
+18. 周一盘前执行 Go / No-Go：权重、价格、持仓、现金、手数、caveat 和复现信息全部通过后，才记录 simulated fill。
+19. Stage O 记录持仓、现金、净值、权重偏离、相对 baseline 收益和异常备注；短样本结论继续标记 research-only。
+20. simplified ERC、read API、前端绩效归因和小资金 live pilot 均后置，不阻塞 Stage M/N/O 最小闭环。
 
 ## 非目标
 

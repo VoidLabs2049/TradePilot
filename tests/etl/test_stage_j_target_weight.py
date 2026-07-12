@@ -496,6 +496,10 @@ class StageJTargetWeightTests(unittest.TestCase):
             set(frame["strategy_version"]),
             {"target_weight_inverse_vol_v1"},
         )
+        self.assertEqual(set(frame["weight_source_type"]), {"target_weight"})
+        self.assertEqual(
+            set(frame["source_weight_dataset"]), {"derived.etf_aw_target_weight"}
+        )
 
     def test_update_plan_runs_target_weight_after_risk_budget(self) -> None:
         conn = duckdb.connect(":memory:")
@@ -521,11 +525,69 @@ class StageJTargetWeightTests(unittest.TestCase):
             names.index("derived.etf_aw_risk_budget.build"),
             names.index("derived.etf_aw_target_weight.build"),
         )
+        self.assertLess(
+            names.index("derived.etf_aw_target_weight.build"),
+            names.index("derived.etf_aw_baseline_weight.build"),
+        )
+        self.assertLess(
+            names.index("derived.etf_aw_baseline_weight.build"),
+            names.index("derived.etf_aw_backtest_kernel.build"),
+        )
+        self.assertLess(
+            names.index("derived.etf_aw_backtest_kernel.build"),
+            names.index("derived.etf_aw_backtest_kernel.baseline.build"),
+        )
+        self.assertLess(
+            names.index("derived.etf_aw_backtest_kernel.baseline.build"),
+            names.index("derived.etf_aw_monthly_explainability.build"),
+        )
 
-    def test_backtest_kernel_declares_target_weight_dependency(self) -> None:
+    def test_update_plan_executes_baseline_backtest_kernel(self) -> None:
+        class FakeService:
+            def __init__(self) -> None:
+                self.bootstrap_names: list[str] = []
+                self.baseline_calls: list[tuple[date, date, str]] = []
+
+            def run_bootstrap(
+                self, name: str, start: date | None = None, end: date | None = None
+            ) -> dict:
+                self.bootstrap_names.append(name)
+                return {"status": RunStatus.SUCCESS.value, "records_written": 1}
+
+            def _build_etf_aw_backtest_kernel(
+                self,
+                start: date,
+                end: date,
+                *,
+                weight_source_type: str = "target_weight",
+            ) -> dict:
+                self.baseline_calls.append((start, end, weight_source_type))
+                return {"status": RunStatus.SUCCESS.value, "records_written": 1}
+
+        service = FakeService()
+        plan = [
+            update_module.UpdatePlanItem(
+                kind="profile",
+                name="derived.etf_aw_backtest_kernel.baseline.build",
+                start=date(2024, 7, 1),
+                end=date(2024, 7, 31),
+            )
+        ]
+
+        results = update_module.execute_update_plan(service, plan)  # type: ignore[arg-type]
+
+        self.assertEqual(results[0]["status"], RunStatus.SUCCESS.value)
+        self.assertEqual(
+            service.baseline_calls,
+            [(date(2024, 7, 1), date(2024, 7, 31), "baseline")],
+        )
+        self.assertEqual(service.bootstrap_names, [])
+
+    def test_backtest_kernel_declares_weight_dependencies(self) -> None:
         definition = build_derived_etf_aw_backtest_kernel_dataset()
 
         self.assertIn("derived.etf_aw_target_weight", definition.dependencies)
+        self.assertIn("derived.etf_aw_baseline_weight", definition.dependencies)
 
     def _budget_row(
         self, rebalance_date: date, sleeve_role: str, tilted_budget: float, status: str

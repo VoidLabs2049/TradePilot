@@ -146,6 +146,24 @@ _ETF_AW_BACKTEST_KERNEL_DATASET = "derived.etf_aw_backtest_kernel"
 _ETF_AW_BACKTEST_KERNEL_SCHEMA_VERSION = "etf_aw_backtest_kernel_v1"
 _ETF_AW_BACKTEST_KERNEL_STRATEGY_NAME = "equal_weight_fixture"
 _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION = "fixture_v1"
+_ETF_AW_BASELINE_WEIGHT_PROFILE = "derived.etf_aw_baseline_weight.build"
+_ETF_AW_BASELINE_WEIGHT_DATASET = "derived.etf_aw_baseline_weight"
+_ETF_AW_BASELINE_WEIGHT_SCHEMA_VERSION = "etf_aw_baseline_weight_v1"
+_ETF_AW_BASELINE_WEIGHT_CONTRACT_VERSION = "etf_aw_baseline_weight_contract_v1"
+_ETF_AW_BASELINE_NAME = "static_inverse_vol"
+_ETF_AW_BASELINE_VERSION = "static_inverse_vol_v1"
+_ETF_AW_BASELINE_VOL_WINDOW = 63
+_ETF_AW_BASELINE_MIN_OBSERVATIONS = 42
+_ETF_AW_BASELINE_PANEL_LOOKBACK_DAYS = _ETF_AW_BASELINE_VOL_WINDOW * 3
+_ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET = "target_weight"
+_ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE = "baseline"
+_ETF_AW_BACKTEST_WEIGHT_SOURCE_ALIASES = {
+    "baseline_weight": _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE,
+}
+_ETF_AW_BACKTEST_WEIGHT_SOURCES = {
+    _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET,
+    _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE,
+}
 _ETF_AW_MONTHLY_EXPLAINABILITY_PROFILE = "derived.etf_aw_monthly_explainability.build"
 _ETF_AW_MONTHLY_EXPLAINABILITY_DATASET = "derived.etf_aw_monthly_explainability"
 _ETF_AW_MONTHLY_EXPLAINABILITY_SCHEMA_VERSION = "etf_aw_monthly_explainability_v1"
@@ -546,6 +564,11 @@ class ETLService:
             )
         if profile_name == _ETF_AW_TARGET_WEIGHT_PROFILE:
             return self._build_etf_aw_target_weight(
+                start or _TRADING_CALENDAR_HISTORY_START,
+                end or date.today(),
+            )
+        if profile_name == _ETF_AW_BASELINE_WEIGHT_PROFILE:
+            return self._build_etf_aw_baseline_weight(
                 start or _TRADING_CALENDAR_HISTORY_START,
                 end or date.today(),
             )
@@ -962,6 +985,7 @@ class ETLService:
         key_columns: tuple[str, ...],
         sort_columns: tuple[str, ...],
         partition_date_column: str = "trade_date",
+        existing_column_defaults: dict[str, object] | None = None,
     ) -> CanonicalWriteResult:
         if canonical.empty:
             return CanonicalWriteResult()
@@ -983,6 +1007,9 @@ class ETLService:
             partition_frame = partition.drop(columns=["year", "month"]).copy()
             if final_path.exists():
                 existing = pd.read_parquet(final_path)
+                for column, default in (existing_column_defaults or {}).items():
+                    if column not in existing.columns:
+                        existing[column] = default
                 merged = pd.concat([existing, partition_frame], ignore_index=True)
                 existing_keys = _business_keys(existing, key_columns)
             else:
@@ -2513,10 +2540,105 @@ class ETLService:
             partition_date_column="rebalance_date",
         )
 
-    def _build_etf_aw_backtest_kernel(self, start: date, end: date) -> dict:
+    def _build_etf_aw_baseline_weight(self, start: date, end: date) -> dict:
         start, end = _ordered_dates(start, end)
+
+        def _failed(error_message: str, **extra: Any) -> dict:
+            result = {
+                "profile_name": _ETF_AW_BASELINE_WEIGHT_PROFILE,
+                "dataset_name": _ETF_AW_BASELINE_WEIGHT_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "error_message": error_message,
+            }
+            result.update(extra)
+            return result
+
         rebalance = self._read_rebalance_calendar(start, end)
         if rebalance.empty:
+            return _failed("canonical rebalance calendar is missing")
+        panel = self._read_partitioned_dataset(
+            "derived.etf_aw_sleeve_daily",
+            start - timedelta(days=_ETF_AW_BASELINE_PANEL_LOOKBACK_DAYS),
+            end,
+            StorageZone.DERIVED,
+        )
+        if panel.empty:
+            return _failed("derived sleeve daily panel is missing")
+        baseline = self._make_etf_aw_baseline_weight_frame(
+            rebalance=rebalance,
+            panel=panel,
+        )
+        if baseline.empty:
+            return _failed("ETF all-weather baseline weight has no complete vectors")
+        validation = _validate_baseline_weight_frame(baseline)
+        if not all(validation.values()):
+            return _failed(
+                "ETF all-weather baseline weight validation failed",
+                validation=validation,
+            )
+        write_result = self._write_etf_aw_baseline_weight(baseline)
+        return {
+            "profile_name": _ETF_AW_BASELINE_WEIGHT_PROFILE,
+            "dataset_name": _ETF_AW_BASELINE_WEIGHT_DATASET,
+            "status": RunStatus.SUCCESS.value,
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "records_written": write_result.records_written,
+            "records_inserted": write_result.records_inserted,
+            "records_updated": write_result.records_updated,
+            "partitions_written": write_result.partitions_written,
+            "storage_paths": write_result.storage_paths,
+            "validation": validation,
+        }
+
+    def _make_etf_aw_baseline_weight_frame(
+        self, *, rebalance: pd.DataFrame, panel: pd.DataFrame
+    ) -> pd.DataFrame:
+        return _make_etf_aw_baseline_weight_frame(rebalance=rebalance, panel=panel)
+
+    def _write_etf_aw_baseline_weight(
+        self, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=_ETF_AW_BASELINE_WEIGHT_DATASET,
+            zone=StorageZone.DERIVED,
+            canonical=canonical,
+            key_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "baseline_name",
+                "baseline_version",
+                "sleeve_code",
+            ),
+            sort_columns=(
+                "calendar_name",
+                "rebalance_date",
+                "baseline_name",
+                "baseline_version",
+                "sleeve_role",
+                "ingested_at",
+            ),
+            partition_date_column="rebalance_date",
+        )
+
+    def _build_etf_aw_backtest_kernel(
+        self,
+        start: date,
+        end: date,
+        *,
+        weight_source_type: str = "target_weight",
+        baseline_name: str = _ETF_AW_BASELINE_NAME,
+        baseline_version: str = _ETF_AW_BASELINE_VERSION,
+    ) -> dict:
+        start, end = _ordered_dates(start, end)
+        requested_weight_source_type = weight_source_type
+        weight_source_type = _normalize_backtest_weight_source_type(
+            requested_weight_source_type
+        )
+        if weight_source_type is None:
             return {
                 "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
                 "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
@@ -2524,8 +2646,50 @@ class ETLService:
                 "requested_start": start.isoformat(),
                 "requested_end": end.isoformat(),
                 "records_written": 0,
-                "error_message": "canonical rebalance calendar is missing",
+                "weight_source_type": str(requested_weight_source_type),
+                "source_weight_dataset": None,
+                "error_message": "ETF all-weather weight_source_type is invalid",
             }
+        source_dataset = (
+            _ETF_AW_TARGET_WEIGHT_DATASET
+            if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET
+            else _ETF_AW_BASELINE_WEIGHT_DATASET
+        )
+        profile_name = (
+            _ETF_AW_BACKTEST_KERNEL_PROFILE
+            if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET
+            else (
+                f"{_ETF_AW_BACKTEST_KERNEL_PROFILE}."
+                f"{baseline_name}.{baseline_version}"
+            )
+        )
+
+        def _failed(error_message: str, **extra: Any) -> dict:
+            result = {
+                "profile_name": profile_name,
+                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
+                "status": RunStatus.FAILED.value,
+                "requested_start": start.isoformat(),
+                "requested_end": end.isoformat(),
+                "records_written": 0,
+                "weight_source_type": weight_source_type,
+                "source_weight_dataset": source_dataset,
+                "error_message": error_message,
+            }
+            if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE:
+                result["baseline_name"] = baseline_name
+                result["baseline_version"] = baseline_version
+            result.update(extra)
+            return result
+
+        if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE and (
+            not str(baseline_name).strip() or not str(baseline_version).strip()
+        ):
+            return _failed("ETF all-weather baseline name/version is required")
+
+        rebalance = self._read_rebalance_calendar(start, end)
+        if rebalance.empty:
+            return _failed("canonical rebalance calendar is missing")
         panel = self._read_partitioned_dataset(
             "derived.etf_aw_sleeve_daily",
             start,
@@ -2533,31 +2697,27 @@ class ETLService:
             StorageZone.DERIVED,
         )
         if panel.empty:
-            return {
-                "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
-                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
-                "status": RunStatus.FAILED.value,
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "records_written": 0,
-                "error_message": "derived sleeve daily panel is missing",
-            }
+            return _failed("derived sleeve daily panel is missing")
         weights = self._read_partitioned_dataset(
-            _ETF_AW_TARGET_WEIGHT_DATASET,
+            source_dataset,
             start,
             end,
             StorageZone.DERIVED,
         )
+        if (
+            weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE
+            and not weights.empty
+        ):
+            weights = weights[
+                weights["baseline_name"].astype(str).eq(baseline_name)
+                & weights["baseline_version"].astype(str).eq(baseline_version)
+            ].copy()
+            weights["strategy_name"] = weights["baseline_name"].astype(str)
+            weights["strategy_version"] = weights["baseline_version"].astype(str)
         if weights.empty:
-            return {
-                "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
-                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
-                "status": RunStatus.FAILED.value,
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "records_written": 0,
-                "error_message": "ETF all-weather target weight is missing",
-            }
+            return _failed(f"ETF all-weather {weight_source_type} is missing")
+        weights["weight_source_type"] = weight_source_type
+        weights["source_weight_dataset"] = source_dataset
         backtest = self._make_etf_aw_backtest_kernel_frame(
             panel=panel,
             rebalance=rebalance,
@@ -2567,19 +2727,13 @@ class ETLService:
         )
         validation = _validate_backtest_kernel_frame(backtest)
         if not all(validation.values()):
-            return {
-                "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
-                "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
-                "status": RunStatus.FAILED.value,
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "records_written": 0,
-                "validation": validation,
-                "error_message": "ETF all-weather backtest kernel validation failed",
-            }
+            return _failed(
+                "ETF all-weather backtest kernel validation failed",
+                validation=validation,
+            )
         write_result = self._write_etf_aw_backtest_kernel(backtest)
-        return {
-            "profile_name": _ETF_AW_BACKTEST_KERNEL_PROFILE,
+        result = {
+            "profile_name": profile_name,
             "dataset_name": _ETF_AW_BACKTEST_KERNEL_DATASET,
             "status": RunStatus.SUCCESS.value,
             "requested_start": start.isoformat(),
@@ -2590,8 +2744,14 @@ class ETLService:
             "partitions_written": write_result.partitions_written,
             "storage_paths": write_result.storage_paths,
             "validation": validation,
+            "weight_source_type": weight_source_type,
+            "source_weight_dataset": source_dataset,
             "observation_type_counts": _value_counts_dict(backtest["observation_type"]),
         }
+        if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE:
+            result["baseline_name"] = baseline_name
+            result["baseline_version"] = baseline_version
+        return result
 
     def _make_etf_aw_backtest_kernel_frame(
         self,
@@ -2613,6 +2773,11 @@ class ETLService:
     def _write_etf_aw_backtest_kernel(
         self, canonical: pd.DataFrame
     ) -> CanonicalWriteResult:
+        canonical = canonical.copy()
+        if "weight_source_type" not in canonical.columns:
+            canonical["weight_source_type"] = "target_weight"
+        if "source_weight_dataset" not in canonical.columns:
+            canonical["source_weight_dataset"] = _ETF_AW_TARGET_WEIGHT_DATASET
         return self._write_year_month_partition_upsert(
             dataset_name=_ETF_AW_BACKTEST_KERNEL_DATASET,
             zone=StorageZone.DERIVED,
@@ -2621,6 +2786,7 @@ class ETLService:
                 "calendar_name",
                 "strategy_name",
                 "strategy_version",
+                "weight_source_type",
                 "observation_type",
                 "observation_date",
                 "metric_name",
@@ -2629,12 +2795,17 @@ class ETLService:
                 "calendar_name",
                 "strategy_name",
                 "strategy_version",
+                "weight_source_type",
                 "observation_type",
                 "observation_date",
                 "metric_name",
                 "ingested_at",
             ),
             partition_date_column="observation_date",
+            existing_column_defaults={
+                "weight_source_type": _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET,
+                "source_weight_dataset": _ETF_AW_TARGET_WEIGHT_DATASET,
+            },
         )
 
     def _build_etf_aw_monthly_explainability(self, start: date, end: date) -> dict:
@@ -5345,7 +5516,11 @@ def _target_weight_budget_group_valid(
 
 
 def _target_weight_volatility(
-    panel: pd.DataFrame, rebalance_date: date
+    panel: pd.DataFrame,
+    rebalance_date: date,
+    *,
+    window_days: int = _ETF_AW_TARGET_WEIGHT_VOL_WINDOW,
+    min_observations: int = _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS,
 ) -> tuple[dict[str, float], dict[str, date | None], dict[str, list[str]]]:
     vol_by_role: dict[str, float] = {}
     source_max_by_role: dict[str, date | None] = {}
@@ -5364,11 +5539,9 @@ def _target_weight_volatility(
             if not sleeve_panel.empty
             else None
         )
-        returns = (
-            sleeve_panel["daily_return"].dropna().tail(_ETF_AW_TARGET_WEIGHT_VOL_WINDOW)
-        )
+        returns = sleeve_panel["daily_return"].dropna().tail(window_days)
         reasons: list[str] = []
-        if len(returns) < _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS:
+        if len(returns) < min_observations:
             volatility = _ETF_AW_TARGET_WEIGHT_VOL_FLOOR
             reasons.extend(
                 [
@@ -5484,6 +5657,190 @@ def _round_code_weights(weights: dict[str, float]) -> dict[str, float]:
 
 def _role_code(role: str) -> str:
     return ETF_AW_SLEEVE_CODE_BY_ROLE[role]
+
+
+def _normalize_backtest_weight_source_type(value: str) -> str | None:
+    """Return the canonical backtest weight source type when supported."""
+
+    text = str(value)
+    text = _ETF_AW_BACKTEST_WEIGHT_SOURCE_ALIASES.get(text, text)
+    if text in _ETF_AW_BACKTEST_WEIGHT_SOURCES:
+        return text
+    return None
+
+
+def _make_etf_aw_baseline_weight_frame(
+    *, rebalance: pd.DataFrame, panel: pd.DataFrame
+) -> pd.DataFrame:
+    """Build static inverse-vol baseline weights from frozen sleeve returns."""
+
+    if rebalance.empty or panel.empty:
+        return pd.DataFrame()
+    required_panel = {"sleeve_code", "trade_date"}
+    if not required_panel.issubset(panel.columns):
+        return pd.DataFrame()
+    if "daily_return" not in panel.columns and "adj_close" not in panel.columns:
+        return pd.DataFrame()
+    calendar = _normalize_rebalance_date_frame(rebalance)
+    calendar = calendar.dropna(subset=["calendar_name", "rebalance_date"])
+    if calendar.empty:
+        return pd.DataFrame()
+    calendar = calendar.sort_values(["calendar_name", "rebalance_date"])
+    calendar = calendar.drop_duplicates(["calendar_name", "rebalance_date"])
+    panel = _target_weight_panel_returns(panel)
+    rows: list[dict[str, Any]] = []
+    ingested_at = _utc_now()
+    for _, calendar_row in calendar.iterrows():
+        rebalance_date = calendar_row["rebalance_date"]
+        vol_by_role, source_max_by_role, reasons_by_role = _target_weight_volatility(
+            panel,
+            rebalance_date,
+            window_days=_ETF_AW_BASELINE_VOL_WINDOW,
+            min_observations=_ETF_AW_BASELINE_MIN_OBSERVATIONS,
+        )
+        if any(
+            "insufficient_volatility_observations" in reasons
+            for reasons in reasons_by_role.values()
+        ):
+            continue
+        weights = _static_inverse_vol_weights(vol_by_role)
+        rounded = _round_role_weights(weights)
+        for role in ETF_AW_SLEEVE_ROLE_ORDER:
+            code = _role_code(role)
+            rows.append(
+                {
+                    "schema_version": _ETF_AW_BASELINE_WEIGHT_SCHEMA_VERSION,
+                    "contract_version": _ETF_AW_BASELINE_WEIGHT_CONTRACT_VERSION,
+                    "calendar_name": str(calendar_row["calendar_name"]),
+                    "rebalance_date": rebalance_date,
+                    "effective_date": rebalance_date,
+                    "baseline_name": _ETF_AW_BASELINE_NAME,
+                    "baseline_version": _ETF_AW_BASELINE_VERSION,
+                    "sleeve_code": code,
+                    "sleeve_role": role,
+                    "target_weight": rounded[role],
+                    "estimation_window_days": _ETF_AW_BASELINE_VOL_WINDOW,
+                    "min_observation_days": _ETF_AW_BASELINE_MIN_OBSERVATIONS,
+                    "volatility_estimate": round(vol_by_role[role], 6),
+                    "optimizer_name": _ETF_AW_BASELINE_NAME,
+                    "optimizer_basis": (
+                        "one divided by trailing adjusted-close volatility, "
+                        "normalized across frozen sleeves"
+                    ),
+                    "quality_notes_json": json.dumps(
+                        {
+                            "reasons": sorted(set(reasons_by_role.get(role, []))),
+                            "volatility_floor": _ETF_AW_TARGET_WEIGHT_VOL_FLOOR,
+                            "volatility_window": _ETF_AW_BASELINE_VOL_WINDOW,
+                            "minimum_observations": (_ETF_AW_BASELINE_MIN_OBSERVATIONS),
+                        },
+                        sort_keys=True,
+                    ),
+                    "source_sleeve_daily_max_trade_date": source_max_by_role.get(role),
+                    "ingested_at": ingested_at,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _static_inverse_vol_weights(vol_by_role: dict[str, float]) -> dict[str, float]:
+    risk_budget = {role: 1.0 for role in ETF_AW_SLEEVE_ROLE_ORDER}
+    return _budgeted_inverse_vol_weights(risk_budget, vol_by_role)
+
+
+def _validate_baseline_weight_frame(frame: pd.DataFrame) -> dict[str, bool]:
+    """Validate the static baseline weight artifact contract."""
+
+    if frame.empty:
+        return {
+            "non_empty": False,
+            "missing_required_columns": False,
+            "no_duplicate_business_keys": False,
+            "five_roles_per_rebalance_date": False,
+            "weight_sums_valid": False,
+            "quality_notes_json": False,
+            "forbidden_fields_absent": False,
+        }
+    required_columns = {
+        "schema_version",
+        "contract_version",
+        "calendar_name",
+        "rebalance_date",
+        "effective_date",
+        "baseline_name",
+        "baseline_version",
+        "sleeve_code",
+        "sleeve_role",
+        "target_weight",
+        "estimation_window_days",
+        "min_observation_days",
+        "volatility_estimate",
+        "optimizer_name",
+        "optimizer_basis",
+        "quality_notes_json",
+        "source_sleeve_daily_max_trade_date",
+        "ingested_at",
+    }
+    if not required_columns.issubset(frame.columns):
+        return {
+            "non_empty": True,
+            "missing_required_columns": False,
+            "no_duplicate_business_keys": False,
+            "five_roles_per_rebalance_date": False,
+            "weight_sums_valid": False,
+            "quality_notes_json": False,
+            "forbidden_fields_absent": False,
+        }
+    key_columns = [
+        "calendar_name",
+        "rebalance_date",
+        "baseline_name",
+        "baseline_version",
+        "sleeve_code",
+    ]
+    group_columns = [
+        "calendar_name",
+        "rebalance_date",
+        "baseline_name",
+        "baseline_version",
+    ]
+    group_checks = []
+    weight_checks = []
+    for _, group in frame.groupby(group_columns):
+        group_checks.append(
+            len(group) == len(ETF_AW_SLEEVE_ROLE_ORDER)
+            and set(group["sleeve_role"].astype(str)) == ETF_AW_REQUIRED_ROLES
+            and set(group["sleeve_code"].astype(str)) == set(_ETF_AW_SLEEVE_CODES)
+        )
+        weights = [_nullable_float(value) for value in group["target_weight"].tolist()]
+        weight_checks.append(
+            all(value is not None and value >= 0.0 for value in weights)
+            and abs(sum(value or 0.0 for value in weights) - 1.0) <= 1e-6
+        )
+    forbidden_fields = {
+        column
+        for column in frame.columns
+        if column
+        in {
+            "trade_action",
+            "order_instruction",
+            "rebalance_instruction",
+            "order_quantity",
+            "order_amount",
+            "broker_account",
+        }
+    }
+    return {
+        "non_empty": True,
+        "missing_required_columns": True,
+        "no_duplicate_business_keys": int(frame.duplicated(key_columns).sum()) == 0,
+        "five_roles_per_rebalance_date": all(group_checks),
+        "weight_sums_valid": all(weight_checks),
+        "quality_notes_json": all(
+            _is_json_text(value) for value in frame["quality_notes_json"].tolist()
+        ),
+        "forbidden_fields_absent": not forbidden_fields,
+    }
 
 
 def _validate_target_weight_frame(frame: pd.DataFrame) -> dict[str, bool]:
@@ -5644,6 +6001,12 @@ def _make_etf_aw_backtest_kernel_frame(
     strategy_version = _backtest_kernel_strategy_value(
         weights, "strategy_version", _ETF_AW_BACKTEST_KERNEL_STRATEGY_VERSION
     )
+    weight_source_type = _backtest_kernel_strategy_value(
+        weights, "weight_source_type", "target_weight"
+    )
+    source_weight_dataset = _backtest_kernel_strategy_value(
+        weights, "source_weight_dataset", _ETF_AW_TARGET_WEIGHT_DATASET
+    )
     diagnostic_rebalance_dates = _backtest_diagnostic_rebalance_dates(
         rebalance, weights, start
     )
@@ -5655,6 +6018,8 @@ def _make_etf_aw_backtest_kernel_frame(
             strategy_name=strategy_name,
             strategy_version=strategy_version,
             rebalance_dates=diagnostic_rebalance_dates,
+            weight_source_type=weight_source_type,
+            source_weight_dataset=source_weight_dataset,
             ingested_at=ingested_at,
         )
 
@@ -5683,6 +6048,8 @@ def _make_etf_aw_backtest_kernel_frame(
             strategy_name=strategy_name,
             strategy_version=strategy_version,
             rebalance_dates=diagnostic_rebalance_dates,
+            weight_source_type=weight_source_type,
+            source_weight_dataset=source_weight_dataset,
             ingested_at=ingested_at,
         )
 
@@ -5740,6 +6107,8 @@ def _make_etf_aw_backtest_kernel_frame(
                     calendar_name=calendar_name,
                     strategy_name=strategy_name,
                     strategy_version=strategy_version,
+                    weight_source_type=weight_source_type,
+                    source_weight_dataset=source_weight_dataset,
                     observation_type="turnover",
                     observation_date=trade_date,
                     metric_name="monthly_turnover",
@@ -5769,6 +6138,8 @@ def _make_etf_aw_backtest_kernel_frame(
                 calendar_name=calendar_name,
                 strategy_name=strategy_name,
                 strategy_version=strategy_version,
+                weight_source_type=weight_source_type,
+                source_weight_dataset=source_weight_dataset,
                 observation_type="daily_nav",
                 observation_date=trade_date,
                 metric_name="net_value",
@@ -5790,6 +6161,8 @@ def _make_etf_aw_backtest_kernel_frame(
                 calendar_name=calendar_name,
                 strategy_name=strategy_name,
                 strategy_version=strategy_version,
+                weight_source_type=weight_source_type,
+                source_weight_dataset=source_weight_dataset,
                 observation_type="metric",
                 observation_date=metric_date,
                 metric_name=metric_name,
@@ -5922,6 +6295,8 @@ def _backtest_diagnostic_rows(
     strategy_version: str,
     rebalance_dates: list[date],
     ingested_at: datetime,
+    weight_source_type: str = "target_weight",
+    source_weight_dataset: str = _ETF_AW_TARGET_WEIGHT_DATASET,
 ) -> pd.DataFrame:
     """Return a validation-visible diagnostic row for blocked kernel inputs."""
 
@@ -5931,6 +6306,8 @@ def _backtest_diagnostic_rows(
                 calendar_name=calendar_name,
                 strategy_name=strategy_name,
                 strategy_version=strategy_version,
+                weight_source_type=weight_source_type,
+                source_weight_dataset=source_weight_dataset,
                 observation_type="diagnostic",
                 observation_date=rebalance_date,
                 metric_name="input_validation",
@@ -5953,6 +6330,8 @@ def _backtest_row(
     calendar_name: str,
     strategy_name: str,
     strategy_version: str,
+    weight_source_type: str,
+    source_weight_dataset: str,
     observation_type: str,
     observation_date: date,
     metric_name: str,
@@ -5969,6 +6348,8 @@ def _backtest_row(
         "calendar_name": calendar_name,
         "strategy_name": strategy_name,
         "strategy_version": strategy_version,
+        "weight_source_type": weight_source_type,
+        "source_weight_dataset": source_weight_dataset,
         "observation_type": observation_type,
         "observation_date": observation_date,
         "metric_name": metric_name,
@@ -6573,6 +6954,28 @@ def _validate_backtest_kernel_frame(frame: pd.DataFrame) -> dict[str, bool]:
     if frame.empty:
         return {
             "non_empty": False,
+            "missing_required_columns": False,
+            "no_duplicate_business_keys": False,
+            "observation_type_allowed": False,
+            "metric_values_finite": False,
+            "quality_notes_json": False,
+        }
+    required_columns = {
+        "calendar_name",
+        "strategy_name",
+        "strategy_version",
+        "weight_source_type",
+        "source_weight_dataset",
+        "observation_type",
+        "observation_date",
+        "metric_name",
+        "metric_value",
+        "quality_notes_json",
+    }
+    if not required_columns.issubset(frame.columns):
+        return {
+            "non_empty": True,
+            "missing_required_columns": False,
             "no_duplicate_business_keys": False,
             "observation_type_allowed": False,
             "metric_values_finite": False,
@@ -6584,6 +6987,7 @@ def _validate_backtest_kernel_frame(frame: pd.DataFrame) -> dict[str, bool]:
                 "calendar_name",
                 "strategy_name",
                 "strategy_version",
+                "weight_source_type",
                 "observation_type",
                 "observation_date",
                 "metric_name",
@@ -6600,6 +7004,7 @@ def _validate_backtest_kernel_frame(frame: pd.DataFrame) -> dict[str, bool]:
     ]
     return {
         "non_empty": True,
+        "missing_required_columns": True,
         "no_duplicate_business_keys": duplicate_count == 0,
         "observation_type_allowed": set(
             frame["observation_type"].astype(str).tolist()
