@@ -309,6 +309,8 @@ Stage N 消费已冻结的目标权重、当前持仓、现金、账户总资产
 
 Stage O 记录模拟成交状态、成交价和数量、持仓、现金、组合净值、目标与实际权重偏离、当日/累计收益、相对 baseline 收益及人工备注。先使用 repo-visible 记录完成可追溯闭环，竞品式绩效与归因界面后置。
 
+详细合同见 `shadow-run-design.md`。V1 保持 Stage N plan 不可变，通过 append-only decision、paper fill 和 daily observation 派生状态，并生成只读 HTML / JSON performance report；不支持真实下单、自动成交、外部现金流或公司行动。
+
 ## 后续总流程
 
 以下 Stage M-O 是近期交付标签，不代表已经实现。每一阶段必须满足退出条件后才能进入下一阶段；如果回测结论不足，应明确保留 research-only caveat，不能在评估循环中临时调参。
