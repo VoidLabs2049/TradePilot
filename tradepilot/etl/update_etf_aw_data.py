@@ -635,7 +635,8 @@ def _print_freshness(conn: duckdb.DuckDBPyConnection, lakehouse_root: Path) -> N
     """Print post-update freshness markers for operator review."""
 
     click.echo("\nETF all-weather freshness:")
-    rows = conn.execute("""
+    rows = conn.execute(
+        """
         SELECT dataset_name, latest_fetched_date
         FROM etl_source_watermarks
         WHERE dataset_name IN (
@@ -648,7 +649,8 @@ def _print_freshness(conn: duckdb.DuckDBPyConnection, lakehouse_root: Path) -> N
             'rates.gov_curve_points'
         )
         ORDER BY dataset_name
-        """).fetchall()
+        """
+    ).fetchall()
     for dataset_name, latest_fetched_date in rows:
         click.echo(f"- {dataset_name}: latest_fetched_date={latest_fetched_date}")
     snapshot = get_latest_etf_aw_snapshot(lakehouse_root=lakehouse_root)
