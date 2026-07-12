@@ -11,12 +11,14 @@ import unittest
 from click.testing import CliRunner
 import pandas as pd
 
-from tradepilot.etf_aw.cli import main
+from tradepilot.etf_aw.cli import _append_rebalance_plan_rows, main
 from tradepilot.etf_aw.rebalance_plan import (
     AccountSnapshot,
     PriceSnapshot,
     PriceSnapshotItem,
     build_rebalance_plan,
+    plan_to_json_payload,
+    plan_to_markdown,
 )
 from tradepilot.etl.datasets import build_derived_etf_aw_rebalance_plan_dataset
 from tradepilot.etl.models import StorageZone
@@ -56,7 +58,7 @@ class StageNRebalancePlanTests(unittest.TestCase):
         account = self._account_snapshot(cash=30000.0)
         account.positions[2].available_quantity = 900
 
-        frame, _, diagnostics = build_rebalance_plan(
+        frame, summary, diagnostics = build_rebalance_plan(
             target_weight=self._target_weight_frame(),
             account=account,
             prices=self._price_snapshot(),
@@ -65,6 +67,22 @@ class StageNRebalancePlanTests(unittest.TestCase):
 
         self.assertTrue(frame.empty)
         self.assertIn("insufficient_available_quantity", diagnostics.blocking_reasons)
+        self.assertNotIn("insufficient_cash_buffer", diagnostics.blocking_reasons)
+        self.assertEqual(
+            diagnostics.line_diagnostics,
+            [
+                {
+                    "reason": "insufficient_available_quantity",
+                    "sleeve_role": "bond",
+                    "symbol": "511010.SH",
+                    "order_side": "SELL",
+                    "order_quantity": 1000,
+                    "available_quantity": 900,
+                    "shortfall_quantity": 100,
+                }
+            ],
+        )
+        self.assertAlmostEqual(summary["cash_after_plan"], 2000.0)
 
     def test_cash_buffer_shortfall_blocks_whole_plan(self) -> None:
         frame, summary, diagnostics = build_rebalance_plan(
@@ -117,6 +135,31 @@ class StageNRebalancePlanTests(unittest.TestCase):
         by_symbol = frame.set_index("symbol")
         self.assertEqual(by_symbol.loc["510300.SH", "current_market_value"], 9000.0)
         self.assertIn("market_value_price_mismatch", diagnostics.warnings)
+
+    def test_blocked_markdown_shows_reasons_instead_of_empty_orders(self) -> None:
+        account = self._account_snapshot(cash=30000.0)
+        account.positions[2].available_quantity = 900
+        frame, summary, diagnostics = build_rebalance_plan(
+            target_weight=self._target_weight_frame(),
+            account=account,
+            prices=self._price_snapshot(),
+            plan_date=date(2024, 7, 23),
+        )
+        payload = plan_to_json_payload(
+            frame=frame,
+            summary=summary,
+            account_snapshot_path=Path("account.json"),
+            price_snapshot_path=Path("prices.json"),
+            target_weight_artifact="derived.etf_aw_target_weight",
+            diagnostics=diagnostics,
+        )
+
+        markdown = plan_to_markdown(payload)
+
+        self.assertIn("## Blocking Reasons", markdown)
+        self.assertIn("insufficient_available_quantity", markdown)
+        self.assertIn("511010.SH", markdown)
+        self.assertNotIn("## Orders", markdown)
 
     def test_cli_writes_artifact_review_files_and_blocks_duplicate(self) -> None:
         with TemporaryDirectory() as temp:
@@ -221,6 +264,13 @@ class StageNRebalancePlanTests(unittest.TestCase):
         self.assertEqual(definition.canonical_schema_name, "etf_aw_rebalance_plan_v1")
         self.assertIn("derived.etf_aw_target_weight", definition.dependencies)
         self.assertIn("no broker", definition.timing_semantics)
+
+    def test_append_rebalance_plan_rejects_schema_mismatch(self) -> None:
+        existing = pd.DataFrame([{"plan_id": "old", "extra_column": "legacy"}])
+        frame = pd.DataFrame([{"plan_id": "new"}])
+
+        with self.assertRaisesRegex(ValueError, "schema mismatch"):
+            _append_rebalance_plan_rows(existing, frame)
 
     def _target_weight_frame(self) -> pd.DataFrame:
         sleeves = [

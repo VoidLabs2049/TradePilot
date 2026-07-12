@@ -13,6 +13,7 @@ import duckdb
 import pandas as pd
 
 from tradepilot import db
+from tradepilot.etf_aw import cli as cli_module
 from tradepilot.etf_aw.cli import main
 from tradepilot.etl.models import StorageZone
 from tradepilot.etl.service import ETLService
@@ -577,6 +578,28 @@ class EtfAwCliTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertNotIn("--db-path", result.output)
+
+    def test_cost_fractions_do_not_waive_first_comparable_turnover(self) -> None:
+        frame = pd.DataFrame(
+            [
+                self._backtest_row(
+                    "turnover", date(2024, 7, 22), "monthly_turnover", 0.0, None
+                ),
+                self._backtest_row(
+                    "turnover", date(2024, 7, 23), "monthly_turnover", 0.1, None
+                ),
+            ]
+        )
+        daily_rows = pd.DataFrame([{"observation_date": date(2024, 7, 23)}])
+
+        costs = cli_module._cost_fractions(
+            daily_rows,
+            {date(2024, 7, 23): 0.1},
+            10,
+            initial_formation_date=cli_module._initial_formation_date(frame),
+        )
+
+        self.assertEqual(costs, [0.0002])
 
     def _context_row(self, rebalance_date: date) -> dict:
         return {

@@ -51,6 +51,7 @@ _ROBUSTNESS_TURNOVER_BASIS = (
     "previous-target half-L1 monthly turnover; daily NAV uses target-weight "
     "daily rebalancing semantics and does not model month-end drift turnover"
 )
+_ROBUSTNESS_HISTORY_START = date(1900, 1, 1)
 
 
 @click.group()
@@ -482,10 +483,20 @@ def build_rebalance_plan(
     if diagnostics.blocked:
         _raise_rebalance_plan_error(
             diagnostics.blocking_reasons,
-            {"summary": summary, "warnings": diagnostics.warnings},
+            {
+                "summary": summary,
+                "warnings": diagnostics.warnings,
+                "line_diagnostics": diagnostics.line_diagnostics,
+            },
         )
 
-    artifact_frame = _append_rebalance_plan_rows(existing, frame)
+    try:
+        artifact_frame = _append_rebalance_plan_rows(existing, frame)
+    except ValueError as exc:
+        _raise_rebalance_plan_error(
+            ["rebalance_plan_schema_mismatch"],
+            {"error": str(exc)},
+        )
     write_result = write_dataset_parquet(
         artifact_frame,
         REBALANCE_PLAN_DATASET,
@@ -618,13 +629,22 @@ def backtest_robustness_report(
     with _lakehouse_service(lakehouse_root) as service:
         inputs = {
             "kernel": service._read_partitioned_dataset(
-                "derived.etf_aw_backtest_kernel", start, end, StorageZone.DERIVED
+                "derived.etf_aw_backtest_kernel",
+                _ROBUSTNESS_HISTORY_START,
+                end,
+                StorageZone.DERIVED,
             ),
             "target_weight": service._read_partitioned_dataset(
-                "derived.etf_aw_target_weight", start, end, StorageZone.DERIVED
+                "derived.etf_aw_target_weight",
+                _ROBUSTNESS_HISTORY_START,
+                end,
+                StorageZone.DERIVED,
             ),
             "baseline_weight": service._read_partitioned_dataset(
-                "derived.etf_aw_baseline_weight", start, end, StorageZone.DERIVED
+                "derived.etf_aw_baseline_weight",
+                _ROBUSTNESS_HISTORY_START,
+                end,
+                StorageZone.DERIVED,
             ),
             "risk_budget": service._read_partitioned_dataset(
                 "derived.etf_aw_risk_budget", start, end, StorageZone.DERIVED
@@ -761,6 +781,8 @@ def _append_rebalance_plan_rows(
 
     if existing.empty:
         return frame
+    if set(existing.columns) != set(frame.columns):
+        raise ValueError("schema mismatch: cannot append plan with different columns")
     return pd.concat([existing, frame], ignore_index=True)
 
 
@@ -774,7 +796,7 @@ def _raise_rebalance_plan_error(
         "diagnostics": diagnostics,
     }
     click.echo(json.dumps(payload, sort_keys=True, ensure_ascii=False), err=True)
-    raise click.ClickException("; ".join(blocking_reasons))
+    raise SystemExit(1)
 
 
 def _print_findings(name: str, findings: list[tuple[str, str, str]]) -> None:
@@ -1288,7 +1310,12 @@ def _robustness_scenario(
     rows = _daily_nav(frame, coverage)
     turnover = _turnover_by_date(frame, coverage)
     returns = [float(row["portfolio_return"]) for _, row in rows.iterrows()]
-    costs = _cost_fractions(rows, turnover, cost_bps)
+    costs = _cost_fractions(
+        rows,
+        turnover,
+        cost_bps,
+        initial_formation_date=_initial_formation_date(frame),
+    )
     if cost_bps == 0:
         net_returns = returns
         estimated_cost_sum = 0.0
@@ -1447,20 +1474,47 @@ def _turnover_by_date(frame: pd.DataFrame, coverage: dict) -> dict[date, float]:
 
 
 def _cost_fractions(
-    daily_rows: pd.DataFrame, turnover: dict[date, float], cost_bps: int
+    daily_rows: pd.DataFrame,
+    turnover: dict[date, float],
+    cost_bps: int,
+    initial_formation_date: date | None,
 ) -> list[float | None]:
     if cost_bps == 0:
         return [0.0 for _ in range(len(daily_rows))]
-    first_turnover_date = min(turnover) if turnover else None
     rate = cost_bps / 10000.0
     costs = []
     for _, row in daily_rows.iterrows():
         current_date = row["observation_date"]
-        if current_date == first_turnover_date:
+        if current_date == initial_formation_date:
             costs.append(None)
         else:
             costs.append(2.0 * turnover.get(current_date, 0.0) * rate)
     return costs
+
+
+def _initial_formation_date(frame: pd.DataFrame) -> date | None:
+    """Return the unfiltered initial formation turnover date for one strategy."""
+
+    if frame.empty:
+        return None
+    rows = frame[frame["observation_type"].astype(str).eq("turnover")].copy()
+    if rows.empty:
+        return None
+    rows["observation_date"] = pd.to_datetime(
+        rows["observation_date"], errors="coerce"
+    ).dt.date
+    rows["metric_value"] = pd.to_numeric(rows["metric_value"], errors="coerce")
+    rows = rows[
+        rows["observation_date"].notna()
+        & rows["metric_value"].notna()
+        & rows["metric_value"].apply(math.isfinite)
+    ].copy()
+    if rows.empty:
+        return None
+    zero_turnover = rows[rows["metric_value"].eq(0.0)]
+    if zero_turnover.empty:
+        return None
+    return min(zero_turnover["observation_date"].tolist())
 
 
 def _cost_blocking_reasons(

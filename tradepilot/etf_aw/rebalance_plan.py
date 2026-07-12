@@ -53,6 +53,7 @@ class PlanDiagnostics:
 
     blocking_reasons: list[str]
     warnings: list[str]
+    line_diagnostics: list[dict[str, Any]]
 
     @property
     def blocked(self) -> bool:
@@ -237,11 +238,12 @@ def build_rebalance_plan(
         "blocking_reasons": _dedupe(blocking_reasons),
         "warnings": _dedupe(warnings),
     }
+    line_diagnostics: list[dict[str, Any]] = []
     if blocking_reasons:
         return (
             pd.DataFrame(),
             summary,
-            PlanDiagnostics(_dedupe(blocking_reasons), _dedupe(warnings)),
+            PlanDiagnostics(_dedupe(blocking_reasons), _dedupe(warnings), []),
         )
 
     rows: list[dict[str, Any]] = []
@@ -274,13 +276,27 @@ def build_rebalance_plan(
         estimated_notional = rounded_quantity * price.latest_price
         if side == OrderSide.BUY:
             estimated_buy_notional += estimated_notional
-        if side == OrderSide.SELL:
+        if side == OrderSide.SELL and not line_blocking:
             estimated_sell_proceeds += estimated_notional
         repriced_market_value = position.quantity * price.latest_price
         if _market_value_mismatch(position.market_value, repriced_market_value):
             line_warnings.append("market_value_price_mismatch")
         blocking_reasons.extend(line_blocking)
         warnings.extend(line_warnings)
+        for reason in line_blocking:
+            line_diagnostics.append(
+                {
+                    "reason": reason,
+                    "sleeve_role": sleeve_role,
+                    "symbol": symbol,
+                    "order_side": side.value,
+                    "order_quantity": rounded_quantity,
+                    "available_quantity": position.available_quantity,
+                    "shortfall_quantity": max(
+                        rounded_quantity - position.available_quantity, 0
+                    ),
+                }
+            )
         rows.append(
             {
                 "schema_version": REBALANCE_PLAN_SCHEMA_VERSION,
@@ -316,7 +332,7 @@ def build_rebalance_plan(
 
     required_cash_buffer = account.total_asset * cash_buffer_ratio
     cash_after_plan = account.cash + estimated_sell_proceeds - estimated_buy_notional
-    if cash_after_plan < required_cash_buffer:
+    if not blocking_reasons and cash_after_plan < required_cash_buffer:
         blocking_reasons.append("insufficient_cash_buffer")
     blocking_reasons = _dedupe(blocking_reasons)
     warnings = _dedupe(warnings)
@@ -327,13 +343,18 @@ def build_rebalance_plan(
             "cash_after_plan": cash_after_plan,
             "blocking_reasons": blocking_reasons,
             "warnings": warnings,
+            "line_diagnostics": line_diagnostics,
         }
     )
     if blocking_reasons:
-        return pd.DataFrame(), summary, PlanDiagnostics(blocking_reasons, warnings)
+        return (
+            pd.DataFrame(),
+            summary,
+            PlanDiagnostics(blocking_reasons, warnings, line_diagnostics),
+        )
     frame = pd.DataFrame(rows)
     frame["blocking_reasons_json"] = json.dumps([], ensure_ascii=False)
-    return frame, summary, PlanDiagnostics([], warnings)
+    return frame, summary, PlanDiagnostics([], warnings, [])
 
 
 def select_latest_target_weight(frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
@@ -382,8 +403,8 @@ def select_latest_target_weight(frame: pd.DataFrame) -> tuple[pd.DataFrame, list
     ) != set(ETF_AW_SLEEVE_ROLE_ORDER):
         reasons.append("incomplete_target_weight")
     if (
-        int(selected.duplicated(["sleeve_role"]).sum()) > 0
-        or int(selected.duplicated(["sleeve_code"]).sum()) > 0
+        selected.duplicated(["sleeve_role"]).sum() > 0
+        or selected.duplicated(["sleeve_code"]).sum() > 0
     ):
         reasons.append("invalid_target_weight")
     for role, symbol in ETF_AW_SLEEVE_CODE_BY_ROLE.items():
@@ -448,6 +469,7 @@ def plan_to_json_payload(
         "diagnostics": {
             "blocking_reasons": diagnostics.blocking_reasons,
             "warnings": diagnostics.warnings,
+            "line_diagnostics": diagnostics.line_diagnostics,
         },
         "rows": _records_for_json(frame),
     }
@@ -473,18 +495,37 @@ def plan_to_markdown(payload: dict[str, Any]) -> str:
         f"- estimated_buy_notional: `{summary['estimated_buy_notional']:.2f}`",
         f"- cash_after_plan: `{summary['cash_after_plan']:.2f}`",
         f"- warnings: `{', '.join(payload['diagnostics']['warnings'])}`",
-        "",
-        "## Inputs",
-        "",
-        f"- account_snapshot: `{payload['input_paths']['account_snapshot']}`",
-        f"- price_snapshot: `{payload['input_paths']['price_snapshot']}`",
-        f"- target_weight_artifact: `{payload['input_paths']['target_weight_artifact']}`",
-        "",
-        "## Orders",
-        "",
-        "| sleeve_role | symbol | side | quantity | estimated_notional | warnings |",
-        "| --- | --- | --- | ---: | ---: | --- |",
     ]
+    if payload["diagnostics"]["blocking_reasons"]:
+        lines.append(
+            f"- blocking_reasons: `{', '.join(payload['diagnostics']['blocking_reasons'])}`"
+        )
+        lines.extend(["", "## Blocking Reasons", ""])
+        for reason in payload["diagnostics"]["blocking_reasons"]:
+            lines.append(f"- {reason}")
+        if payload["diagnostics"]["line_diagnostics"]:
+            lines.extend(["", "## Line Diagnostics", ""])
+            for item in payload["diagnostics"]["line_diagnostics"]:
+                lines.append(
+                    f"- {json.dumps(item, sort_keys=True, ensure_ascii=False)}"
+                )
+        return "\n".join(lines) + "\n"
+
+    lines.extend(
+        [
+            "",
+            "## Inputs",
+            "",
+            f"- account_snapshot: `{payload['input_paths']['account_snapshot']}`",
+            f"- price_snapshot: `{payload['input_paths']['price_snapshot']}`",
+            f"- target_weight_artifact: `{payload['input_paths']['target_weight_artifact']}`",
+            "",
+            "## Orders",
+            "",
+            "| sleeve_role | symbol | side | quantity | estimated_notional | warnings |",
+            "| --- | --- | --- | ---: | ---: | --- |",
+        ]
+    )
     for row in rows:
         warnings = ", ".join(row["warnings_json"])
         lines.append(
