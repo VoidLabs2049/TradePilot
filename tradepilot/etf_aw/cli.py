@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from pathlib import Path
+import calendar
 import json
 import math
 
@@ -13,6 +14,14 @@ import pandas as pd
 
 from tradepilot import db as tradepilot_db
 from tradepilot.config import DB_PATH, LAKEHOUSE_ROOT
+from tradepilot.etf_aw.rebalance_plan import (
+    REBALANCE_PLAN_DATASET,
+    build_rebalance_plan as build_rebalance_plan_frame,
+    load_account_snapshot,
+    load_price_snapshot,
+    plan_to_json_payload,
+    plan_to_markdown,
+)
 from tradepilot.etl import update_etf_aw_data
 from tradepilot.etl.models import RunStatus, StorageZone
 from tradepilot.etl.service import (
@@ -22,6 +31,7 @@ from tradepilot.etl.service import (
     _validate_risk_budget_frame,
     _validate_target_weight_frame,
 )
+from tradepilot.etl.storage import write_dataset_parquet
 
 _RISK_BUDGET_PROFILE = "derived.etf_aw_risk_budget.build"
 _TARGET_WEIGHT_PROFILE = "derived.etf_aw_target_weight.build"
@@ -401,6 +411,123 @@ def build_monthly_explainability(
     )
 
 
+@main.command("build-rebalance-plan")
+@click.option(
+    "--account-snapshot",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    required=True,
+)
+@click.option(
+    "--price-snapshot",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    required=True,
+)
+@click.option("--plan-date", required=True, type=str)
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+)
+@click.option(
+    "--lakehouse-root",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=LAKEHOUSE_ROOT,
+    show_default=True,
+)
+def build_rebalance_plan(
+    account_snapshot: Path,
+    price_snapshot: Path,
+    plan_date: str,
+    output_dir: Path,
+    lakehouse_root: Path,
+) -> None:
+    """Build a Stage N simulated rebalance plan draft."""
+
+    parsed_plan_date = _parse_date(plan_date, "plan-date")
+    with _lakehouse_service(lakehouse_root) as service:
+        target_weight = service._read_partitioned_dataset(
+            "derived.etf_aw_target_weight",
+            date(1900, 1, 1),
+            parsed_plan_date,
+            StorageZone.DERIVED,
+        )
+        existing = service._read_partitioned_dataset(
+            REBALANCE_PLAN_DATASET,
+            date(parsed_plan_date.year, parsed_plan_date.month, 1),
+            date(
+                parsed_plan_date.year,
+                parsed_plan_date.month,
+                calendar.monthrange(parsed_plan_date.year, parsed_plan_date.month)[1],
+            ),
+            StorageZone.DERIVED,
+        )
+    try:
+        account = load_account_snapshot(account_snapshot)
+    except Exception as exc:
+        _raise_rebalance_plan_error(["invalid_account_snapshot"], {"error": str(exc)})
+    try:
+        prices = load_price_snapshot(price_snapshot)
+    except Exception as exc:
+        _raise_rebalance_plan_error(["missing_or_invalid_price"], {"error": str(exc)})
+
+    frame, summary, diagnostics = build_rebalance_plan_frame(
+        target_weight=target_weight,
+        account=account,
+        prices=prices,
+        plan_date=parsed_plan_date,
+    )
+    if _has_duplicate_rebalance_plan(existing, summary["plan_id"]):
+        diagnostics.blocking_reasons.append("duplicate_active_plan")
+        summary["blocking_reasons"] = diagnostics.blocking_reasons
+    if diagnostics.blocked:
+        _raise_rebalance_plan_error(
+            diagnostics.blocking_reasons,
+            {"summary": summary, "warnings": diagnostics.warnings},
+        )
+
+    artifact_frame = _append_rebalance_plan_rows(existing, frame)
+    write_result = write_dataset_parquet(
+        artifact_frame,
+        REBALANCE_PLAN_DATASET,
+        StorageZone.DERIVED,
+        [("year", parsed_plan_date.year), ("month", f"{parsed_plan_date.month:02d}")],
+        lakehouse_root=lakehouse_root,
+    )
+    payload = plan_to_json_payload(
+        frame=frame,
+        summary=summary,
+        account_snapshot_path=account_snapshot,
+        price_snapshot_path=price_snapshot,
+        target_weight_artifact="derived.etf_aw_target_weight",
+        diagnostics=diagnostics,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / f"{summary['plan_id']}.json"
+    markdown_path = output_dir / f"{summary['plan_id']}.md"
+    json_path.write_text(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    markdown_path.write_text(plan_to_markdown(payload), encoding="utf-8")
+
+    click.echo(f"plan_id={summary['plan_id']} status=DRAFT rows={len(frame)}")
+    click.echo(
+        "estimated_buy_notional={:.2f} estimated_sell_proceeds={:.2f} "
+        "cash_after_plan={:.2f}".format(
+            summary["estimated_buy_notional"],
+            summary["estimated_sell_proceeds"],
+            summary["cash_after_plan"],
+        )
+    )
+    for side, count in frame["order_side"].value_counts().sort_index().items():
+        quantity = int(frame.loc[frame["order_side"] == side, "order_quantity"].sum())
+        click.echo(f"{side} rows={count} quantity={quantity}")
+    click.echo(f"warnings={','.join(diagnostics.warnings)}")
+    click.echo(f"artifact={write_result.relative_path}")
+    click.echo(f"json={json_path}")
+    click.echo(f"markdown={markdown_path}")
+
+
 @main.command("backtest-report")
 @click.option("--start-date", required=True, type=str)
 @click.option("--end-date", required=True, type=str)
@@ -617,6 +744,37 @@ def _status_warnings(frame: pd.DataFrame, status_column: str) -> list[tuple[str,
         if status != "complete":
             warnings.append((f"{status_column}.{status}", f"rows={count}"))
     return warnings
+
+
+def _has_duplicate_rebalance_plan(existing: pd.DataFrame, plan_id: str) -> bool:
+    """Return whether the same Stage N plan id already exists."""
+
+    if existing.empty or "plan_id" not in existing.columns:
+        return False
+    return bool(existing["plan_id"].astype(str).eq(plan_id).any())
+
+
+def _append_rebalance_plan_rows(
+    existing: pd.DataFrame, frame: pd.DataFrame
+) -> pd.DataFrame:
+    """Append a new plan to any existing monthly artifact rows."""
+
+    if existing.empty:
+        return frame
+    return pd.concat([existing, frame], ignore_index=True)
+
+
+def _raise_rebalance_plan_error(
+    blocking_reasons: list[str], diagnostics: dict[str, object]
+) -> None:
+    """Print machine-readable diagnostics and fail the CLI command."""
+
+    payload = {
+        "blocking_reasons": blocking_reasons,
+        "diagnostics": diagnostics,
+    }
+    click.echo(json.dumps(payload, sort_keys=True, ensure_ascii=False), err=True)
+    raise click.ClickException("; ".join(blocking_reasons))
 
 
 def _print_findings(name: str, findings: list[tuple[str, str, str]]) -> None:
