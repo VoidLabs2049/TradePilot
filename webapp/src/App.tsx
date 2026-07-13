@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation } from "react-router-dom";
 import { Layout, Menu } from "antd";
 import {
   DashboardOutlined,
@@ -17,17 +17,18 @@ const menuItems = [
   { key: "/portfolio", icon: <FundOutlined />, label: <NavLink to="/portfolio">持仓管理</NavLink> },
 ];
 
-function App() {
+function AppShell() {
+  const location = useLocation();
+
   return (
-    <BrowserRouter>
-      <Layout style={{ minHeight: "100vh" }}>
-        <Sider collapsible>
+    <Layout style={{ minHeight: "100vh" }}>
+        <Sider collapsible breakpoint="lg" collapsedWidth={0}>
           <div style={{ color: "#fff", textAlign: "center", padding: "16px", fontSize: "18px", fontWeight: "bold" }}>
             TradePilot
           </div>
-          <Menu theme="dark" mode="inline" defaultSelectedKeys={["/"]} items={menuItems} />
+          <Menu theme="dark" mode="inline" selectedKeys={[location.pathname]} items={menuItems} />
         </Sider>
-        <Content style={{ padding: 24 }}>
+        <Content style={{ padding: "clamp(12px, 2.5vw, 24px)", minWidth: 0 }}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/etf-aw" element={<EtfAllWeather />} />
@@ -38,7 +39,14 @@ function App() {
             <Route path="/plans" element={<Navigate to="/" replace />} />
           </Routes>
         </Content>
-      </Layout>
+    </Layout>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <AppShell />
     </BrowserRouter>
   );
 }

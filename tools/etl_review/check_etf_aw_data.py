@@ -53,6 +53,8 @@ class LoadedData:
     regime: pd.DataFrame
     features: pd.DataFrame
     strategy: pd.DataFrame
+    target_weight: pd.DataFrame
+    backtest_kernel: pd.DataFrame
     macro: pd.DataFrame
     daily_rates: pd.DataFrame
     lpr: pd.DataFrame
@@ -72,6 +74,7 @@ def run_checks(
         _check_dataset_keys(results, data)
         _check_market_data(results, data)
         _check_derived_data(results, data)
+        _check_shadow_input_data(results, data)
         _check_macro_rates_data(results, data)
         _check_lineage(results, data)
         _check_read_models(results, lakehouse_root)
@@ -115,19 +118,23 @@ def main(db_path: Path, lakehouse_root: Path) -> None:
 
 
 def _load_data(conn: duckdb.DuckDBPyConnection, lakehouse_root: Path) -> LoadedData:
-    sleeves = conn.execute("""
+    sleeves = conn.execute(
+        """
         SELECT sleeve_code, sleeve_role, listing_exchange, exposure_note, is_active
         FROM canonical_sleeves
         WHERE is_active = TRUE
-        """).fetchdf()
+        """
+    ).fetchdf()
     calendar = conn.execute(
         "SELECT exchange, trade_date, is_open FROM canonical_trading_calendar"
     ).fetchdf()
     calendar["trade_date"] = _date_series(calendar, "trade_date")
-    rebalance_calendar = conn.execute("""
+    rebalance_calendar = conn.execute(
+        """
         SELECT calendar_name, calendar_month, rebalance_date, effective_date
         FROM canonical_rebalance_calendar
-        """).fetchdf()
+        """
+    ).fetchdf()
     watermarks = conn.execute(
         "SELECT dataset_name, latest_fetched_date FROM etl_source_watermarks"
     ).fetchdf()
@@ -157,6 +164,12 @@ def _load_data(conn: duckdb.DuckDBPyConnection, lakehouse_root: Path) -> LoadedD
         ),
         strategy=_read_dataset(
             lakehouse_root, "derived", "derived.etf_aw_strategy_context"
+        ),
+        target_weight=_read_dataset(
+            lakehouse_root, "derived", "derived.etf_aw_target_weight"
+        ),
+        backtest_kernel=_read_dataset(
+            lakehouse_root, "derived", "derived.etf_aw_backtest_kernel"
         ),
         macro=_read_dataset(lakehouse_root, "normalized", "macro.slow_fields"),
         daily_rates=_read_dataset(lakehouse_root, "normalized", "rates.daily_rates"),
@@ -251,6 +264,30 @@ def _check_dataset_keys(results: list[CheckResult], data: LoadedData) -> None:
             data.strategy,
             ["calendar_name", "rebalance_date", "strategy_name", "strategy_version"],
         ),
+        (
+            "target_weight",
+            data.target_weight,
+            [
+                "calendar_name",
+                "rebalance_date",
+                "strategy_name",
+                "strategy_version",
+                "sleeve_code",
+            ],
+        ),
+        (
+            "backtest_kernel",
+            data.backtest_kernel,
+            [
+                "calendar_name",
+                "strategy_name",
+                "strategy_version",
+                "observation_type",
+                "observation_date",
+                "metric_name",
+                "weight_source_type",
+            ],
+        ),
         ("macro_slow_fields", data.macro, ["field_name", "period_label"]),
         ("daily_rates", data.daily_rates, ["field_name", "trade_date"]),
         ("lpr", data.lpr, ["field_name", "quote_date"]),
@@ -287,6 +324,34 @@ def _check_market_data(results: list[CheckResult], data: LoadedData) -> None:
         results,
         "sleeve_daily_v1_only",
         set(data.sleeve_daily["sleeve_code"].astype(str)) == _V1_CODES,
+    )
+    _add(
+        results,
+        "market_etf_daily_source_is_tushare",
+        set(data.market["source_name"].astype(str)) == {"tushare"},
+        str(sorted(data.market["source_name"].astype(str).unique().tolist())),
+    )
+    _add(
+        results,
+        "market_etf_adj_factor_source_is_real_or_reviewed_fill",
+        set(data.adj["source_name"].astype(str))
+        <= {"tushare", "manual_cross_source_fill"},
+        str(sorted(data.adj["source_name"].astype(str).unique().tolist())),
+    )
+    _add(
+        results,
+        "market_etf_adj_factor_no_fixture_source",
+        not data.adj["source_name"]
+        .astype(str)
+        .str.contains("fixture|mock|test", case=False, regex=True)
+        .any(),
+    )
+    _add(
+        results,
+        "sleeve_daily_source_is_derived_from_market_and_adj",
+        set(data.sleeve_daily["source_name"].astype(str))
+        == {"derived.market_etf_daily_plus_adj_factor"},
+        str(sorted(data.sleeve_daily["source_name"].astype(str).unique().tolist())),
     )
     open_days = data.calendar[data.calendar["is_open"] == True].loc[
         :, ["exchange", "trade_date"]
@@ -505,6 +570,72 @@ def _check_derived_data(results: list[CheckResult], data: LoadedData) -> None:
     )
 
 
+def _check_shadow_input_data(results: list[CheckResult], data: LoadedData) -> None:
+    _normalize_date_columns(
+        data.target_weight,
+        ["rebalance_date", "effective_date", "source_sleeve_daily_max_trade_date"],
+    )
+    _normalize_date_columns(data.backtest_kernel, ["observation_date"])
+    _add(
+        results,
+        "target_weight_strategy_is_real_v1",
+        set(data.target_weight["strategy_name"].astype(str)) == {"etf_aw_v1"}
+        and set(data.target_weight["strategy_version"].astype(str))
+        == {"target_weight_inverse_vol_v1"},
+    )
+    _add(
+        results,
+        "target_weight_optimizer_not_fixture",
+        not data.target_weight["optimizer_basis"]
+        .astype(str)
+        .str.contains("fixture", case=False)
+        .any(),
+    )
+    complete = data.target_weight[
+        data.target_weight["target_weight_status"].astype(str).eq("complete")
+    ].copy()
+    rows_per_date = complete.groupby(["calendar_name", "rebalance_date"])[
+        "sleeve_code"
+    ].nunique()
+    _add(
+        results,
+        "target_weight_complete_dates_have_five_sleeves",
+        not rows_per_date.empty and bool((rows_per_date == 5).all()),
+    )
+    sums = complete.groupby(["calendar_name", "rebalance_date"])["target_weight"].sum()
+    _add(
+        results,
+        "target_weight_complete_dates_sum_to_one",
+        not sums.empty and bool((sums - 1.0).abs().le(1e-6).all()),
+    )
+    source_dates_ok = complete["source_sleeve_daily_max_trade_date"].notna() & (
+        complete["source_sleeve_daily_max_trade_date"] <= complete["rebalance_date"]
+    )
+    _add(
+        results,
+        "target_weight_source_dates_not_future",
+        not complete.empty and bool(source_dates_ok.all()),
+    )
+    _add(
+        results,
+        "backtest_kernel_no_equal_weight_fixture_strategy",
+        "equal_weight_fixture"
+        not in set(data.backtest_kernel["strategy_name"].astype(str)),
+    )
+    _add(
+        results,
+        "backtest_kernel_has_target_weight_and_baseline_nav",
+        _has_backtest_nav(data.backtest_kernel, "target_weight")
+        and _has_backtest_nav(data.backtest_kernel, "baseline"),
+    )
+    _add(
+        results,
+        "backtest_kernel_source_weight_datasets_allowed",
+        set(data.backtest_kernel["source_weight_dataset"].dropna().astype(str))
+        <= {"derived.etf_aw_target_weight", "derived.etf_aw_baseline_weight"},
+    )
+
+
 def _check_macro_rates_data(results: list[CheckResult], data: LoadedData) -> None:
     datasets = [
         ("macro", data.macro),
@@ -576,6 +707,17 @@ def _check_read_models(results: list[CheckResult], lakehouse_root: Path) -> None
     _add(results, "read_model_market_features_available", features is not None)
     _add(results, "read_model_strategy_available", strategy is not None)
     _add(results, "read_model_macro_rates_available", macro_rates is not None)
+
+
+def _has_backtest_nav(frame: pd.DataFrame, weight_source_type: str) -> bool:
+    rows = frame[
+        frame["weight_source_type"].astype(str).eq(weight_source_type)
+        & frame["observation_type"].astype(str).eq("daily_nav")
+        & frame["metric_name"].astype(str).eq("net_value")
+    ]
+    return not rows.empty and bool(
+        pd.to_numeric(rows["net_value"], errors="coerce").notna().all()
+    )
 
 
 def _read_dataset(lakehouse_root: Path, zone: str, dataset_name: str) -> pd.DataFrame:
