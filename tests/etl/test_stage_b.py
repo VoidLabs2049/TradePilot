@@ -580,11 +580,13 @@ class StageBServiceIntegrationTests(unittest.TestCase):
 
     def test_calendar_window_dependency_requires_full_request_coverage(self) -> None:
         definition = self.service.registry.get_dataset("market.etf_daily")
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT INTO canonical_trading_calendar (
                 exchange, trade_date, is_open, pretrade_date
             ) VALUES ('SH', DATE '2026-04-24', TRUE, DATE '2026-04-23')
-            """)
+            """
+        )
 
         available = self.service._dependency_available(
             definition,
@@ -599,7 +601,8 @@ class StageBServiceIntegrationTests(unittest.TestCase):
 
     def test_calendar_window_dependency_requires_requested_exchange(self) -> None:
         definition = self.service.registry.get_dataset("market.etf_daily")
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT INTO canonical_instruments (
                 instrument_id, source_instrument_id, instrument_name,
                 instrument_type, exchange, is_active, source_name
@@ -607,12 +610,15 @@ class StageBServiceIntegrationTests(unittest.TestCase):
                 '159915.SZ', '159915.SZ', '创业板ETF',
                 'etf', 'SZ', TRUE, 'tushare'
             )
-            """)
-        self.conn.execute("""
+            """
+        )
+        self.conn.execute(
+            """
             INSERT INTO canonical_trading_calendar (
                 exchange, trade_date, is_open, pretrade_date
             ) VALUES ('SH', DATE '2026-04-24', TRUE, DATE '2026-04-23')
-            """)
+            """
+        )
 
         available = self.service._dependency_available(
             definition,
@@ -645,15 +651,18 @@ class StageBServiceIntegrationTests(unittest.TestCase):
             """,
             [result.run_id],
         ).fetchone()[0]
-        watermark_count = self.conn.execute("""
+        watermark_count = self.conn.execute(
+            """
             SELECT COUNT(*) FROM etl_source_watermarks
             WHERE dataset_name = 'reference.instruments'
-            """).fetchone()[0]
+            """
+        ).fetchone()[0]
         self.assertEqual(empty_check_count, 1)
         self.assertEqual(watermark_count, 0)
 
     def test_sequence_id_allocation_skips_existing_legacy_ids(self) -> None:
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT INTO etl_ingestion_runs (
                 run_id, job_name, dataset_name, source_name,
                 trigger_mode, status, started_at
@@ -661,7 +670,8 @@ class StageBServiceIntegrationTests(unittest.TestCase):
                 50, 'legacy', 'reference.instruments', 'tushare',
                 'manual', 'success', CURRENT_TIMESTAMP
             )
-            """)
+            """
+        )
 
         result = self.service.run_dataset_sync(
             "reference.instruments",
@@ -679,7 +689,8 @@ class StageBServiceIntegrationTests(unittest.TestCase):
             primary_source="tushare",
             storage_zone=StorageZone.NORMALIZED,
         )
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT INTO etl_source_watermarks (
                 dataset_name, source_name, latest_available_date,
                 latest_fetched_date, latest_successful_run_id, updated_at
@@ -687,7 +698,8 @@ class StageBServiceIntegrationTests(unittest.TestCase):
                 'reference.instruments', 'tushare',
                 DATE '2026-04-23', DATE '2026-04-23', 1, CURRENT_TIMESTAMP
             )
-            """)
+            """
+        )
 
         stale = self.service._dependency_available(
             definition,
@@ -771,19 +783,23 @@ class StageBServiceIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(client.trade_calendar_calls, ["SSE", "SZSE", "SSE", "SZSE"])
 
-        trigger_modes = self.conn.execute("""
+        trigger_modes = self.conn.execute(
+            """
             SELECT DISTINCT trigger_mode
             FROM etl_ingestion_runs
             WHERE dataset_name = 'reference.trading_calendar'
-            """).fetchall()
+            """
+        ).fetchall()
         self.assertEqual(trigger_modes, [(TriggerMode.BACKFILL.value,)])
 
-        covered_rows = self.conn.execute("""
+        covered_rows = self.conn.execute(
+            """
             SELECT COUNT(*)
             FROM canonical_trading_calendar
             WHERE trade_date BETWEEN DATE '2026-01-30' AND DATE '2026-02-02'
               AND exchange IN ('SH', 'SZ')
-            """).fetchone()[0]
+            """
+        ).fetchone()[0]
         self.assertEqual(covered_rows, 8)
 
     def test_calendar_bootstrap_skips_complete_windows_and_keeps_watermark(
@@ -795,7 +811,8 @@ class StageBServiceIntegrationTests(unittest.TestCase):
             source_adapters=[TushareSourceAdapter(client)],
             lakehouse_root=Path(self._temp_dir.name) / "bootstrap-lakehouse",
         )
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT INTO etl_source_watermarks (
                 dataset_name, source_name, latest_available_date,
                 latest_fetched_date, latest_successful_run_id, updated_at
@@ -803,7 +820,8 @@ class StageBServiceIntegrationTests(unittest.TestCase):
                 'reference.trading_calendar', 'tushare',
                 DATE '2026-03-31', DATE '2026-03-31', 99, CURRENT_TIMESTAMP
             )
-            """)
+            """
+        )
 
         first = service.run_bootstrap(
             "reference.trading_calendar.full_history",
@@ -813,12 +831,14 @@ class StageBServiceIntegrationTests(unittest.TestCase):
         count_after_first = self.conn.execute(
             "SELECT COUNT(*) FROM canonical_trading_calendar"
         ).fetchone()[0]
-        watermark_after_first = self.conn.execute("""
+        watermark_after_first = self.conn.execute(
+            """
             SELECT latest_fetched_date, latest_successful_run_id
             FROM etl_source_watermarks
             WHERE dataset_name = 'reference.trading_calendar'
               AND source_name = 'tushare'
-            """).fetchone()
+            """
+        ).fetchone()
 
         second = service.run_bootstrap(
             "reference.trading_calendar.full_history",
