@@ -3,9 +3,23 @@
 from __future__ import annotations
 
 from datetime import date
+import math
 
 from fastapi import APIRouter, Query
+import pandas as pd
 
+from tradepilot.config import LAKEHOUSE_ROOT
+from tradepilot.etf_aw.cli import update_local_shadow_artifacts
+from tradepilot.etf_aw.shadow_run import (
+    PAPER_FILL_DATASET,
+    SHADOW_ACCOUNT_SEED_DATASET,
+    SHADOW_OBSERVATION_DATASET,
+    ShadowRunError,
+    build_performance_report,
+    read_shadow_dataset,
+)
+from tradepilot.etf_aw.rebalance_plan import REBALANCE_PLAN_DATASET
+from tradepilot.etl.etf_aw_universe import ETF_AW_SLEEVE_CODES
 from tradepilot.etl.read_models import get_latest_etf_aw_risk_budget
 from tradepilot.workflow.models import (
     EtfAwRiskBudgetResponse,
@@ -96,6 +110,250 @@ def get_latest_etf_aw_risk_budget_context(
 ) -> EtfAwRiskBudgetResponse | None:
     """Return the latest frozen ETF all-weather risk budget."""
     return get_latest_etf_aw_risk_budget(as_of_date=as_of_date)
+
+
+@router.get("/etf-aw/shadow-report")
+def get_etf_aw_shadow_report(account_id: str | None = None) -> dict:
+    """Return the full available Stage O report for one shadow account."""
+    seed = read_shadow_dataset(LAKEHOUSE_ROOT, SHADOW_ACCOUNT_SEED_DATASET)
+    observations = read_shadow_dataset(LAKEHOUSE_ROOT, SHADOW_OBSERVATION_DATASET)
+    accounts = (
+        []
+        if seed.empty or "account_id" not in seed.columns
+        else sorted(seed["account_id"].astype(str).unique().tolist())
+    )
+    selected = account_id or (accounts[0] if accounts else None)
+    if selected is None:
+        return {"state": "not_initialized", "accounts": [], "report": None}
+    account_observations = (
+        observations[observations["account_id"].astype(str).eq(selected)].copy()
+        if not observations.empty and "account_id" in observations.columns
+        else observations
+    )
+    if account_observations.empty:
+        return {"state": "awaiting_observation", "accounts": accounts, "report": None}
+    dates = account_observations["observation_date"].astype(str)
+    try:
+        report = build_performance_report(
+            account_id=selected,
+            start=date.fromisoformat(dates.min()[:10]),
+            end=date.fromisoformat(dates.max()[:10]),
+            seed=seed,
+            observations=observations,
+            fills=read_shadow_dataset(LAKEHOUSE_ROOT, PAPER_FILL_DATASET),
+            plans=read_shadow_dataset(LAKEHOUSE_ROOT, REBALANCE_PLAN_DATASET),
+        )
+    except ShadowRunError as exc:
+        return {
+            "state": "invalid",
+            "accounts": accounts,
+            "report": None,
+            "blocking_reasons": exc.reasons,
+        }
+    return {"state": "ready", "accounts": accounts, "report": report}
+
+
+@router.post("/etf-aw/shadow/update-local")
+def update_etf_aw_local_shadow(
+    account_id: str = "etf-aw-paper",
+    initial_asset: float = 1_000_000.0,
+    seed_date: date | None = None,
+    end_date: date | None = None,
+) -> dict:
+    """Update the research shadow account from local lakehouse artifacts."""
+    if initial_asset <= 0 or not math.isfinite(initial_asset):
+        return {
+            "state": "invalid",
+            "blocking_reasons": ["invalid_initial_asset"],
+            "diagnostics": {"initial_asset": str(initial_asset)},
+        }
+    try:
+        result = update_local_shadow_artifacts(
+            account_id=account_id,
+            initial_asset=initial_asset,
+            seed_date=seed_date,
+            end_date=end_date,
+            lakehouse_root=LAKEHOUSE_ROOT,
+        )
+    except ShadowRunError as exc:
+        return {
+            "state": "invalid",
+            "blocking_reasons": exc.reasons,
+            "diagnostics": exc.diagnostics,
+        }
+    return {"state": "updated", **result}
+
+
+@router.get("/etf-aw/shadow/status")
+def get_etf_aw_shadow_status(account_id: str = "etf-aw-paper") -> dict:
+    """Return local lakehouse freshness and shadow observation coverage."""
+    sleeve_daily = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_sleeve_daily")
+    target_weight = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_target_weight")
+    observations = read_shadow_dataset(LAKEHOUSE_ROOT, SHADOW_OBSERVATION_DATASET)
+
+    price_dates = _complete_etf_aw_price_dates(sleeve_daily)
+    latest_sleeve_daily_date = price_dates[-1] if price_dates else None
+    latest_target_weight_date = _latest_complete_target_weight_date(target_weight)
+    account_observation_dates = _account_observation_dates(observations, account_id)
+    latest_observation_date = (
+        account_observation_dates[-1] if account_observation_dates else None
+    )
+    start_after = latest_observation_date or latest_target_weight_date
+    missing = [
+        value
+        for value in price_dates
+        if start_after is not None and start_after < value
+    ]
+    if latest_sleeve_daily_date is None:
+        next_action = "本地 ETF 行情尚未写入 lakehouse"
+    elif latest_target_weight_date is None:
+        next_action = "本地目标权重尚未写入 lakehouse"
+    elif not account_observation_dates:
+        next_action = "点击更新本地观察以初始化模拟盘观察"
+    elif missing:
+        next_action = f"点击更新本地观察可补 {len(missing)} 个交易日"
+    else:
+        next_action = "本地模拟盘观察已更新到最新可用行情日"
+    return {
+        "account_id": account_id,
+        "latest_sleeve_daily_date": (
+            None
+            if latest_sleeve_daily_date is None
+            else latest_sleeve_daily_date.isoformat()
+        ),
+        "latest_target_weight_date": (
+            None
+            if latest_target_weight_date is None
+            else latest_target_weight_date.isoformat()
+        ),
+        "latest_shadow_observation_date": (
+            None
+            if latest_observation_date is None
+            else latest_observation_date.isoformat()
+        ),
+        "missing_observation_dates": [value.isoformat() for value in missing],
+        "latest_prices": _latest_etf_aw_prices(sleeve_daily, latest_sleeve_daily_date),
+        "is_stale": bool(missing),
+        "next_action": next_action,
+    }
+
+
+@router.get("/etf-aw/performance")
+def get_etf_aw_local_performance() -> dict | None:
+    """Return strategy and baseline performance from the local backtest artifact."""
+    frame = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_backtest_kernel")
+    if frame.empty:
+        return None
+    daily = frame[frame["observation_type"].astype(str).eq("daily_nav")].copy()
+    daily = daily.sort_values(["strategy_name", "observation_date"])
+    if daily.empty:
+        return None
+    start_values = daily.groupby("strategy_name")["net_value"].transform("first")
+    daily["period_return"] = daily["net_value"].astype(float) / start_values - 1.0
+    series = [
+        {
+            "date": str(row["observation_date"])[:10],
+            "strategy": str(row["strategy_name"]),
+            "strategy_version": str(row["strategy_version"]),
+            "net_value": float(row["net_value"]),
+            "period_return": float(row["period_return"]),
+            "daily_return": float(row["portfolio_return"]),
+        }
+        for _, row in daily.iterrows()
+    ]
+    metrics = frame[frame["observation_type"].astype(str).eq("metric")]
+    metrics = metrics.sort_values("ingested_at").drop_duplicates(
+        ["strategy_name", "metric_name"], keep="last"
+    )
+    return {
+        "source_dataset": "derived.etf_aw_backtest_kernel",
+        "start_date": min(item["date"] for item in series),
+        "end_date": max(item["date"] for item in series),
+        "observation_count": int(daily["observation_date"].nunique()),
+        "series": series,
+        "metrics": [
+            {
+                "strategy": str(row["strategy_name"]),
+                "metric": str(row["metric_name"]),
+                "value": float(row["metric_value"]),
+            }
+            for _, row in metrics.iterrows()
+        ],
+    }
+
+
+def _complete_etf_aw_price_dates(frame: pd.DataFrame) -> list[date]:
+    """Return local price dates with all frozen ETF sleeves present."""
+    if frame.empty or "trade_date" not in frame.columns:
+        return []
+    rows = frame.copy()
+    rows["trade_date"] = pd.to_datetime(rows["trade_date"], errors="coerce").dt.date
+    rows = rows[
+        rows["trade_date"].notna()
+        & rows["sleeve_code"].astype(str).isin(ETF_AW_SLEEVE_CODES)
+        & pd.to_numeric(rows["close"], errors="coerce").gt(0)
+    ]
+    return [
+        value
+        for value in sorted(rows["trade_date"].dropna().unique())
+        if set(rows.loc[rows["trade_date"].eq(value), "sleeve_code"].astype(str))
+        == set(ETF_AW_SLEEVE_CODES)
+    ]
+
+
+def _latest_complete_target_weight_date(frame: pd.DataFrame) -> date | None:
+    """Return the latest complete target-weight date from local lakehouse."""
+    if frame.empty or "rebalance_date" not in frame.columns:
+        return None
+    rows = frame.copy()
+    rows["rebalance_date"] = pd.to_datetime(
+        rows["rebalance_date"], errors="coerce"
+    ).dt.date
+    rows = rows[
+        rows["rebalance_date"].notna()
+        & rows["sleeve_code"].astype(str).isin(ETF_AW_SLEEVE_CODES)
+        & rows["target_weight_status"].astype(str).eq("complete")
+    ]
+    complete_dates = [
+        value
+        for value in sorted(rows["rebalance_date"].dropna().unique())
+        if set(rows.loc[rows["rebalance_date"].eq(value), "sleeve_code"].astype(str))
+        == set(ETF_AW_SLEEVE_CODES)
+    ]
+    return complete_dates[-1] if complete_dates else None
+
+
+def _latest_etf_aw_prices(frame: pd.DataFrame, trade_date: date | None) -> list[dict]:
+    """Return latest local close prices for every frozen ETF sleeve."""
+    if frame.empty or trade_date is None:
+        return []
+    rows = frame.copy()
+    rows["trade_date"] = pd.to_datetime(rows["trade_date"], errors="coerce").dt.date
+    rows = rows[rows["trade_date"].eq(trade_date)].copy()
+    rows = rows[rows["sleeve_code"].astype(str).isin(ETF_AW_SLEEVE_CODES)]
+    return [
+        {
+            "sleeve_code": str(row["sleeve_code"]),
+            "sleeve_role": str(row["sleeve_role"]),
+            "close": float(row["close"]),
+            "trade_date": trade_date.isoformat(),
+        }
+        for _, row in rows.sort_values("sleeve_code").iterrows()
+    ]
+
+
+def _account_observation_dates(frame: pd.DataFrame, account_id: str) -> list[date]:
+    """Return sorted shadow observation dates for one account."""
+    if frame.empty or "account_id" not in frame.columns:
+        return []
+    rows = frame[frame["account_id"].astype(str).eq(account_id)].copy()
+    if rows.empty:
+        return []
+    return sorted(
+        pd.to_datetime(rows["observation_date"], errors="coerce")
+        .dt.date.dropna()
+        .unique()
+    )
 
 
 @router.get("/insight/latest", response_model=WorkflowInsightResponse)

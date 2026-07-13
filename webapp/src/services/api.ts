@@ -154,6 +154,81 @@ export interface EtfAwRiskBudget {
   source_regime_rebalance_date?: string | null;
 }
 
+export interface EtfAwShadowDailyPoint {
+  observation_date: string;
+  total_asset: number;
+  daily_return: number;
+  cumulative_return: number;
+  baseline_cumulative_return?: number | null;
+  relative_cumulative_return?: number | null;
+}
+
+export interface EtfAwShadowReport {
+  account_id: string;
+  start_date: string;
+  end_date: string;
+  metrics: Record<string, number | null>;
+  daily_series: EtfAwShadowDailyPoint[];
+  weight_drift: Record<string, any>;
+  fill_quality: Array<Record<string, any>>;
+  integrity: {
+    observation_count: number;
+    missing_baseline_dates: string[];
+    unattributable_fill_dates: string[];
+    warnings: Record<string, number>;
+  };
+}
+
+export interface EtfAwShadowReportResponse {
+  state: "not_initialized" | "awaiting_observation" | "invalid" | "ready";
+  accounts: string[];
+  report: EtfAwShadowReport | null;
+  blocking_reasons?: string[];
+}
+
+export interface EtfAwShadowUpdateResponse {
+  state: "updated" | "invalid";
+  account_id?: string;
+  seed_date?: string;
+  seed_created?: boolean;
+  observations_written?: number;
+  seed_artifact?: string;
+  blocking_reasons?: string[];
+  diagnostics?: Record<string, any>;
+}
+
+export interface EtfAwShadowStatus {
+  account_id: string;
+  latest_sleeve_daily_date?: string | null;
+  latest_target_weight_date?: string | null;
+  latest_shadow_observation_date?: string | null;
+  missing_observation_dates: string[];
+  latest_prices: Array<{
+    sleeve_code: string;
+    sleeve_role: string;
+    close: number;
+    trade_date: string;
+  }>;
+  is_stale: boolean;
+  next_action: string;
+}
+
+export interface EtfAwLocalPerformance {
+  source_dataset: string;
+  start_date: string;
+  end_date: string;
+  observation_count: number;
+  series: Array<{
+    date: string;
+    strategy: string;
+    strategy_version: string;
+    net_value: number;
+    period_return: number;
+    daily_return: number;
+  }>;
+  metrics: Array<{ strategy: string; metric: string; value: number }>;
+}
+
 export interface InsightMetric {
   label: string;
   value: string | number | null;
@@ -244,6 +319,19 @@ export const getLatestEtfAwContext = (asOfDate?: string) =>
   fetchJson<EtfAwSnapshotContext | null>(`/workflow/etf-aw/latest${asOfDate ? `?as_of_date=${encodeURIComponent(asOfDate)}` : ""}`);
 export const getLatestEtfAwRiskBudget = (asOfDate?: string) =>
   fetchJson<EtfAwRiskBudget | null>(`/workflow/etf-aw/risk-budget/latest${asOfDate ? `?as_of_date=${encodeURIComponent(asOfDate)}` : ""}`);
+export const getEtfAwShadowReport = (accountId?: string) =>
+  fetchJson<EtfAwShadowReportResponse>(`/workflow/etf-aw/shadow-report${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ""}`);
+export const getEtfAwShadowStatus = (accountId = "etf-aw-paper") =>
+  fetchJson<EtfAwShadowStatus>(`/workflow/etf-aw/shadow/status?account_id=${encodeURIComponent(accountId)}`);
+export const updateEtfAwLocalShadow = (accountId = "etf-aw-paper") =>
+  fetch(`${API_BASE}/workflow/etf-aw/shadow/update-local?account_id=${encodeURIComponent(accountId)}`, { method: "POST" }).then((res) => {
+    if (!res.ok) {
+      throw new Error(`${res.status} ${res.statusText}`);
+    }
+    return res.json() as Promise<EtfAwShadowUpdateResponse>;
+  });
+export const getEtfAwLocalPerformance = () =>
+  fetchJson<EtfAwLocalPerformance | null>("/workflow/etf-aw/performance");
 export const getLatestWorkflowInsight = (phase: WorkflowPhase, producer = "the_one") =>
   fetchJson<WorkflowInsightResponse>(`/workflow/insight/latest?phase=${phase}&producer=${encodeURIComponent(producer)}`);
 export const upsertWorkflowInsight = (data: WorkflowInsightUpsertRequest) =>

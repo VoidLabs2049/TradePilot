@@ -484,6 +484,37 @@ def build_derived_etf_aw_backtest_kernel_dataset() -> DatasetDefinition:
     )
 
 
+def build_derived_etf_aw_rebalance_plan_dataset() -> DatasetDefinition:
+    """Return the ETF all-weather simulated rebalance plan draft definition."""
+
+    return DatasetDefinition(
+        dataset_name="derived.etf_aw_rebalance_plan",
+        category=DatasetCategory.DERIVED,
+        grain="plan_sleeve_symbol",
+        primary_source="derived",
+        storage_zone=StorageZone.DERIVED,
+        partition_strategy="year_month",
+        canonical_schema_name="etf_aw_rebalance_plan_v1",
+        timing_semantics=(
+            "Stage N simulated paper-trading order draft generated from frozen "
+            "target weights plus explicit account and price snapshots. Rows are "
+            "always DRAFT and contain no broker, submission, fill, or execution "
+            "state."
+        ),
+        validation_rule_names=[
+            "rebalance_plan.duplicate_active_plan",
+            "rebalance_plan.five_rows_per_plan",
+            "rebalance_plan.lot_size_rounding",
+            "rebalance_plan.cash_buffer",
+            "rebalance_plan.no_execution_fields",
+            "rebalance_plan.review_json_fields",
+        ],
+        dependencies=[
+            "derived.etf_aw_target_weight",
+        ],
+    )
+
+
 def build_derived_etf_aw_baseline_weight_dataset() -> DatasetDefinition:
     """Return the ETF all-weather static baseline weight definition."""
 
@@ -742,6 +773,7 @@ def build_stage_b_datasets() -> list[DatasetDefinition]:
         build_derived_etf_aw_baseline_weight_dataset(),
         build_derived_etf_aw_backtest_kernel_dataset(),
         build_derived_etf_aw_monthly_explainability_dataset(),
+        build_derived_etf_aw_rebalance_plan_dataset(),
         build_macro_slow_fields_dataset(),
         build_rates_daily_rates_dataset(),
         build_rates_lpr_dataset(),
