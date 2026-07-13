@@ -311,6 +311,8 @@ Stage O 记录模拟成交状态、成交价和数量、持仓、现金、组合
 
 详细合同见 `shadow-run-design.md`。V1 保持 Stage N plan 不可变，通过 append-only decision、paper fill 和 daily observation 派生状态，并生成只读 HTML / JSON performance report；不支持真实下单、自动成交、外部现金流或公司行动。
 
+Stage O 工程闭环后的持续运行、调度、告警和补跑边界见 `shadow-operations-design.md`。3～6 个真实时间调仓周期的证据要求、周期复盘和 live pilot 设计准入门槛见 `forward-evidence-and-live-pilot-gate.md`；达到准入门槛不代表获得真实交易授权。
+
 ## 后续总流程
 
 以下 Stage M-O 是近期交付标签，不代表已经实现。每一阶段必须满足退出条件后才能进入下一阶段；如果回测结论不足，应明确保留 research-only caveat，不能在评估循环中临时调参。
