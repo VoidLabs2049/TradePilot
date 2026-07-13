@@ -545,6 +545,100 @@ class EtfAwCliTests(unittest.TestCase):
             payload["coverage"]["blocking_reasons"],
         )
 
+    def test_backtest_robustness_report_blocks_out_of_range_diagnostic(
+        self,
+    ) -> None:
+        frame = pd.DataFrame(
+            [
+                self._backtest_row(
+                    "diagnostic",
+                    date(2024, 7, 21),
+                    "input_quality",
+                    0.0,
+                    None,
+                    quality_notes={
+                        "blocking": True,
+                        "reasons": ["missing_sleeve_weight"],
+                    },
+                ),
+                self._backtest_row(
+                    "daily_nav", date(2024, 7, 22), "net_value", 1.01, 1.01
+                ),
+                self._backtest_row(
+                    "daily_nav", date(2024, 7, 23), "net_value", 1.0201, 1.0201
+                ),
+                self._backtest_row(
+                    "daily_nav",
+                    date(2024, 7, 22),
+                    "net_value",
+                    1.01,
+                    1.01,
+                    strategy_name="static_inverse_vol",
+                    strategy_version="static_inverse_vol_v1",
+                    weight_source_type="baseline",
+                    source_weight_dataset="derived.etf_aw_baseline_weight",
+                ),
+                self._backtest_row(
+                    "daily_nav",
+                    date(2024, 7, 23),
+                    "net_value",
+                    1.0201,
+                    1.0201,
+                    strategy_name="static_inverse_vol",
+                    strategy_version="static_inverse_vol_v1",
+                    weight_source_type="baseline",
+                    source_weight_dataset="derived.etf_aw_baseline_weight",
+                ),
+            ]
+        )
+        write_dataset_parquet(
+            frame,
+            "derived.etf_aw_backtest_kernel",
+            StorageZone.DERIVED,
+            [("year", 2024), ("month", "07")],
+            lakehouse_root=self.lakehouse_root,
+        )
+        self.service._write_etf_aw_target_weight(
+            self._target_weight_frame(date(2024, 7, 22))
+        )
+        self.service._write_etf_aw_baseline_weight(
+            self._baseline_weight_frame(date(2024, 7, 22))
+        )
+        output = self.root / "blocked-diagnostic.json"
+
+        result = self.runner.invoke(
+            main,
+            [
+                "backtest-robustness-report",
+                "--strategy-name",
+                "etf_aw_v1",
+                "--strategy-version",
+                "target_weight_inverse_vol_v1",
+                "--baseline-name",
+                "static_inverse_vol",
+                "--baseline-version",
+                "static_inverse_vol_v1",
+                "--start-date",
+                "2024-07-01",
+                "--end-date",
+                "2024-07-31",
+                "--format",
+                "json",
+                "--output",
+                str(output),
+                "--lakehouse-root",
+                str(self.lakehouse_root),
+            ],
+        )
+
+        self.assertNotEqual(result.exit_code, 0)
+        payload = json.loads(output.read_text())
+        self.assertEqual(payload["report_status"], "blocked")
+        self.assertIn(
+            "backtest kernel contains blocking diagnostic rows",
+            payload["coverage"]["blocking_reasons"],
+        )
+
     def test_backtest_robustness_report_blocks_missing_trade_date(self) -> None:
         frame = pd.DataFrame(
             [
@@ -799,6 +893,7 @@ class EtfAwCliTests(unittest.TestCase):
         strategy_version: str = "target_weight_inverse_vol_v1",
         weight_source_type: str = "target_weight",
         source_weight_dataset: str = "derived.etf_aw_target_weight",
+        quality_notes: dict | None = None,
     ) -> dict:
         return {
             "schema_version": "etf_aw_backtest_kernel_v1",
@@ -813,7 +908,7 @@ class EtfAwCliTests(unittest.TestCase):
             "metric_value": metric_value,
             "net_value": net_value,
             "portfolio_return": 0.01 if observation_type == "daily_nav" else None,
-            "quality_notes_json": "{}",
+            "quality_notes_json": json.dumps(quality_notes or {}),
             "ingested_at": pd.Timestamp("2024-07-22 15:00:00"),
         }
 

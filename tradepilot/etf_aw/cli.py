@@ -1956,7 +1956,8 @@ def _robustness_coverage(
     diagnostics = _diagnostics(
         target_frame, comparable_start, comparable_end
     ) + _diagnostics(baseline_frame, comparable_start, comparable_end)
-    if _blocking_diagnostics(diagnostics):
+    blocking_diagnostics = _diagnostics(target_frame) + _diagnostics(baseline_frame)
+    if _blocking_diagnostics(blocking_diagnostics):
         blocking.append("backtest kernel contains blocking diagnostic rows")
     strategy_status_counts = _value_counts(
         inputs["target_weight"], "target_weight_status"

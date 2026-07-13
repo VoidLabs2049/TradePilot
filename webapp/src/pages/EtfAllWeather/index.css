@@ -1,0 +1,216 @@
+.etf-aw-page {
+  --etf-aw-border: #e5e7eb;
+  --etf-aw-surface: #ffffff;
+  --etf-aw-muted: #667085;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.etf-aw-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 4px 0 8px;
+}
+
+.etf-aw-heading .ant-typography {
+  margin: 0;
+}
+
+.etf-aw-heading h2.ant-typography {
+  margin: 3px 0 2px;
+  font-size: 28px;
+  line-height: 1.25;
+}
+
+.etf-aw-eyebrow {
+  color: #1677ff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.etf-aw-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.etf-aw-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  background: var(--etf-aw-surface);
+  border: 1px solid var(--etf-aw-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.etf-aw-overview-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  padding: 18px;
+  border-right: 1px solid var(--etf-aw-border);
+}
+
+.etf-aw-overview-item:last-child {
+  border-right: 0;
+}
+
+.etf-aw-overview-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border-radius: 6px;
+  background: #f2f4f7;
+  color: #475467;
+  font-size: 17px;
+}
+
+.etf-aw-overview-item--positive .etf-aw-overview-icon {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.etf-aw-overview-item--warning .etf-aw-overview-icon {
+  background: #fffaeb;
+  color: #b54708;
+}
+
+.etf-aw-overview-item--negative .etf-aw-overview-icon {
+  background: #fef3f2;
+  color: #b42318;
+}
+
+.etf-aw-overview-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.etf-aw-overview-copy strong {
+  margin: 2px 0;
+  color: #101828;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.etf-aw-overview-copy .ant-typography {
+  font-size: 12px;
+}
+
+.etf-aw-workspace-tabs > .ant-tabs-nav {
+  margin-bottom: 16px;
+  padding: 0 4px;
+  background: var(--etf-aw-surface);
+  border: 1px solid var(--etf-aw-border);
+  border-radius: 8px;
+}
+
+.etf-aw-workspace-tabs > .ant-tabs-nav::before {
+  border-bottom: 0;
+}
+
+.etf-aw-workspace-tabs > .ant-tabs-nav .ant-tabs-tab {
+  padding: 13px 8px;
+  font-weight: 500;
+}
+
+.etf-aw-tab-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.etf-aw-page .ant-card {
+  border-color: var(--etf-aw-border);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+.etf-aw-page .ant-card-head {
+  min-height: 48px;
+}
+
+.etf-aw-page .ant-card-head-title {
+  font-weight: 600;
+}
+
+.etf-aw-page .ant-statistic-title {
+  color: var(--etf-aw-muted);
+}
+
+.etf-aw-page .ant-statistic-content {
+  font-size: 22px;
+}
+
+.etf-aw-page .ant-table-wrapper .ant-table-thead > tr > th {
+  color: #475467;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.etf-aw-page .ant-alert {
+  border-radius: 6px;
+}
+
+@media (max-width: 1100px) {
+  .etf-aw-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .etf-aw-overview-item:nth-child(2) {
+    border-right: 0;
+  }
+
+  .etf-aw-overview-item:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--etf-aw-border);
+  }
+}
+
+@media (max-width: 640px) {
+  .etf-aw-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .etf-aw-actions {
+    width: 100%;
+  }
+
+  .etf-aw-actions .ant-select {
+    flex: 1;
+    min-width: 150px;
+  }
+
+  .etf-aw-heading h2.ant-typography {
+    font-size: 24px;
+  }
+
+  .etf-aw-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .etf-aw-overview-item,
+  .etf-aw-overview-item:nth-child(2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--etf-aw-border);
+    padding: 14px;
+  }
+
+  .etf-aw-overview-item:last-child {
+    border-bottom: 0;
+  }
+
+  .etf-aw-workspace-tabs > .ant-tabs-nav {
+    margin-right: -4px;
+    margin-left: -4px;
+  }
+}

@@ -58,7 +58,7 @@ TUSHARE_TOKEN=your_tushare_token
 ./scripts/etl/update-etf-aw.sh --scheduled
 ```
 
-`--scheduled` 会进入仓库根目录、加锁、进入 `nix develop`，并把日志写到 `logs/etf-aw-update.log`。
+`--scheduled` 会进入仓库根目录、加锁、进入 `nix develop`，先更新行情和 derived 数据，再自动补齐默认模拟盘账户的缺失观察日，并把日志写到 `logs/etf-aw-update.log`。数据流水线失败时不会继续更新模拟盘观察。
 
 查看定时任务是否启用、下一次什么时候运行：
 

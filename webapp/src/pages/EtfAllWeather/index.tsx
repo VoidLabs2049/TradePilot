@@ -17,7 +17,14 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import { ReloadOutlined, SyncOutlined } from "@ant-design/icons";
+import {
+  CalendarOutlined,
+  CheckCircleOutlined,
+  DatabaseOutlined,
+  ReloadOutlined,
+  SyncOutlined,
+  WarningOutlined,
+} from "@ant-design/icons";
 import { Line, Pie } from "@ant-design/charts";
 import {
   getEtfAwShadowReport,
@@ -36,6 +43,7 @@ import {
   type EtfAwRiskBudget,
   type EtfAwRiskBudgetSleeve,
 } from "../../services/api";
+import "./index.css";
 
 const { Text, Title } = Typography;
 
@@ -146,8 +154,8 @@ export default function EtfAllWeather() {
   const [shadowStatus, setShadowStatus] = useState<EtfAwShadowStatus | null>(null);
   const [updatingShadow, setUpdatingShadow] = useState(false);
   const [shadowUpdate, setShadowUpdate] = useState<EtfAwShadowUpdateResponse | null>(null);
-  const [totalAssetInput, setTotalAssetInput] = useState(1_000_000);
-  const [cashInput, setCashInput] = useState(0);
+  const [totalAssetInput, setTotalAssetInput] = useState(200_000);
+  const [cashInput, setCashInput] = useState(200_000);
   const [positionsInput, setPositionsInput] = useState<PositionInput>({});
 
   const refresh = async (selectedAccountId?: string) => {
@@ -1189,29 +1197,101 @@ export default function EtfAllWeather() {
     </Space>
   ) : <Card><Empty description="本地 lakehouse 暂无历史绩效数据" /></Card>;
 
+  const overviewItems = [
+    {
+      key: "verdict",
+      icon: verdict === "pass" ? <CheckCircleOutlined /> : <WarningOutlined />,
+      label: "研究判定",
+      value: verdictText,
+      detail: researchSummary?.robustness?.decision_rule || "等待稳健性结果",
+      tone: verdict === "pass" ? "positive" : verdict === "fail" ? "negative" : "warning",
+    },
+    {
+      key: "weight",
+      icon: <CalendarOutlined />,
+      label: "目标权重日期",
+      value: researchSummary?.target_weight.rebalance_date || "-",
+      detail: `${researchSummary?.target_weight.rows.length || 0} 个资产袖套`,
+      tone: "neutral",
+    },
+    {
+      key: "market",
+      icon: <DatabaseOutlined />,
+      label: "行情最新日",
+      value: shadowStatus?.latest_sleeve_daily_date || "-",
+      detail: shadowStatus?.is_stale ? "观察数据待补齐" : "本地数据已同步",
+      tone: shadowStatus?.is_stale ? "warning" : "positive",
+    },
+    {
+      key: "observation",
+      icon: <SyncOutlined />,
+      label: "缺失观察日",
+      value: String(shadowStatus?.missing_observation_dates.length || 0),
+      detail: shadowStatus?.next_action || "无需操作",
+      tone: shadowStatus?.missing_observation_dates.length ? "warning" : "neutral",
+    },
+  ];
+
   return (
-    <Space size={16} style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "stretch" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <div>
-          <Title level={3} style={{ marginBottom: 4 }}>ETF 全天候</Title>
-          <Text type="secondary">风险预算与 Stage O forward observation</Text>
+    <div className="etf-aw-page">
+      <header className="etf-aw-header">
+        <div className="etf-aw-heading">
+          <Text className="etf-aw-eyebrow">RESEARCH WORKSPACE</Text>
+          <Title level={2}>ETF 全天候</Title>
+          <Text type="secondary">风险预算、组合验证与模拟盘观察</Text>
         </div>
-        <Space>
-          {shadow && shadow.accounts.length > 1 ? <Select value={accountId} options={shadow.accounts.map((value) => ({ value }))} onChange={(value) => { setAccountId(value); refresh(value); }} /> : null}
-          <Button icon={<SyncOutlined />} loading={updatingShadow} onClick={updateLocalShadow}>更新本地观察</Button>
-          <Button icon={<ReloadOutlined />} loading={loading} onClick={() => refresh()}>刷新</Button>
-        </Space>
-      </div>
+        <div className="etf-aw-actions">
+          {shadow && shadow.accounts.length > 1 ? (
+            <Select
+              aria-label="模拟盘账户"
+              value={accountId}
+              options={shadow.accounts.map((value) => ({ value }))}
+              onChange={(value) => { setAccountId(value); refresh(value); }}
+            />
+          ) : null}
+          <Button icon={<SyncOutlined />} loading={updatingShadow} onClick={updateLocalShadow}>
+            更新观察
+          </Button>
+          <Tooltip title="刷新全部研究数据">
+            <Button aria-label="刷新全部研究数据" icon={<ReloadOutlined />} loading={loading} onClick={() => refresh()} />
+          </Tooltip>
+        </div>
+      </header>
+
       {error ? <Alert type="error" showIcon message="ETF 全天候数据读取失败" description={error} /> : null}
-      {researchContent}
-      {statusContent}
-      {allocationContent}
-      {rebalanceContent}
-      <Tabs items={[
-        { key: "performance", label: "历史效果", children: performanceContent },
-        { key: "shadow", label: "模拟盘观察", children: shadowContent },
-        { key: "budget", label: "风险预算", children: budgetContent },
-      ]} />
-    </Space>
+
+      <section className="etf-aw-overview" aria-label="研究状态总览">
+        {overviewItems.map((item) => (
+          <div className={`etf-aw-overview-item etf-aw-overview-item--${item.tone}`} key={item.key}>
+            <span className="etf-aw-overview-icon">{item.icon}</span>
+            <div className="etf-aw-overview-copy">
+              <Text type="secondary">{item.label}</Text>
+              <strong>{item.value}</strong>
+              <Text type="secondary" ellipsis={{ tooltip: item.detail }}>{item.detail}</Text>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <Tabs
+        className="etf-aw-workspace-tabs"
+        defaultActiveKey="overview"
+        items={[
+          {
+            key: "overview",
+            label: "决策总览",
+            children: <div className="etf-aw-tab-stack">{researchContent}{allocationContent}</div>,
+          },
+          {
+            key: "rebalance",
+            label: "调仓工作台",
+            children: <div className="etf-aw-tab-stack">{statusContent}{rebalanceContent}</div>,
+          },
+          { key: "performance", label: "历史证据", children: performanceContent },
+          { key: "shadow", label: "模拟盘", children: shadowContent },
+          { key: "budget", label: "风险预算", children: budgetContent },
+        ]}
+      />
+    </div>
   );
 }
