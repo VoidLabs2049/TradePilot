@@ -42,35 +42,43 @@ class StageFRatesMockTushareClient:
 
     def get_shibor(self, start_date: str, end_date: str) -> pd.DataFrame:
         self.shibor_windows.append((start_date, end_date))
-        return pd.DataFrame({
-            "date": [pd.Timestamp(start_date)],
-            "1w": [1.85],
-            "on": [1.72],
-        })
+        return pd.DataFrame(
+            {
+                "date": [pd.Timestamp(start_date)],
+                "1w": [1.85],
+                "on": [1.72],
+            }
+        )
 
     def get_lpr(self, start_date: str, end_date: str) -> pd.DataFrame:
         self.lpr_windows.append((start_date, end_date))
-        return pd.DataFrame({
-            "date": [pd.Timestamp(start_date)],
-            "1y": [3.10],
-            "5y": [3.60],
-        })
+        return pd.DataFrame(
+            {
+                "date": [pd.Timestamp(start_date)],
+                "1y": [3.10],
+                "5y": [3.60],
+            }
+        )
 
     def get_macro_slow_fields(self, start_date: str, end_date: str) -> pd.DataFrame:
         self.macro_windows.append((start_date, end_date))
-        return pd.DataFrame({
-            "period_label": ["2026-03"],
-            "official_pmi": [50.8],
-        })
+        return pd.DataFrame(
+            {
+                "period_label": ["2026-03"],
+                "official_pmi": [50.8],
+            }
+        )
 
     def get_gov_curve_points(self, start_date: str, end_date: str) -> pd.DataFrame:
         self.curve_windows.append((start_date, end_date))
-        return pd.DataFrame({
-            "curve_date": [pd.Timestamp(start_date)],
-            "curve_code": ["cn_gov_bond"],
-            "1y": [1.55],
-            "10y": [2.35],
-        })
+        return pd.DataFrame(
+            {
+                "curve_date": [pd.Timestamp(start_date)],
+                "curve_code": ["cn_gov_bond"],
+                "1y": [1.55],
+                "10y": [2.35],
+            }
+        )
 
 
 class StageFRatesPermissionDeniedCurveClient(StageFRatesMockTushareClient):
@@ -91,16 +99,18 @@ class StageFRatesMockAkShare:
         """Return ChinaBond curve rows matching AKShare bond_china_yield."""
 
         self.curve_calls.append({"start_date": start_date, "end_date": end_date})
-        return pd.DataFrame({
-            "曲线名称": [
-                "中债国债收益率曲线",
-                "中债商业银行普通债收益率曲线(AAA)",
-                "中债中短期票据收益率曲线(AAA)",
-            ],
-            "日期": ["2026-04-20", "2026-04-20", "2026-04-20"],
-            "1年": [1.55, 9.99, 8.88],
-            "10年": [2.35, 9.98, 8.87],
-        })
+        return pd.DataFrame(
+            {
+                "曲线名称": [
+                    "中债国债收益率曲线",
+                    "中债商业银行普通债收益率曲线(AAA)",
+                    "中债中短期票据收益率曲线(AAA)",
+                ],
+                "日期": ["2026-04-20", "2026-04-20", "2026-04-20"],
+                "1年": [1.55, 9.99, 8.88],
+                "10年": [2.35, 9.98, 8.87],
+            }
+        )
 
 
 class StageFRatesRawTusharePro:
@@ -113,13 +123,15 @@ class StageFRatesRawTusharePro:
         """Return long-format government curve rows matching Tushare yc_cb."""
 
         self.curve_calls.append({"start_date": start_date, "end_date": end_date})
-        return pd.DataFrame({
-            "trade_date": ["20260420", "20260420", "20260420", "20260420"],
-            "ts_code": ["1001.CB", "1001.CB", "1002.CB", "1001.CB"],
-            "curve_type": ["0", "0.0", "0", "1"],
-            "curve_term": [1.0, 10.0, 1.0, 10.0],
-            "yield": [1.55, 2.35, 9.99, 8.88],
-        })
+        return pd.DataFrame(
+            {
+                "trade_date": ["20260420", "20260420", "20260420", "20260420"],
+                "ts_code": ["1001.CB", "1001.CB", "1002.CB", "1001.CB"],
+                "curve_type": ["0", "0.0", "0", "1"],
+                "curve_term": [1.0, 10.0, 1.0, 10.0],
+                "yield": [1.55, 2.35, 9.99, 8.88],
+            }
+        )
 
 
 class StageFRatesTests(unittest.TestCase):
@@ -280,12 +292,14 @@ class StageFRatesTests(unittest.TestCase):
             "percent",
         )
         self.assertTrue(all(frame["quality_status"].eq("pass_with_caveat")))
-        watermark = self.conn.execute("""
+        watermark = self.conn.execute(
+            """
             SELECT latest_fetched_date
             FROM etl_source_watermarks
             WHERE dataset_name = 'rates.daily_rates'
               AND source_name = 'tushare'
-            """).fetchone()
+            """
+        ).fetchone()
         self.assertEqual(watermark[0], date(2026, 4, 20))
 
     def test_tushare_client_pivots_yc_cb_long_format_curve_points(self) -> None:
@@ -340,25 +354,29 @@ class StageFRatesTests(unittest.TestCase):
             pd.to_datetime(frame["effective_date"]).dt.date.tolist(),
             [date(2026, 4, 20)] * 2,
         )
-        watermark = self.conn.execute("""
+        watermark = self.conn.execute(
+            """
             SELECT latest_fetched_date
             FROM etl_source_watermarks
             WHERE dataset_name = 'rates.lpr'
               AND source_name = 'tushare'
-            """).fetchone()
+            """
+        ).fetchone()
         self.assertEqual(watermark[0], date(2026, 4, 20))
 
     def test_lpr_normalizer_falls_back_to_day_20_and_next_open_day(self) -> None:
-        calendar = pd.DataFrame({
-            "exchange": ["SH", "SZ", "SH", "SZ"],
-            "trade_date": [
-                date(2026, 5, 20),
-                date(2026, 5, 20),
-                date(2026, 5, 21),
-                date(2026, 5, 21),
-            ],
-            "is_open": [False, False, True, True],
-        })
+        calendar = pd.DataFrame(
+            {
+                "exchange": ["SH", "SZ", "SH", "SZ"],
+                "trade_date": [
+                    date(2026, 5, 20),
+                    date(2026, 5, 20),
+                    date(2026, 5, 21),
+                    date(2026, 5, 21),
+                ],
+                "is_open": [False, False, True, True],
+            }
+        )
 
         canonical = (
             LprNormalizer()
@@ -382,11 +400,13 @@ class StageFRatesTests(unittest.TestCase):
         )
 
     def test_lpr_normalizer_requires_next_open_day_from_calendar(self) -> None:
-        calendar = pd.DataFrame({
-            "exchange": ["SH", "SZ"],
-            "trade_date": [date(2026, 5, 20), date(2026, 5, 20)],
-            "is_open": [False, False],
-        })
+        calendar = pd.DataFrame(
+            {
+                "exchange": ["SH", "SZ"],
+                "trade_date": [date(2026, 5, 20), date(2026, 5, 20)],
+                "is_open": [False, False],
+            }
+        )
 
         canonical = (
             LprNormalizer()
@@ -435,17 +455,19 @@ class StageFRatesTests(unittest.TestCase):
         self.assertIn("lpr.effective_date_required", failed_checks)
 
     def test_daily_rates_validator_blocks_duplicate_keys(self) -> None:
-        payload = pd.DataFrame({
-            "field_name": ["shibor_1w", "shibor_1w"],
-            "trade_date": [date(2026, 4, 20), date(2026, 4, 20)],
-            "value": [1.8, 1.9],
-            "unit": ["percent", "percent"],
-            "field_role": ["primary", "primary"],
-            "release_date": [date(2026, 4, 20), date(2026, 4, 20)],
-            "effective_date": [date(2026, 4, 20), date(2026, 4, 20)],
-            "revision_note": ["low_revision_risk", "low_revision_risk"],
-            "source_caveat": ["wrapper", "wrapper"],
-        })
+        payload = pd.DataFrame(
+            {
+                "field_name": ["shibor_1w", "shibor_1w"],
+                "trade_date": [date(2026, 4, 20), date(2026, 4, 20)],
+                "value": [1.8, 1.9],
+                "unit": ["percent", "percent"],
+                "field_role": ["primary", "primary"],
+                "release_date": [date(2026, 4, 20), date(2026, 4, 20)],
+                "effective_date": [date(2026, 4, 20), date(2026, 4, 20)],
+                "revision_note": ["low_revision_risk", "low_revision_risk"],
+                "source_caveat": ["wrapper", "wrapper"],
+            }
+        )
 
         results = DailyRatesValidator().validate(
             payload,
@@ -455,17 +477,19 @@ class StageFRatesTests(unittest.TestCase):
         self.assertTrue(has_blocking_failures(results))
 
     def test_daily_rates_validator_requires_release_and_revision_metadata(self) -> None:
-        payload = pd.DataFrame({
-            "field_name": ["shibor_1w"],
-            "trade_date": [date(2026, 4, 20)],
-            "value": [1.8],
-            "unit": ["percent"],
-            "field_role": ["primary"],
-            "release_date": ["not-a-date"],
-            "effective_date": [date(2026, 4, 20)],
-            "revision_note": [""],
-            "source_caveat": ["wrapper"],
-        })
+        payload = pd.DataFrame(
+            {
+                "field_name": ["shibor_1w"],
+                "trade_date": [date(2026, 4, 20)],
+                "value": [1.8],
+                "unit": ["percent"],
+                "field_role": ["primary"],
+                "release_date": ["not-a-date"],
+                "effective_date": [date(2026, 4, 20)],
+                "revision_note": [""],
+                "source_caveat": ["wrapper"],
+            }
+        )
 
         results = DailyRatesValidator().validate(
             payload,
@@ -482,17 +506,19 @@ class StageFRatesTests(unittest.TestCase):
         self.assertTrue(has_blocking_failures(results))
 
     def test_lpr_validator_compares_string_dates_as_dates(self) -> None:
-        payload = pd.DataFrame({
-            "field_name": ["lpr_1y"],
-            "quote_date": ["2026-10-02"],
-            "value": [3.1],
-            "unit": ["percent"],
-            "field_role": ["primary"],
-            "release_date": ["2026-10-02"],
-            "effective_date": ["2026-02-01"],
-            "revision_note": ["low_revision_risk_relative_to_other_slow_fields"],
-            "source_caveat": ["wrapper"],
-        })
+        payload = pd.DataFrame(
+            {
+                "field_name": ["lpr_1y"],
+                "quote_date": ["2026-10-02"],
+                "value": [3.1],
+                "unit": ["percent"],
+                "field_role": ["primary"],
+                "release_date": ["2026-10-02"],
+                "effective_date": ["2026-02-01"],
+                "revision_note": ["low_revision_risk_relative_to_other_slow_fields"],
+                "source_caveat": ["wrapper"],
+            }
+        )
 
         results = LprValidator().validate(
             payload,
@@ -515,22 +541,26 @@ class StageFRatesTests(unittest.TestCase):
         rows = []
         for value in dates:
             for exchange in ("SH", "SZ"):
-                rows.append({
-                    "exchange": exchange,
-                    "trade_date": value.date(),
-                    "is_open": is_open,
-                    "pretrade_date": None,
-                    "updated_at": pd.Timestamp("2026-01-01"),
-                })
+                rows.append(
+                    {
+                        "exchange": exchange,
+                        "trade_date": value.date(),
+                        "is_open": is_open,
+                        "pretrade_date": None,
+                        "updated_at": pd.Timestamp("2026-01-01"),
+                    }
+                )
         self.conn.register("stage_f_calendar_rows", pd.DataFrame(rows))
         try:
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 INSERT INTO canonical_trading_calendar (
                     exchange, trade_date, is_open, pretrade_date, updated_at
                 )
                 SELECT exchange, trade_date, is_open, pretrade_date, updated_at
                 FROM stage_f_calendar_rows
-                """)
+                """
+            )
         finally:
             self.conn.unregister("stage_f_calendar_rows")
 
