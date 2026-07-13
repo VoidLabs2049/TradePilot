@@ -81,6 +81,38 @@ class StageFRatesMockTushareClient:
         )
 
 
+class StageFRatesPermissionDeniedCurveClient(StageFRatesMockTushareClient):
+    """Rates client that simulates missing Tushare yc_cb permission."""
+
+    def get_gov_curve_points(self, start_date: str, end_date: str) -> pd.DataFrame:
+        self.curve_windows.append((start_date, end_date))
+        raise RuntimeError("Tushare yc_cb 接口无访问权限")
+
+
+class StageFRatesMockAkShare:
+    """Deterministic AKShare curve fallback fixture."""
+
+    def __init__(self) -> None:
+        self.curve_calls: list[dict[str, str]] = []
+
+    def bond_china_yield(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """Return ChinaBond curve rows matching AKShare bond_china_yield."""
+
+        self.curve_calls.append({"start_date": start_date, "end_date": end_date})
+        return pd.DataFrame(
+            {
+                "曲线名称": [
+                    "中债国债收益率曲线",
+                    "中债商业银行普通债收益率曲线(AAA)",
+                    "中债中短期票据收益率曲线(AAA)",
+                ],
+                "日期": ["2026-04-20", "2026-04-20", "2026-04-20"],
+                "1年": [1.55, 9.99, 8.88],
+                "10年": [2.35, 9.98, 8.87],
+            }
+        )
+
+
 class StageFRatesRawTusharePro:
     """Raw Tushare pro fixture for provider boundary parsing tests."""
 
@@ -195,6 +227,41 @@ class StageFRatesTests(unittest.TestCase):
             "primary",
         )
 
+    def test_gov_curve_points_falls_back_to_akshare_when_yc_cb_denied(self) -> None:
+        self._insert_calendar_window(date(2026, 4, 20), date(2026, 4, 20))
+        client = StageFRatesPermissionDeniedCurveClient()
+        akshare = StageFRatesMockAkShare()
+        service = ETLService(
+            conn=self.conn,
+            source_adapters=[TushareSourceAdapter(client, akshare_module=akshare)],
+            lakehouse_root=self.lakehouse_root,
+        )
+
+        result = service.run_dataset_sync(
+            "rates.gov_curve_points",
+            IngestionRequest(
+                request_start=date(2026, 4, 20),
+                request_end=date(2026, 4, 20),
+            ),
+        )
+
+        self.assertEqual(result.status, RunStatus.SUCCESS)
+        self.assertEqual(result.records_written, 2)
+        self.assertEqual(client.curve_windows, [("2026-04-20", "2026-04-20")])
+        self.assertEqual(
+            akshare.curve_calls,
+            [{"start_date": "20260420", "end_date": "20260420"}],
+        )
+        path = build_dataset_file_path(
+            "rates.gov_curve_points",
+            StorageZone.NORMALIZED,
+            [("year", 2026), ("month", "04")],
+            lakehouse_root=self.lakehouse_root,
+        )
+        frame = pd.read_parquet(path).sort_values("field_name").reset_index(drop=True)
+        self.assertEqual(frame["curve_code"].unique().tolist(), ["cn_gov_bond"])
+        self.assertEqual(frame["value"].tolist(), [2.35, 1.55])
+
     def test_daily_rates_run_through_source_to_canonical_write(self) -> None:
         self._insert_calendar_window(date(2026, 4, 20), date(2026, 4, 20))
 
@@ -225,12 +292,14 @@ class StageFRatesTests(unittest.TestCase):
             "percent",
         )
         self.assertTrue(all(frame["quality_status"].eq("pass_with_caveat")))
-        watermark = self.conn.execute("""
+        watermark = self.conn.execute(
+            """
             SELECT latest_fetched_date
             FROM etl_source_watermarks
             WHERE dataset_name = 'rates.daily_rates'
               AND source_name = 'tushare'
-            """).fetchone()
+            """
+        ).fetchone()
         self.assertEqual(watermark[0], date(2026, 4, 20))
 
     def test_tushare_client_pivots_yc_cb_long_format_curve_points(self) -> None:
@@ -285,12 +354,14 @@ class StageFRatesTests(unittest.TestCase):
             pd.to_datetime(frame["effective_date"]).dt.date.tolist(),
             [date(2026, 4, 20)] * 2,
         )
-        watermark = self.conn.execute("""
+        watermark = self.conn.execute(
+            """
             SELECT latest_fetched_date
             FROM etl_source_watermarks
             WHERE dataset_name = 'rates.lpr'
               AND source_name = 'tushare'
-            """).fetchone()
+            """
+        ).fetchone()
         self.assertEqual(watermark[0], date(2026, 4, 20))
 
     def test_lpr_normalizer_falls_back_to_day_20_and_next_open_day(self) -> None:
@@ -481,13 +552,15 @@ class StageFRatesTests(unittest.TestCase):
                 )
         self.conn.register("stage_f_calendar_rows", pd.DataFrame(rows))
         try:
-            self.conn.execute("""
+            self.conn.execute(
+                """
                 INSERT INTO canonical_trading_calendar (
                     exchange, trade_date, is_open, pretrade_date, updated_at
                 )
                 SELECT exchange, trade_date, is_open, pretrade_date, updated_at
                 FROM stage_f_calendar_rows
-                """)
+                """
+            )
         finally:
             self.conn.unregister("stage_f_calendar_rows")
 
