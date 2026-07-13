@@ -229,6 +229,143 @@ export interface EtfAwLocalPerformance {
   metrics: Array<{ strategy: string; metric: string; value: number }>;
 }
 
+export interface EtfAwTargetWeightRow {
+  sleeve_code: string;
+  sleeve_role: string;
+  target_weight: number | null;
+  target_weight_status: string;
+  turnover_estimate?: number | null;
+}
+
+export interface EtfAwPlanOrderRow {
+  sleeve_code: string;
+  sleeve_role: string;
+  target_weight: number | null;
+  latest_price: number | null;
+  order_side: string;
+  order_quantity: number;
+  estimated_notional: number | null;
+  target_notional: number | null;
+}
+
+export interface EtfAwRobustnessScenario {
+  cost_scenario: string;
+  gross_total_return?: number | null;
+  gross_sharpe_ratio?: number | null;
+  gross_max_drawdown?: number | null;
+  net_total_return?: number | null;
+  net_annualized_return?: number | null;
+  net_annualized_volatility?: number | null;
+  net_sharpe_ratio?: number | null;
+  net_max_drawdown?: number | null;
+  average_turnover?: number | null;
+  estimated_cost_fraction_sum?: number | null;
+}
+
+export interface EtfAwRobustnessComparison {
+  cost_scenario: string;
+  gross_total_return_diff?: number | null;
+  net_total_return_diff?: number | null;
+  net_sharpe_ratio_diff?: number | null;
+  net_max_drawdown_diff?: number | null;
+}
+
+export interface EtfAwResearchSummary {
+  target_weight: {
+    rebalance_date: string | null;
+    status_counts: Record<string, number>;
+    rows: EtfAwTargetWeightRow[];
+  };
+  latest_plan: {
+    plan_id: string;
+    plan_date: string;
+    plan_status: string;
+    account_id: string;
+    estimated_buy_notional: number | null;
+    estimated_sell_notional: number | null;
+    rows: EtfAwPlanOrderRow[];
+  } | null;
+  robustness: {
+    verdict: "pass" | "fail" | "blocked";
+    decision_rule: string;
+    report_status: string;
+    comparable_range: { start_date: string | null; end_date: string | null };
+    coverage: Record<string, any>;
+    strategies: Array<{
+      label: string;
+      strategy_name: string;
+      strategy_version: string;
+      scenarios: EtfAwRobustnessScenario[];
+    }>;
+    comparisons: EtfAwRobustnessComparison[];
+    diagnostics: Record<string, any>;
+  } | null;
+  fixed_weight_backtest: {
+    weight_rebalance_date: string | null;
+    weight_basis: string;
+    baseline: string;
+    summary: {
+      segment_count: number;
+      profitable_segments: number;
+      beat_equal_weight_segments: number;
+      profitable_ratio: number | null;
+      beat_equal_weight_ratio: number | null;
+      average_total_return_diff?: number | null;
+      worst_max_drawdown?: number | null;
+    };
+    segments: Array<{
+      segment_name: string;
+      segment_type: string;
+      start_date: string;
+      end_date: string;
+      observation_count: number;
+      strategy: {
+        total_return: number | null;
+        annualized_return: number | null;
+        annualized_volatility: number | null;
+        sharpe_ratio: number | null;
+        max_drawdown: number | null;
+      };
+      equal_weight_baseline: {
+        total_return: number | null;
+        annualized_return: number | null;
+        annualized_volatility: number | null;
+        sharpe_ratio: number | null;
+        max_drawdown: number | null;
+      };
+      comparison: {
+        total_return_diff: number | null;
+        annualized_return_diff: number | null;
+        sharpe_ratio_diff: number | null;
+        max_drawdown_diff: number | null;
+      };
+      profitable: boolean;
+      beats_equal_weight: boolean;
+    }>;
+    optimization: {
+      method: string;
+      objective: string;
+      best_candidate_name: string;
+      candidates: Array<{
+      candidate_name: string;
+        shrinkage_to_equal_weight?: number;
+        search_method?: string;
+        weights: Record<string, number>;
+        score: number;
+        summary: {
+          segment_count: number;
+          profitable_segments: number;
+          beat_equal_weight_segments: number;
+          profitable_ratio: number | null;
+          beat_equal_weight_ratio: number | null;
+          average_total_return_diff: number | null;
+          worst_max_drawdown: number | null;
+        };
+      }>;
+    };
+  } | null;
+}
+
 export interface InsightMetric {
   label: string;
   value: string | number | null;
@@ -332,6 +469,8 @@ export const updateEtfAwLocalShadow = (accountId = "etf-aw-paper") =>
   });
 export const getEtfAwLocalPerformance = () =>
   fetchJson<EtfAwLocalPerformance | null>("/workflow/etf-aw/performance");
+export const getEtfAwResearchSummary = () =>
+  fetchJson<EtfAwResearchSummary>("/workflow/etf-aw/research-summary");
 export const getLatestWorkflowInsight = (phase: WorkflowPhase, producer = "the_one") =>
   fetchJson<WorkflowInsightResponse>(`/workflow/insight/latest?phase=${phase}&producer=${encodeURIComponent(producer)}`);
 export const upsertWorkflowInsight = (data: WorkflowInsightUpsertRequest) =>

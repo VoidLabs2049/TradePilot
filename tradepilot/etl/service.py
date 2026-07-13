@@ -2812,6 +2812,7 @@ class ETLService:
             canonical["weight_source_type"] = "target_weight"
         if "source_weight_dataset" not in canonical.columns:
             canonical["source_weight_dataset"] = _ETF_AW_TARGET_WEIGHT_DATASET
+        self._remove_stale_backtest_diagnostics(canonical)
         return self._write_year_month_partition_upsert(
             dataset_name=_ETF_AW_BACKTEST_KERNEL_DATASET,
             zone=StorageZone.DERIVED,
@@ -2841,6 +2842,88 @@ class ETLService:
                 "source_weight_dataset": _ETF_AW_TARGET_WEIGHT_DATASET,
             },
         )
+
+    def _remove_stale_backtest_diagnostics(self, canonical: pd.DataFrame) -> None:
+        """Remove old diagnostic rows superseded by valid backtest observations."""
+
+        if canonical.empty or "observation_type" not in canonical.columns:
+            return
+        valid = canonical[
+            ~canonical["observation_type"].astype(str).eq("diagnostic")
+        ].copy()
+        if valid.empty:
+            return
+        valid["observation_date"] = pd.to_datetime(
+            valid["observation_date"], errors="coerce"
+        ).dt.date
+        identity_columns = [
+            "calendar_name",
+            "strategy_name",
+            "strategy_version",
+            "weight_source_type",
+            "source_weight_dataset",
+        ]
+        for (year, month), partition in valid.groupby(
+            [
+                pd.to_datetime(valid["observation_date"]).dt.year,
+                pd.to_datetime(valid["observation_date"]).dt.month,
+            ],
+            dropna=True,
+        ):
+            final_path = build_dataset_file_path(
+                _ETF_AW_BACKTEST_KERNEL_DATASET,
+                StorageZone.DERIVED,
+                [("year", int(year)), ("month", f"{int(month):02d}")],
+                lakehouse_root=self.lakehouse_root,
+            )
+            if not final_path.exists():
+                continue
+            existing = pd.read_parquet(final_path)
+            if existing.empty or "observation_type" not in existing.columns:
+                continue
+            for column in identity_columns:
+                if column not in existing.columns:
+                    existing[column] = (
+                        _ETF_AW_TARGET_WEIGHT_DATASET
+                        if column == "source_weight_dataset"
+                        else (
+                            _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET
+                            if column == "weight_source_type"
+                            else ""
+                        )
+                    )
+            existing["observation_date"] = pd.to_datetime(
+                existing["observation_date"], errors="coerce"
+            ).dt.date
+            diagnostic_mask = existing["observation_type"].astype(str).eq("diagnostic")
+            stale_mask = pd.Series(False, index=existing.index)
+            for _, row in partition[identity_columns + ["observation_date"]].iterrows():
+                stale_mask |= diagnostic_mask & (
+                    existing["calendar_name"].astype(str).eq(str(row["calendar_name"]))
+                    & existing["strategy_name"]
+                    .astype(str)
+                    .eq(str(row["strategy_name"]))
+                    & existing["strategy_version"]
+                    .astype(str)
+                    .eq(str(row["strategy_version"]))
+                    & existing["weight_source_type"]
+                    .astype(str)
+                    .eq(str(row["weight_source_type"]))
+                    & existing["source_weight_dataset"]
+                    .astype(str)
+                    .eq(str(row["source_weight_dataset"]))
+                    & existing["observation_date"].eq(row["observation_date"])
+                )
+            cleaned = existing[~stale_mask].copy()
+            if len(cleaned) == len(existing):
+                continue
+            write_dataset_parquet(
+                cleaned,
+                _ETF_AW_BACKTEST_KERNEL_DATASET,
+                StorageZone.DERIVED,
+                [("year", int(year)), ("month", f"{int(month):02d}")],
+                lakehouse_root=self.lakehouse_root,
+            )
 
     def _build_etf_aw_monthly_explainability(self, start: date, end: date) -> dict:
         start, end = _ordered_dates(start, end)

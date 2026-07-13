@@ -398,6 +398,48 @@ class StageHBacktestKernelTests(unittest.TestCase):
         notes = json.loads(frame.iloc[0]["quality_notes_json"])
         self.assertIn("rebalance_date_without_trading_day", notes["reasons"])
 
+    def test_valid_kernel_write_removes_stale_diagnostic_for_same_identity(
+        self,
+    ) -> None:
+        rebalance_date = date(2024, 1, 22)
+        rebalance = pd.DataFrame(
+            [
+                {
+                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "rebalance_date": rebalance_date,
+                }
+            ]
+        )
+        weights = self._equal_weights(rebalance_date)
+        weights["strategy_name"] = "etf_aw_v1"
+        weights["strategy_version"] = "target_weight_inverse_vol_v1"
+        weights["weight_source_type"] = "target_weight"
+        weights["source_weight_dataset"] = "derived.etf_aw_target_weight"
+        broken_panel = self._sleeve_daily_frame(rebalance_date, date(2024, 1, 31))
+        broken_panel = broken_panel[broken_panel["sleeve_code"] != "518850.SH"].copy()
+        diagnostic = self.service._make_etf_aw_backtest_kernel_frame(
+            panel=broken_panel,
+            rebalance=rebalance,
+            weights=weights,
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        self.service._write_etf_aw_backtest_kernel(diagnostic)
+
+        valid = self.service._make_etf_aw_backtest_kernel_frame(
+            panel=self._sleeve_daily_frame(rebalance_date, date(2024, 1, 31)),
+            rebalance=rebalance,
+            weights=weights,
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 31),
+        )
+        self.service._write_etf_aw_backtest_kernel(valid)
+
+        frame = self._read_backtest_file(2024, 1)
+        same_date = frame[frame["observation_date"].eq(rebalance_date)]
+        self.assertNotIn("diagnostic", set(same_date["observation_type"]))
+        self.assertIn("turnover", set(same_date["observation_type"]))
+
     def test_monthly_returns_do_not_absorb_next_month_first_day(self) -> None:
         rebalance = pd.DataFrame(
             [

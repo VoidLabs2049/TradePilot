@@ -9,7 +9,10 @@ from fastapi import APIRouter, Query
 import pandas as pd
 
 from tradepilot.config import LAKEHOUSE_ROOT
-from tradepilot.etf_aw.cli import update_local_shadow_artifacts
+from tradepilot.etf_aw.cli import (
+    _backtest_robustness_report,
+    update_local_shadow_artifacts,
+)
 from tradepilot.etf_aw.shadow_run import (
     PAPER_FILL_DATASET,
     SHADOW_ACCOUNT_SEED_DATASET,
@@ -20,6 +23,7 @@ from tradepilot.etf_aw.shadow_run import (
 )
 from tradepilot.etf_aw.rebalance_plan import REBALANCE_PLAN_DATASET
 from tradepilot.etl.etf_aw_universe import ETF_AW_SLEEVE_CODES
+from tradepilot.etl.models import StorageZone
 from tradepilot.etl.read_models import get_latest_etf_aw_risk_budget
 from tradepilot.workflow.models import (
     EtfAwRiskBudgetResponse,
@@ -110,6 +114,42 @@ def get_latest_etf_aw_risk_budget_context(
 ) -> EtfAwRiskBudgetResponse | None:
     """Return the latest frozen ETF all-weather risk budget."""
     return get_latest_etf_aw_risk_budget(as_of_date=as_of_date)
+
+
+@router.get("/etf-aw/research-summary")
+def get_etf_aw_research_summary() -> dict:
+    """Return current target weights, latest plan, and cost-aware backtest result."""
+    target_weight = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_target_weight")
+    kernel = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_backtest_kernel")
+    baseline_weight = read_shadow_dataset(
+        LAKEHOUSE_ROOT, "derived.etf_aw_baseline_weight"
+    )
+    latest_target = _latest_complete_target_weight_rows(target_weight)
+    robustness = _local_robustness_summary(
+        kernel=kernel,
+        target_weight=target_weight,
+        baseline_weight=baseline_weight,
+        risk_budget=read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_risk_budget"),
+        strategy_context=read_shadow_dataset(
+            LAKEHOUSE_ROOT, "derived.etf_aw_strategy_context"
+        ),
+        sleeve_daily=read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_sleeve_daily"),
+    )
+    return _json_safe(
+        {
+            "target_weight": latest_target,
+            "latest_plan": _latest_rebalance_plan_rows(
+                read_shadow_dataset(LAKEHOUSE_ROOT, REBALANCE_PLAN_DATASET)
+            ),
+            "robustness": robustness,
+            "fixed_weight_backtest": _fixed_weight_segment_backtests(
+                target=latest_target,
+                sleeve_daily=read_shadow_dataset(
+                    LAKEHOUSE_ROOT, "derived.etf_aw_sleeve_daily"
+                ),
+            ),
+        }
+    )
 
 
 @router.get("/etf-aw/shadow-report")
@@ -354,6 +394,572 @@ def _account_observation_dates(frame: pd.DataFrame, account_id: str) -> list[dat
         .dt.date.dropna()
         .unique()
     )
+
+
+def _latest_complete_target_weight_rows(frame: pd.DataFrame) -> dict:
+    """Return the latest complete five-sleeve target-weight vector."""
+    if frame.empty or "rebalance_date" not in frame.columns:
+        return {"rebalance_date": None, "rows": [], "status_counts": {}}
+    rows = frame.copy()
+    rows["rebalance_date"] = pd.to_datetime(
+        rows["rebalance_date"], errors="coerce"
+    ).dt.date
+    status_counts = (
+        rows["target_weight_status"].astype(str).value_counts().sort_index().to_dict()
+        if "target_weight_status" in rows.columns
+        else {}
+    )
+    complete = rows[
+        rows["rebalance_date"].notna()
+        & rows["sleeve_code"].astype(str).isin(ETF_AW_SLEEVE_CODES)
+        & rows["target_weight_status"].astype(str).eq("complete")
+    ].copy()
+    dates = [
+        value
+        for value in sorted(complete["rebalance_date"].dropna().unique())
+        if set(
+            complete.loc[complete["rebalance_date"].eq(value), "sleeve_code"].astype(
+                str
+            )
+        )
+        == set(ETF_AW_SLEEVE_CODES)
+    ]
+    if not dates:
+        return {
+            "rebalance_date": None,
+            "rows": [],
+            "status_counts": {
+                str(key): int(value) for key, value in status_counts.items()
+            },
+        }
+    latest_date = dates[-1]
+    latest = complete[complete["rebalance_date"].eq(latest_date)].copy()
+    latest["_role_order"] = latest["sleeve_role"].map(
+        {
+            "equity_large": 0,
+            "equity_small": 1,
+            "bond": 2,
+            "gold": 3,
+            "cash": 4,
+        }
+    )
+    latest = latest.sort_values(["_role_order", "sleeve_code"])
+    return {
+        "rebalance_date": latest_date.isoformat(),
+        "status_counts": {str(key): int(value) for key, value in status_counts.items()},
+        "rows": [
+            {
+                "sleeve_code": str(row["sleeve_code"]),
+                "sleeve_role": str(row["sleeve_role"]),
+                "target_weight": _finite_or_none(row.get("target_weight")),
+                "target_weight_status": str(row.get("target_weight_status", "")),
+                "turnover_estimate": _finite_or_none(row.get("turnover_estimate")),
+            }
+            for _, row in latest.iterrows()
+        ],
+    }
+
+
+def _latest_rebalance_plan_rows(frame: pd.DataFrame) -> dict | None:
+    """Return the latest locally generated ETF AW rebalance plan."""
+    if frame.empty or "plan_id" not in frame.columns:
+        return None
+    rows = frame.copy()
+    for column in ("plan_date", "generated_at"):
+        if column in rows.columns:
+            rows[column] = pd.to_datetime(rows[column], errors="coerce")
+    sort_columns = [
+        column for column in ("plan_date", "generated_at") if column in rows.columns
+    ]
+    rows = rows.sort_values(sort_columns or ["plan_id"])
+    plan_id = str(rows.iloc[-1]["plan_id"])
+    latest = rows[rows["plan_id"].astype(str).eq(plan_id)].copy()
+    return {
+        "plan_id": plan_id,
+        "plan_date": str(latest.iloc[0].get("plan_date", ""))[:10],
+        "plan_status": str(latest.iloc[0].get("plan_status", "")),
+        "account_id": str(latest.iloc[0].get("account_id", "")),
+        "estimated_buy_notional": _finite_or_none(
+            latest.loc[latest["order_side"].astype(str).eq("BUY"), "estimated_notional"]
+            .astype(float)
+            .sum()
+        ),
+        "estimated_sell_notional": _finite_or_none(
+            latest.loc[
+                latest["order_side"].astype(str).eq("SELL"), "estimated_notional"
+            ]
+            .astype(float)
+            .sum()
+        ),
+        "rows": [
+            {
+                "sleeve_code": str(row["symbol"]),
+                "sleeve_role": str(row["sleeve_role"]),
+                "target_weight": _finite_or_none(row.get("target_weight")),
+                "latest_price": _finite_or_none(row.get("latest_price")),
+                "order_side": str(row.get("order_side", "")),
+                "order_quantity": int(row.get("order_quantity") or 0),
+                "estimated_notional": _finite_or_none(row.get("estimated_notional")),
+                "target_notional": _finite_or_none(row.get("target_notional")),
+            }
+            for _, row in latest.sort_values("sleeve_role").iterrows()
+        ],
+    }
+
+
+def _local_robustness_summary(
+    *,
+    kernel: pd.DataFrame,
+    target_weight: pd.DataFrame,
+    baseline_weight: pd.DataFrame,
+    risk_budget: pd.DataFrame,
+    strategy_context: pd.DataFrame,
+    sleeve_daily: pd.DataFrame,
+) -> dict | None:
+    """Return a compact pass/fail summary from local backtest artifacts."""
+    if kernel.empty:
+        return None
+    dates = _daily_nav_dates(kernel)
+    if not dates:
+        return None
+    report = _backtest_robustness_report(
+        inputs={
+            "kernel": kernel,
+            "target_weight": target_weight,
+            "baseline_weight": baseline_weight,
+            "risk_budget": risk_budget,
+            "strategy_context": strategy_context,
+            "sleeve_daily": sleeve_daily,
+        },
+        strategy_name="etf_aw_v1",
+        strategy_version="target_weight_inverse_vol_v1",
+        baseline_name="static_inverse_vol",
+        baseline_version="static_inverse_vol_v1",
+        start=dates[0],
+        end=dates[-1],
+    )
+    cost_10bps = next(
+        (
+            item
+            for item in report.get("comparisons", [])
+            if item.get("cost_scenario") == "cost_10bps"
+        ),
+        {},
+    )
+    diff = _finite_or_none(cost_10bps.get("net_total_return_diff"))
+    verdict = "blocked"
+    if report.get("report_status") == "complete":
+        verdict = "pass" if diff is not None and diff > 0 else "fail"
+    return {
+        "verdict": verdict,
+        "decision_rule": "cost_10bps net_total_return_diff > 0",
+        "report_status": report.get("report_status"),
+        "comparable_range": report.get("comparable_range"),
+        "coverage": report.get("coverage"),
+        "strategies": report.get("strategies"),
+        "comparisons": report.get("comparisons"),
+        "diagnostics": report.get("diagnostics"),
+    }
+
+
+def _fixed_weight_segment_backtests(
+    *, target: dict, sleeve_daily: pd.DataFrame
+) -> dict | None:
+    """Backtest the latest fixed target-weight vector over multiple periods."""
+    rows = target.get("rows", [])
+    if not rows or sleeve_daily.empty:
+        return None
+    weights = {
+        str(row["sleeve_code"]): float(row["target_weight"])
+        for row in rows
+        if row.get("target_weight") is not None
+    }
+    if set(weights) != set(ETF_AW_SLEEVE_CODES):
+        return None
+    panel = sleeve_daily.copy()
+    panel["trade_date"] = pd.to_datetime(panel["trade_date"], errors="coerce").dt.date
+    panel = panel[
+        panel["trade_date"].notna()
+        & panel["sleeve_code"].astype(str).isin(ETF_AW_SLEEVE_CODES)
+    ].copy()
+    panel["daily_return"] = (
+        pd.to_numeric(panel["adj_pct_chg"], errors="coerce").fillna(0.0) / 100.0
+    )
+    returns = (
+        panel.pivot_table(
+            index="trade_date",
+            columns="sleeve_code",
+            values="daily_return",
+            aggfunc="last",
+        )
+        .sort_index()
+        .dropna()
+    )
+    if returns.empty:
+        return None
+    equal_weight = returns.apply(
+        lambda row: sum(float(row[code]) for code in ETF_AW_SLEEVE_CODES)
+        / len(ETF_AW_SLEEVE_CODES),
+        axis=1,
+    )
+    segments = _backtest_segments(list(returns.index))
+    results = _fixed_weight_results(returns, equal_weight, segments, weights)
+    summary = _fixed_weight_summary(results)
+    return {
+        "weight_rebalance_date": target.get("rebalance_date"),
+        "weight_basis": "latest complete target weights applied as fixed weights",
+        "baseline": "equal_weight_fixed_20pct_each",
+        "segments": results,
+        "summary": summary,
+        "optimization": _weight_shrinkage_optimization(
+            returns=returns,
+            equal_weight_returns=equal_weight,
+            segments=segments,
+            current_weights=weights,
+        ),
+    }
+
+
+def _fixed_weight_results(
+    returns: pd.DataFrame,
+    equal_weight: pd.Series,
+    segments: list[dict],
+    weights: dict[str, float],
+) -> list[dict]:
+    """Run the same segment tests for one fixed weight vector."""
+    strategy = pd.Series(
+        returns.loc[:, ETF_AW_SLEEVE_CODES].to_numpy()
+        @ [weights[code] for code in ETF_AW_SLEEVE_CODES],
+        index=returns.index,
+    )
+    results = []
+    for segment in segments:
+        segment_strategy = strategy.loc[segment["start_date"] : segment["end_date"]]
+        segment_equal = equal_weight.loc[segment["start_date"] : segment["end_date"]]
+        if len(segment_strategy) < 20:
+            continue
+        strategy_metrics = _return_metrics(segment_strategy)
+        equal_metrics = _return_metrics(segment_equal)
+        results.append(
+            {
+                **segment,
+                "observation_count": int(len(segment_strategy)),
+                "strategy": strategy_metrics,
+                "equal_weight_baseline": equal_metrics,
+                "comparison": {
+                    "total_return_diff": _value_diff(
+                        strategy_metrics["total_return"],
+                        equal_metrics["total_return"],
+                    ),
+                    "annualized_return_diff": _value_diff(
+                        strategy_metrics["annualized_return"],
+                        equal_metrics["annualized_return"],
+                    ),
+                    "sharpe_ratio_diff": _value_diff(
+                        strategy_metrics["sharpe_ratio"],
+                        equal_metrics["sharpe_ratio"],
+                    ),
+                    "max_drawdown_diff": _value_diff(
+                        strategy_metrics["max_drawdown"],
+                        equal_metrics["max_drawdown"],
+                    ),
+                },
+                "profitable": (
+                    strategy_metrics["total_return"] is not None
+                    and strategy_metrics["total_return"] > 0
+                ),
+                "beats_equal_weight": (
+                    strategy_metrics["total_return"] is not None
+                    and equal_metrics["total_return"] is not None
+                    and strategy_metrics["total_return"]
+                    > equal_metrics["total_return"] + 1e-12
+                ),
+            }
+        )
+    return results
+
+
+def _fixed_weight_summary(results: list[dict]) -> dict:
+    """Summarize segmented fixed-weight backtest results."""
+    positive_segments = sum(1 for item in results if item["profitable"])
+    beat_segments = sum(1 for item in results if item["beats_equal_weight"])
+    diffs = [
+        float(item["comparison"]["total_return_diff"])
+        for item in results
+        if item["comparison"]["total_return_diff"] is not None
+    ]
+    drawdowns = [
+        float(item["strategy"]["max_drawdown"])
+        for item in results
+        if item["strategy"]["max_drawdown"] is not None
+    ]
+    return {
+        "segment_count": len(results),
+        "profitable_segments": positive_segments,
+        "beat_equal_weight_segments": beat_segments,
+        "profitable_ratio": positive_segments / len(results) if results else None,
+        "beat_equal_weight_ratio": beat_segments / len(results) if results else None,
+        "average_total_return_diff": sum(diffs) / len(diffs) if diffs else None,
+        "worst_max_drawdown": min(drawdowns) if drawdowns else None,
+    }
+
+
+def _weight_shrinkage_optimization(
+    *,
+    returns: pd.DataFrame,
+    equal_weight_returns: pd.Series,
+    segments: list[dict],
+    current_weights: dict[str, float],
+) -> dict:
+    """Evaluate simple explainable candidate weight vectors."""
+    equal = {code: 1.0 / len(ETF_AW_SLEEVE_CODES) for code in ETF_AW_SLEEVE_CODES}
+    candidates = []
+    for shrinkage in (0.0, 0.25, 0.5, 0.75, 1.0):
+        weights = {
+            code: (1.0 - shrinkage) * current_weights[code] + shrinkage * equal[code]
+            for code in ETF_AW_SLEEVE_CODES
+        }
+        results = _fixed_weight_results(
+            returns=returns,
+            equal_weight=equal_weight_returns,
+            segments=segments,
+            weights=weights,
+        )
+        summary = _fixed_weight_summary(results)
+        candidates.append(
+            {
+                "candidate_name": (
+                    "当前权重"
+                    if shrinkage == 0
+                    else (
+                        "等权"
+                        if shrinkage == 1
+                        else f"向等权收缩{int(shrinkage * 100)}%"
+                    )
+                ),
+                "shrinkage_to_equal_weight": shrinkage,
+                "weights": weights,
+                "summary": summary,
+                "score": _candidate_score(summary),
+            }
+        )
+    candidates.extend(
+        _grid_weight_candidates(
+            returns=returns,
+            equal_weight_returns=equal_weight_returns,
+            segments=segments,
+        )
+    )
+    best = max(
+        candidates,
+        key=lambda item: (
+            item["summary"]["beat_equal_weight_segments"],
+            item["summary"]["profitable_segments"],
+            item["summary"]["average_total_return_diff"] or -999.0,
+            item["summary"]["worst_max_drawdown"] or -999.0,
+        ),
+    )
+    return {
+        "method": "shrinkage_plus_focused_5pct_grid_search",
+        "objective": "优先提高跑赢等权的分段数，其次盈利分段数、平均相对收益和最差回撤",
+        "best_candidate_name": best["candidate_name"],
+        "candidates": candidates,
+    }
+
+
+def _grid_weight_candidates(
+    *,
+    returns: pd.DataFrame,
+    equal_weight_returns: pd.Series,
+    segments: list[dict],
+) -> list[dict]:
+    """Return the best focused-grid candidate under simple long-only caps."""
+    best: dict | None = None
+    for first in (0.10, 0.15, 0.20, 0.25):
+        for second in (0.20, 0.25, 0.30, 0.35, 0.40, 0.45):
+            for third in (0.20, 0.25, 0.30, 0.35, 0.40):
+                for fourth in (0.15, 0.20, 0.25):
+                    fifth = 1.0 - first - second - third - fourth
+                    if fifth < 0 or fifth > 0.35:
+                        continue
+                    weights_list = [first, second, third, fourth, fifth]
+                    if max(weights_list) > 0.45 or weights_list[4] > 0.35:
+                        continue
+                    weights = dict(zip(ETF_AW_SLEEVE_CODES, weights_list, strict=True))
+                    results = _fixed_weight_results(
+                        returns=returns,
+                        equal_weight=equal_weight_returns,
+                        segments=segments,
+                        weights=weights,
+                    )
+                    summary = _fixed_weight_summary(results)
+                    candidate = {
+                        "candidate_name": "候选优化",
+                        "search_method": "focused_5pct_long_only_grid_caps",
+                        "weights": weights,
+                        "summary": summary,
+                        "score": _candidate_score(summary),
+                    }
+                    if best is None or _candidate_rank(candidate) > _candidate_rank(
+                        best
+                    ):
+                        best = candidate
+    return [] if best is None else [best]
+
+
+def _candidate_rank(candidate: dict) -> tuple:
+    """Return the deterministic optimization rank for one candidate."""
+    summary = candidate["summary"]
+    return (
+        summary["beat_equal_weight_segments"],
+        summary["profitable_segments"],
+        summary["average_total_return_diff"] or -999.0,
+        summary["worst_max_drawdown"] or -999.0,
+    )
+
+
+def _candidate_score(summary: dict) -> float:
+    """Return a simple display score for ranking candidate weight vectors."""
+    return (
+        float(summary.get("beat_equal_weight_segments") or 0) * 100.0
+        + float(summary.get("profitable_segments") or 0) * 10.0
+        + float(summary.get("average_total_return_diff") or 0.0) * 100.0
+        + float(summary.get("worst_max_drawdown") or 0.0) * 10.0
+    )
+
+
+def _backtest_segments(dates: list[date]) -> list[dict]:
+    """Build full, recency, yearly, and split segments for fixed-weight tests."""
+    start = min(dates)
+    end = max(dates)
+    split = dates[int(len(dates) * 0.7)]
+    segments = [
+        {
+            "segment_name": "全可比区间",
+            "segment_type": "full",
+            "start_date": start,
+            "end_date": end,
+        },
+        {
+            "segment_name": "样本内前70%",
+            "segment_type": "in_sample",
+            "start_date": start,
+            "end_date": split,
+        },
+        {
+            "segment_name": "样本外后30%",
+            "segment_type": "out_of_sample",
+            "start_date": split,
+            "end_date": end,
+        },
+    ]
+    if len(dates) >= 126:
+        segments.append(
+            {
+                "segment_name": "近6个月",
+                "segment_type": "recent_6m",
+                "start_date": dates[-126],
+                "end_date": end,
+            }
+        )
+    if len(dates) >= 252:
+        segments.append(
+            {
+                "segment_name": "近12个月",
+                "segment_type": "recent_12m",
+                "start_date": dates[-252],
+                "end_date": end,
+            }
+        )
+    for year in sorted({value.year for value in dates}):
+        year_dates = [value for value in dates if value.year == year]
+        if len(year_dates) >= 60:
+            segments.append(
+                {
+                    "segment_name": f"{year}年",
+                    "segment_type": "calendar_year",
+                    "start_date": min(year_dates),
+                    "end_date": max(year_dates),
+                }
+            )
+    return segments
+
+
+def _return_metrics(returns: pd.Series) -> dict[str, float | None]:
+    """Calculate simple long-only portfolio metrics from daily returns."""
+    if returns.empty:
+        return {
+            "total_return": None,
+            "annualized_return": None,
+            "annualized_volatility": None,
+            "sharpe_ratio": None,
+            "max_drawdown": None,
+        }
+    series = returns.astype(float)
+    nav = (1.0 + series).cumprod()
+    final_nav = float(nav.iloc[-1])
+    annualized_return = final_nav ** (252.0 / len(series)) - 1.0
+    annualized_volatility = float(series.std(ddof=1) * math.sqrt(252))
+    sharpe_ratio = (
+        float(annualized_return / annualized_volatility)
+        if annualized_volatility > 0
+        else None
+    )
+    drawdown = nav / nav.cummax() - 1.0
+    return {
+        "total_return": float(final_nav - 1.0),
+        "annualized_return": float(annualized_return),
+        "annualized_volatility": annualized_volatility,
+        "sharpe_ratio": sharpe_ratio,
+        "max_drawdown": float(drawdown.min()),
+    }
+
+
+def _daily_nav_dates(frame: pd.DataFrame) -> list[date]:
+    """Return sorted dates that have daily NAV observations in local kernel."""
+    if frame.empty or "observation_date" not in frame.columns:
+        return []
+    rows = frame[frame["observation_type"].astype(str).eq("daily_nav")].copy()
+    return sorted(
+        pd.to_datetime(rows["observation_date"], errors="coerce")
+        .dt.date.dropna()
+        .unique()
+    )
+
+
+def _finite_or_none(value: object) -> float | None:
+    """Return a finite float or None for API JSON safety."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _value_diff(left: object, right: object) -> float | None:
+    """Return numeric left-minus-right when both values are finite."""
+    left_value = _finite_or_none(left)
+    right_value = _finite_or_none(right)
+    if left_value is None or right_value is None:
+        return None
+    return left_value - right_value
+
+
+def _json_safe(value: object) -> object:
+    """Convert pandas/numpy/date values into strict JSON-compatible values."""
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, date):
+        return value.isoformat()
+    if pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        return _json_safe(value.item())
+    return value
 
 
 @router.get("/insight/latest", response_model=WorkflowInsightResponse)

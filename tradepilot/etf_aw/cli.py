@@ -1953,7 +1953,9 @@ def _robustness_coverage(
             blocking.append("target weight is incomplete inside comparable range")
         if baseline_missing_weights:
             blocking.append("baseline weight is incomplete inside comparable range")
-    diagnostics = _diagnostics(target_frame) + _diagnostics(baseline_frame)
+    diagnostics = _diagnostics(
+        target_frame, comparable_start, comparable_end
+    ) + _diagnostics(baseline_frame, comparable_start, comparable_end)
     if _blocking_diagnostics(diagnostics):
         blocking.append("backtest kernel contains blocking diagnostic rows")
     strategy_status_counts = _value_counts(
@@ -2051,7 +2053,12 @@ def _robustness_scenario(
     cost_bps: int,
     blocked: bool,
 ) -> dict:
-    gross_metrics = _kernel_metrics(frame, coverage)
+    gross_metrics: dict[str, float | None] = {}
+    if not blocked:
+        rows = _daily_nav(frame, coverage)
+        returns = [float(row["portfolio_return"]) for _, row in rows.iterrows()]
+        gross_final_nav = float((1.0 + pd.Series(returns, dtype=float)).prod())
+        gross_metrics = _backtest_metric_values(returns, [], gross_final_nav)
     base = {
         "cost_scenario": scenario_name,
         "cost_bps_per_executed_notional": cost_bps,
@@ -2080,9 +2087,7 @@ def _robustness_scenario(
     }
     if blocked:
         return base
-    rows = _daily_nav(frame, coverage)
     turnover = _turnover_by_date(frame, coverage)
-    returns = [float(row["portfolio_return"]) for _, row in rows.iterrows()]
     costs = _cost_fractions(
         rows,
         turnover,
@@ -2388,10 +2393,22 @@ def _comparable_range(
     return start, end
 
 
-def _diagnostics(frame: pd.DataFrame) -> list[dict]:
+def _diagnostics(
+    frame: pd.DataFrame, start: date | None = None, end: date | None = None
+) -> list[dict]:
     if frame.empty:
         return []
     rows = frame[frame["observation_type"].astype(str).eq("diagnostic")]
+    if start is not None and end is not None and not rows.empty:
+        rows = rows.copy()
+        rows["observation_date"] = pd.to_datetime(
+            rows["observation_date"], errors="coerce"
+        ).dt.date
+        rows = rows[
+            rows["observation_date"].notna()
+            & (rows["observation_date"] >= start)
+            & (rows["observation_date"] <= end)
+        ]
     result = []
     for value in rows["quality_notes_json"].tolist():
         if isinstance(value, str):
