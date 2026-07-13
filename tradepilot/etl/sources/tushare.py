@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -34,8 +34,13 @@ class TushareSourceAdapter(BaseSourceAdapter):
         "rates.gov_curve_points",
     }
 
-    def __init__(self, client: TushareClient | Any | None = None) -> None:
+    def __init__(
+        self,
+        client: TushareClient | Any | None = None,
+        akshare_module: Any | None = None,
+    ) -> None:
         self._client = client or TushareClient()
+        self._akshare = akshare_module
 
     def supports_dataset(self, dataset_name: str) -> bool:
         """Return whether this adapter can fetch one dataset."""
@@ -183,9 +188,51 @@ class TushareSourceAdapter(BaseSourceAdapter):
 
     def _fetch_gov_curve_points(self, request: IngestionRequest) -> pd.DataFrame:
         start_date, end_date = _date_window(request)
-        return self._client.get_gov_curve_points(
-            start_date.isoformat(), end_date.isoformat()
-        )
+        primary_error: Exception | None = None
+        try:
+            frame = self._client.get_gov_curve_points(
+                start_date.isoformat(), end_date.isoformat()
+            )
+            if not frame.empty:
+                return frame
+        except Exception as exc:
+            primary_error = exc
+        fallback = self._fetch_akshare_gov_curve_points(start_date, end_date)
+        if not fallback.empty:
+            return fallback
+        if primary_error is not None:
+            raise primary_error
+        return fallback
+
+    def _fetch_akshare_gov_curve_points(
+        self, start_date: date, end_date: date
+    ) -> pd.DataFrame:
+        """Return ChinaBond government curve points from AKShare fallback."""
+
+        akshare = self._akshare or _import_akshare()
+        if akshare is None or not hasattr(akshare, "bond_china_yield"):
+            return _empty_gov_curve_points()
+        frames: list[pd.DataFrame] = []
+        for window_start, window_end in _akshare_curve_windows(start_date, end_date):
+            frame = akshare.bond_china_yield(
+                start_date=window_start.strftime("%Y%m%d"),
+                end_date=window_end.strftime("%Y%m%d"),
+            )
+            if frame is None or frame.empty:
+                continue
+            normalized = frame.copy()
+            if "曲线名称" in normalized.columns:
+                normalized = normalized[
+                    normalized["曲线名称"].astype(str).eq("中债国债收益率曲线")
+                ]
+            if normalized.empty:
+                continue
+            normalized = normalized.rename(
+                columns={"日期": "curve_date", "1年": "1y", "10年": "10y"}
+            )
+            normalized["curve_code"] = "cn_gov_bond"
+            frames.append(normalized)
+        return _concat_or_empty(frames, list(_empty_gov_curve_points().columns))
 
 
 def _date_window(request: IngestionRequest) -> tuple[date, date]:
@@ -280,6 +327,41 @@ def _concat_or_empty(frames: list[pd.DataFrame], columns: list[str]) -> pd.DataF
     if not non_empty:
         return pd.DataFrame({column: pd.Series(dtype="object") for column in columns})
     return pd.concat(non_empty, ignore_index=True)
+
+
+def _import_akshare() -> Any | None:
+    """Import AKShare lazily for the government curve fallback."""
+
+    try:
+        import akshare as ak
+    except ImportError:
+        return None
+    return ak
+
+
+def _akshare_curve_windows(start_date: date, end_date: date) -> list[tuple[date, date]]:
+    """Return windows shorter than one year for AKShare curve requests."""
+
+    windows: list[tuple[date, date]] = []
+    current = start_date
+    while current <= end_date:
+        window_end = min(current + timedelta(days=330), end_date)
+        windows.append((current, window_end))
+        current = window_end + timedelta(days=1)
+    return windows
+
+
+def _empty_gov_curve_points() -> pd.DataFrame:
+    """Return an empty government curve payload frame."""
+
+    return pd.DataFrame(
+        {
+            "curve_date": pd.Series(dtype="datetime64[ns]"),
+            "curve_code": pd.Series(dtype="object"),
+            "1y": pd.Series(dtype="float64"),
+            "10y": pd.Series(dtype="float64"),
+        }
+    )
 
 
 def _empty_market_daily(instrument_type: str) -> pd.DataFrame:

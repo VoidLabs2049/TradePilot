@@ -236,7 +236,7 @@ strategy_context
 
 已定位历史区间 `unavailable` 的主因：早期月份 market regime 已可用，但 `macro_rates_context_status = unavailable`，Stage G 旧规则把整个 strategy context 硬降为 `unavailable`，risk budget 随之降级。现已把 market-only 且市场上下文完整的场景调整为 `partial / degraded_research`，risk budget 对应输出 `partial`，并用较低 confidence cap 约束主动 tilt。
 
-本地已补回 `macro.slow_fields`、`rates.daily_rates`、`rates.lpr` 的 2025-01 到 2026-05 历史数据；`rates.gov_curve_points` 因 Tushare `yc_cb` 接口权限不足仍只能覆盖 2026-04 以后。当前 risk budget 状态为 75 行 `partial`、10 行 `complete`。人工检查记录见 `docs/etf-all-weather-implementation/risk-budget-manual-check-2026-07-06.md`。
+本地已补回 `macro.slow_fields`、`rates.daily_rates`、`rates.lpr` 的 2025-01 到 2026-05 历史数据；`rates.gov_curve_points` 原因是 Tushare `yc_cb` 接口权限不足，当前 pipeline 已增加 AKShare `bond_china_yield` fallback，需重跑历史同步后补齐本地 lakehouse。当前 risk budget 状态为 75 行 `partial`、10 行 `complete`。人工检查记录见 `docs/etf-all-weather-implementation/risk-budget-manual-check-2026-07-06.md`。
 
 ### Stage J：目标权重 artifact
 
@@ -810,7 +810,7 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 1. 在新分支 `feat/etf-aw-artifact-health-evaluation` 上推进 artifact health 和 evaluation 阶段。
 2. 更新本文档为当前事实入口，明确 Stage H/I/J 已落地，下一步从 artifact health check 开始。
 3. 已定位并修复 `derived.etf_aw_risk_budget` 多数月份为 `unavailable` 的主因：market-only 场景不再硬阻断，改为 `partial / degraded_research`。
-4. 已补充 2025-01 到 2026-05 的 PMI、SHIBOR、LPR 历史数据；国债曲线历史补数受 Tushare `yc_cb` 权限限制，仍需后续处理。
+4. 已补充 2025-01 到 2026-05 的 PMI、SHIBOR、LPR 历史数据；国债曲线历史补数已增加 AKShare `bond_china_yield` fallback，仍需重跑同步和下游 artifact。
 5. 已重跑 `derived.etf_aw_strategy_context`、`derived.etf_aw_risk_budget`、`derived.etf_aw_target_weight` 和 `derived.etf_aw_backtest_kernel`。当前 risk budget 为 75 行 `partial`、10 行 `complete`。
 6. 补充 risk budget 人工检查记录，覆盖状态分布、预算合计、tilt 方向、confidence 生效方式和降级原因。已完成。
 7. 已复核并修复 `2025-03-20` target weight 为 `unavailable` 的原因：risk budget rounding drift 略超校验阈值，修复后为 `partial`。
