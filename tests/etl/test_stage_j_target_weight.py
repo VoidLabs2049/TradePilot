@@ -111,12 +111,10 @@ class StageJTargetWeightTests(unittest.TestCase):
 
     def test_single_insufficient_volatility_outputs_partial_rows(self) -> None:
         rebalance_date = date(2024, 7, 22)
-        budget = pd.DataFrame(
-            [
-                self._budget_row(rebalance_date, role, 0.2, "complete")
-                for role in ETF_AW_SLEEVE_ROLE_ORDER
-            ]
-        )
+        budget = pd.DataFrame([
+            self._budget_row(rebalance_date, role, 0.2, "complete")
+            for role in ETF_AW_SLEEVE_ROLE_ORDER
+        ])
         panel = self._panel(rebalance_date, missing_role="cash", observations=63)
 
         frame = self.service._make_etf_aw_target_weight_frame(budget, panel)
@@ -138,12 +136,10 @@ class StageJTargetWeightTests(unittest.TestCase):
 
     def test_multiple_insufficient_volatility_blocks_write(self) -> None:
         rebalance_date = date(2024, 7, 22)
-        budget = pd.DataFrame(
-            [
-                self._budget_row(rebalance_date, role, 0.2, "complete")
-                for role in ETF_AW_SLEEVE_ROLE_ORDER
-            ]
-        )
+        budget = pd.DataFrame([
+            self._budget_row(rebalance_date, role, 0.2, "complete")
+            for role in ETF_AW_SLEEVE_ROLE_ORDER
+        ])
         panel = self._panel(rebalance_date, missing_role=None, observations=20)
 
         frame = self.service._make_etf_aw_target_weight_frame(budget, panel)
@@ -152,12 +148,10 @@ class StageJTargetWeightTests(unittest.TestCase):
 
     def test_missing_all_v1_panel_rows_blocks_without_key_error(self) -> None:
         rebalance_date = date(2024, 7, 22)
-        budget = pd.DataFrame(
-            [
-                self._budget_row(rebalance_date, role, 0.2, "complete")
-                for role in ETF_AW_SLEEVE_ROLE_ORDER
-            ]
-        )
+        budget = pd.DataFrame([
+            self._budget_row(rebalance_date, role, 0.2, "complete")
+            for role in ETF_AW_SLEEVE_ROLE_ORDER
+        ])
         panel = self._panel(rebalance_date, missing_role=None, observations=80)
         panel["sleeve_code"] = "000000.SH"
         panel["instrument_id"] = "000000.SH"
@@ -224,12 +218,10 @@ class StageJTargetWeightTests(unittest.TestCase):
     def test_bootstrap_writes_and_read_model_returns_latest_contract(self) -> None:
         rebalance_date = date(2024, 7, 22)
         self.service._write_etf_aw_risk_budget(
-            pd.DataFrame(
-                [
-                    self._budget_row(rebalance_date, role, 0.2, "complete")
-                    for role in ETF_AW_SLEEVE_ROLE_ORDER
-                ]
-            )
+            pd.DataFrame([
+                self._budget_row(rebalance_date, role, 0.2, "complete")
+                for role in ETF_AW_SLEEVE_ROLE_ORDER
+            ])
         )
         self.service._write_etf_aw_sleeve_daily(
             self._panel(rebalance_date, missing_role=None, observations=70)
@@ -370,12 +362,10 @@ class StageJTargetWeightTests(unittest.TestCase):
     def test_bootstrap_requires_calendar_aligned_risk_budget(self) -> None:
         rebalance_date = date(2024, 7, 22)
         self.service._write_etf_aw_risk_budget(
-            pd.DataFrame(
-                [
-                    self._budget_row(rebalance_date, role, 0.2, "complete")
-                    for role in ETF_AW_SLEEVE_ROLE_ORDER
-                ]
-            )
+            pd.DataFrame([
+                self._budget_row(rebalance_date, role, 0.2, "complete")
+                for role in ETF_AW_SLEEVE_ROLE_ORDER
+            ])
         )
         self.service._write_etf_aw_sleeve_daily(
             self._panel(rebalance_date, missing_role=None, observations=70)
@@ -406,12 +396,10 @@ class StageJTargetWeightTests(unittest.TestCase):
             self._target_weight_frame(previous_date, previous_weights)
         )
         self.service._write_etf_aw_risk_budget(
-            pd.DataFrame(
-                [
-                    self._budget_row(rebalance_date, role, 0.2, "complete")
-                    for role in ETF_AW_SLEEVE_ROLE_ORDER
-                ]
-            )
+            pd.DataFrame([
+                self._budget_row(rebalance_date, role, 0.2, "complete")
+                for role in ETF_AW_SLEEVE_ROLE_ORDER
+            ])
         )
         self.service._write_etf_aw_sleeve_daily(
             self._panel(rebalance_date, missing_role=None, observations=70)
@@ -432,12 +420,10 @@ class StageJTargetWeightTests(unittest.TestCase):
 
     def test_future_risk_budget_source_date_blocks_target_weight(self) -> None:
         rebalance_date = date(2024, 7, 22)
-        budget = pd.DataFrame(
-            [
-                self._budget_row(rebalance_date, role, 0.2, "complete")
-                for role in ETF_AW_SLEEVE_ROLE_ORDER
-            ]
-        )
+        budget = pd.DataFrame([
+            self._budget_row(rebalance_date, role, 0.2, "complete")
+            for role in ETF_AW_SLEEVE_ROLE_ORDER
+        ])
         budget["source_regime_rebalance_date"] = date(2024, 7, 23)
         panel = self._panel(rebalance_date, missing_role=None, observations=70)
 
@@ -453,12 +439,10 @@ class StageJTargetWeightTests(unittest.TestCase):
             self._equal_role_weights(),
             strategy_version="experimental_v2",
         )
-        budget = pd.DataFrame(
-            [
-                self._budget_row(rebalance_date, role, 0.2, "complete")
-                for role in ETF_AW_SLEEVE_ROLE_ORDER
-            ]
-        )
+        budget = pd.DataFrame([
+            self._budget_row(rebalance_date, role, 0.2, "complete")
+            for role in ETF_AW_SLEEVE_ROLE_ORDER
+        ])
         panel = self._panel(rebalance_date, missing_role=None, observations=70)
 
         frame = self.service._make_etf_aw_target_weight_frame(
@@ -475,12 +459,10 @@ class StageJTargetWeightTests(unittest.TestCase):
     def test_backtest_kernel_consumes_target_weight_artifact(self) -> None:
         rebalance_date = date(2024, 7, 22)
         self.service._write_etf_aw_risk_budget(
-            pd.DataFrame(
-                [
-                    self._budget_row(rebalance_date, role, 0.2, "complete")
-                    for role in ETF_AW_SLEEVE_ROLE_ORDER
-                ]
-            )
+            pd.DataFrame([
+                self._budget_row(rebalance_date, role, 0.2, "complete")
+                for role in ETF_AW_SLEEVE_ROLE_ORDER
+            ])
         )
         self.service._write_etf_aw_sleeve_daily(
             self._panel(rebalance_date, missing_role=None, observations=70)
@@ -519,15 +501,13 @@ class StageJTargetWeightTests(unittest.TestCase):
 
     def test_update_plan_runs_target_weight_after_risk_budget(self) -> None:
         conn = duckdb.connect(":memory:")
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE etl_source_watermarks (
                 dataset_name VARCHAR PRIMARY KEY,
                 latest_fetched_date DATE,
                 updated_at TIMESTAMP
             )
-        """
-        )
+        """)
 
         plan = update_module.build_update_plan(
             conn=conn,
@@ -645,26 +625,24 @@ class StageJTargetWeightTests(unittest.TestCase):
         for role in ETF_AW_SLEEVE_ROLE_ORDER:
             count = 10 if role == missing_role else len(dates)
             for index, trade_date in enumerate(dates[:count]):
-                rows.append(
-                    {
-                        "sleeve_code": ETF_AW_SLEEVE_CODE_BY_ROLE[role],
-                        "sleeve_role": role,
-                        "instrument_id": ETF_AW_SLEEVE_CODE_BY_ROLE[role],
-                        "trade_date": trade_date,
-                        "open": 1.0,
-                        "high": 1.0,
-                        "low": 1.0,
-                        "close": 1.0 + index * 0.01,
-                        "adj_factor": 1.0,
-                        "adj_close": 1.0 + index * 0.01,
-                        "adj_pct_chg": 0.8 + (index % 5) * 0.1,
-                        "vol": 1.0,
-                        "amount": 1.0,
-                        "source_name": "fixture",
-                        "ingested_at": pd.Timestamp("2024-07-22 15:00:00"),
-                        "quality_status": "pass",
-                    }
-                )
+                rows.append({
+                    "sleeve_code": ETF_AW_SLEEVE_CODE_BY_ROLE[role],
+                    "sleeve_role": role,
+                    "instrument_id": ETF_AW_SLEEVE_CODE_BY_ROLE[role],
+                    "trade_date": trade_date,
+                    "open": 1.0,
+                    "high": 1.0,
+                    "low": 1.0,
+                    "close": 1.0 + index * 0.01,
+                    "adj_factor": 1.0,
+                    "adj_close": 1.0 + index * 0.01,
+                    "adj_pct_chg": 0.8 + (index % 5) * 0.1,
+                    "vol": 1.0,
+                    "amount": 1.0,
+                    "source_name": "fixture",
+                    "ingested_at": pd.Timestamp("2024-07-22 15:00:00"),
+                    "quality_status": "pass",
+                })
         return pd.DataFrame(rows)
 
     def _target_weight_frame(
@@ -676,33 +654,31 @@ class StageJTargetWeightTests(unittest.TestCase):
     ) -> pd.DataFrame:
         rows = []
         for role in ETF_AW_SLEEVE_ROLE_ORDER:
-            rows.append(
-                {
-                    "schema_version": "etf_aw_target_weight_v1",
-                    "contract_version": "etf_aw_target_weight_contract_v1",
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
-                    "rebalance_date": rebalance_date,
-                    "effective_date": rebalance_date,
-                    "strategy_name": "etf_aw_v1",
-                    "strategy_version": strategy_version,
-                    "sleeve_code": ETF_AW_SLEEVE_CODE_BY_ROLE[role],
-                    "sleeve_role": role,
-                    "risk_budget": 0.2,
-                    "volatility_estimate": 0.01,
-                    "volatility_floor": 0.005,
-                    "raw_target_weight": weights_by_role[role],
-                    "constrained_target_weight": weights_by_role[role],
-                    "target_weight": weights_by_role[role],
-                    "target_weight_status": "complete",
-                    "optimizer_name": "budgeted_inverse_vol",
-                    "optimizer_basis": "fixture",
-                    "turnover_estimate": None,
-                    "quality_notes_json": "{}",
-                    "source_risk_budget_rebalance_date": rebalance_date,
-                    "source_sleeve_daily_max_trade_date": rebalance_date,
-                    "ingested_at": pd.Timestamp("2024-06-24 15:00:00"),
-                }
-            )
+            rows.append({
+                "schema_version": "etf_aw_target_weight_v1",
+                "contract_version": "etf_aw_target_weight_contract_v1",
+                "calendar_name": "etf_aw_v1_monthly_post_20",
+                "rebalance_date": rebalance_date,
+                "effective_date": rebalance_date,
+                "strategy_name": "etf_aw_v1",
+                "strategy_version": strategy_version,
+                "sleeve_code": ETF_AW_SLEEVE_CODE_BY_ROLE[role],
+                "sleeve_role": role,
+                "risk_budget": 0.2,
+                "volatility_estimate": 0.01,
+                "volatility_floor": 0.005,
+                "raw_target_weight": weights_by_role[role],
+                "constrained_target_weight": weights_by_role[role],
+                "target_weight": weights_by_role[role],
+                "target_weight_status": "complete",
+                "optimizer_name": "budgeted_inverse_vol",
+                "optimizer_basis": "fixture",
+                "turnover_estimate": None,
+                "quality_notes_json": "{}",
+                "source_risk_budget_rebalance_date": rebalance_date,
+                "source_sleeve_daily_max_trade_date": rebalance_date,
+                "ingested_at": pd.Timestamp("2024-06-24 15:00:00"),
+            })
         return pd.DataFrame(rows)
 
     def _equal_role_weights(self) -> dict[str, float]:

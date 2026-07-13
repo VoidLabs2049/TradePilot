@@ -392,16 +392,14 @@ class ETLService:
             self._insert_raw_batch(raw_batch_id, run_id, fetch_result, raw_write)
 
             context = dict(effective_request.context)
-            context.update(
-                {
-                    "dataset_name": dataset_name,
-                    "source_name": source.source_name,
-                    "raw_batch_id": raw_batch_id,
-                    "run_id": run_id,
-                    "conn": self.conn,
-                    "instrument_type": _instrument_type_for_dataset(dataset_name),
-                }
-            )
+            context.update({
+                "dataset_name": dataset_name,
+                "source_name": source.source_name,
+                "raw_batch_id": raw_batch_id,
+                "run_id": run_id,
+                "conn": self.conn,
+                "instrument_type": _instrument_type_for_dataset(dataset_name),
+            })
             normalizer = get_normalizer(dataset_name)
             normalized = normalizer.normalize(fetch_result.payload, context)
             canonical = normalized.canonical_payload
@@ -593,7 +591,8 @@ class ETLService:
             ).fetchdf()
         else:
             rows = self.conn.execute(
-                "SELECT * FROM etl_ingestion_runs WHERE dataset_name = ? ORDER BY started_at DESC",
+                "SELECT * FROM etl_ingestion_runs WHERE dataset_name = ? ORDER BY"
+                " started_at DESC",
                 [dataset_name],
             ).fetchdf()
         return rows.where(pd.notna(rows), None).to_dict("records")
@@ -626,7 +625,8 @@ class ETLService:
             raise KeyError(f"missing source adapter: {definition.primary_source}")
         if not adapter.supports_dataset(definition.dataset_name):
             raise KeyError(
-                f"source adapter {adapter.source_name} does not support {definition.dataset_name}"
+                f"source adapter {adapter.source_name} does not support"
+                f" {definition.dataset_name}"
             )
         return adapter
 
@@ -851,31 +851,23 @@ class ETLService:
         frame = canonical.copy()
         frame["updated_at"] = _utc_now()
         self.conn.register("stage_b_calendar", frame)
-        existing = int(
-            self.conn.execute(
-                """
+        existing = int(self.conn.execute("""
                 SELECT COUNT(*) FROM canonical_trading_calendar
                 WHERE (exchange, trade_date) IN (
                     SELECT exchange, trade_date FROM stage_b_calendar
                 )
-                """
-            ).fetchone()[0]
-        )
-        self.conn.execute(
-            """
+                """).fetchone()[0])
+        self.conn.execute("""
             DELETE FROM canonical_trading_calendar
             WHERE (exchange, trade_date) IN (
                 SELECT exchange, trade_date FROM stage_b_calendar
             )
-            """
-        )
-        self.conn.execute(
-            """
+            """)
+        self.conn.execute("""
             INSERT INTO canonical_trading_calendar
             SELECT exchange, trade_date, is_open, pretrade_date, updated_at
             FROM stage_b_calendar
-            """
-        )
+            """)
         self.conn.unregister("stage_b_calendar")
         return CanonicalWriteResult(
             records_written=len(frame),
@@ -889,33 +881,25 @@ class ETLService:
         frame = canonical.copy()
         frame["updated_at"] = _utc_now()
         self.conn.register("stage_b_instruments", frame)
-        existing = int(
-            self.conn.execute(
-                """
+        existing = int(self.conn.execute("""
                 SELECT COUNT(*) FROM canonical_instruments
                 WHERE instrument_id IN (
                     SELECT instrument_id FROM stage_b_instruments
                 )
-                """
-            ).fetchone()[0]
-        )
-        self.conn.execute(
-            """
+                """).fetchone()[0])
+        self.conn.execute("""
             DELETE FROM canonical_instruments
             WHERE instrument_id IN (
                 SELECT instrument_id FROM stage_b_instruments
             )
-            """
-        )
-        self.conn.execute(
-            """
+            """)
+        self.conn.execute("""
             INSERT INTO canonical_instruments
             SELECT instrument_id, source_instrument_id, instrument_name,
                    instrument_type, exchange, list_date, delist_date,
                    is_active, source_name, updated_at
             FROM stage_b_instruments
-            """
-        )
+            """)
         self.conn.unregister("stage_b_instruments")
         return CanonicalWriteResult(
             records_written=len(frame),
@@ -1462,16 +1446,13 @@ class ETLService:
         frame["updated_at"] = now
         self.conn.register("stage_c_etf_aw_sleeves", frame)
         try:
-            self.conn.execute(
-                """
+            self.conn.execute("""
                 DELETE FROM canonical_sleeves
                 WHERE sleeve_code IN (
                     SELECT sleeve_code FROM stage_c_etf_aw_sleeves
                 )
-                """
-            )
-            self.conn.execute(
-                """
+                """)
+            self.conn.execute("""
                 INSERT INTO canonical_sleeves (
                     sleeve_code, sleeve_name, sleeve_type, is_active, updated_at,
                     sleeve_role, listing_exchange, benchmark_name, list_date,
@@ -1481,32 +1462,28 @@ class ETLService:
                        sleeve_role, listing_exchange, benchmark_name, list_date,
                        exposure_note, created_at
                 FROM stage_c_etf_aw_sleeves
-                """
-            )
+                """)
         finally:
             self.conn.unregister("stage_c_etf_aw_sleeves")
 
     def _ensure_etf_aw_sleeve_instruments(self, rows: list[dict[str, Any]]) -> None:
-        frame = pd.DataFrame(
-            [
-                {
-                    "instrument_id": row["sleeve_code"],
-                    "source_instrument_id": row["sleeve_code"],
-                    "instrument_name": row["sleeve_name"],
-                    "instrument_type": "etf",
-                    "exchange": row["listing_exchange"],
-                    "list_date": row["list_date"],
-                    "delist_date": None,
-                    "is_active": True,
-                    "source_name": "static_etf_aw_v1",
-                }
-                for row in rows
-            ]
-        )
+        frame = pd.DataFrame([
+            {
+                "instrument_id": row["sleeve_code"],
+                "source_instrument_id": row["sleeve_code"],
+                "instrument_name": row["sleeve_name"],
+                "instrument_type": "etf",
+                "exchange": row["listing_exchange"],
+                "list_date": row["list_date"],
+                "delist_date": None,
+                "is_active": True,
+                "source_name": "static_etf_aw_v1",
+            }
+            for row in rows
+        ])
         self.conn.register("stage_c_etf_aw_instruments", frame)
         try:
-            self.conn.execute(
-                """
+            self.conn.execute("""
                 INSERT INTO canonical_instruments (
                     instrument_id, source_instrument_id, instrument_name,
                     instrument_type, exchange, list_date, delist_date, is_active,
@@ -1519,35 +1496,28 @@ class ETLService:
                 LEFT JOIN canonical_instruments c
                   ON s.instrument_id = c.instrument_id
                 WHERE c.instrument_id IS NULL
-                """
-            )
+                """)
         finally:
             self.conn.unregister("stage_c_etf_aw_instruments")
 
     def _validate_etf_aw_sleeves(self) -> dict[str, bool]:
         self.conn.register("stage_c_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            rows = self.conn.execute(
-                """
+            rows = self.conn.execute("""
                 SELECT s.sleeve_code, s.sleeve_role, s.listing_exchange,
                        s.exposure_note, s.is_active
                 FROM canonical_sleeves s
                 JOIN stage_c_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 ORDER BY s.sleeve_code
-                """
-            ).fetchall()
-            instrument_count = int(
-                self.conn.execute(
-                    """
+                """).fetchall()
+            instrument_count = int(self.conn.execute("""
                     SELECT COUNT(*)
                     FROM canonical_instruments i
                     JOIN stage_c_etf_aw_codes c
                       ON i.instrument_id = c.sleeve_code
                     WHERE i.instrument_type = 'etf'
-                    """
-                ).fetchone()[0]
-            )
+                    """).fetchone()[0])
         finally:
             self.conn.unregister("stage_c_etf_aw_codes")
         active_codes = [row[0] for row in rows if row[4] is True]
@@ -1676,15 +1646,13 @@ class ETLService:
     ) -> pd.DataFrame:
         self.conn.register("stage_c_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            sleeves = self.conn.execute(
-                """
+            sleeves = self.conn.execute("""
                 SELECT s.sleeve_code, s.sleeve_role
                 FROM canonical_sleeves s
                 JOIN stage_c_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 WHERE s.is_active = TRUE
-                """
-            ).fetchdf()
+                """).fetchdf()
         finally:
             self.conn.unregister("stage_c_etf_aw_codes")
         daily = daily.copy()
@@ -1837,8 +1805,7 @@ class ETLService:
         return frame
 
     def _latest_market_watermarks(self) -> dict[str, date | None]:
-        rows = self.conn.execute(
-            """
+        rows = self.conn.execute("""
             SELECT dataset_name, latest_fetched_date
             FROM etl_source_watermarks
             WHERE dataset_name IN (
@@ -1846,8 +1813,7 @@ class ETLService:
                 'market.etf_adj_factor',
                 'reference.trading_calendar'
             )
-            """
-        ).fetchall()
+            """).fetchall()
         return {str(row[0]): row[1] for row in rows}
 
     def _make_etf_aw_rebalance_snapshot_frame(
@@ -1891,15 +1857,13 @@ class ETLService:
     def _active_etf_aw_sleeves_frame(self) -> pd.DataFrame:
         self.conn.register("stage_d_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            frame = self.conn.execute(
-                """
+            frame = self.conn.execute("""
                 SELECT s.sleeve_code, s.sleeve_role
                 FROM canonical_sleeves s
                 JOIN stage_d_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 WHERE s.is_active = TRUE
-                """
-            ).fetchdf()
+                """).fetchdf()
         finally:
             self.conn.unregister("stage_d_etf_aw_codes")
         if frame.empty:
@@ -2066,7 +2030,9 @@ class ETLService:
                 "requested_start": start.isoformat(),
                 "requested_end": end.isoformat(),
                 "records_written": 0,
-                "error_message": "ETF all-weather regime score has no valid rebalance keys",
+                "error_message": (
+                    "ETF all-weather regime score has no valid rebalance keys"
+                ),
             }
         validation = _validate_regime_score_frame(score)
         if not all(validation.values()):
@@ -2166,7 +2132,9 @@ class ETLService:
                 "requested_start": start.isoformat(),
                 "requested_end": end.isoformat(),
                 "records_written": 0,
-                "error_message": "ETF all-weather market features have no valid rebalance keys",
+                "error_message": (
+                    "ETF all-weather market features have no valid rebalance keys"
+                ),
             }
         validation = _validate_market_features_frame(features)
         if not all(validation.values()):
@@ -2277,7 +2245,9 @@ class ETLService:
                 "requested_start": start.isoformat(),
                 "requested_end": end.isoformat(),
                 "records_written": 0,
-                "error_message": "ETF all-weather strategy context has no valid rebalance keys",
+                "error_message": (
+                    "ETF all-weather strategy context has no valid rebalance keys"
+                ),
             }
         validation = _validate_strategy_context_frame(context)
         if not all(validation.values()):
@@ -2392,7 +2362,9 @@ class ETLService:
                 "requested_start": start.isoformat(),
                 "requested_end": end.isoformat(),
                 "records_written": 0,
-                "error_message": "ETF all-weather risk budget has no valid rebalance keys",
+                "error_message": (
+                    "ETF all-weather risk budget has no valid rebalance keys"
+                ),
             }
         health_findings = _risk_budget_health_findings(budget)
         validation = _validate_risk_budget_frame(budget)
@@ -2487,10 +2459,7 @@ class ETLService:
         )
         if risk_budget.empty:
             return _failed(
-                (
-                    "ETF all-weather risk budget has no calendar-aligned "
-                    "rebalance keys"
-                ),
+                "ETF all-weather risk budget has no calendar-aligned rebalance keys",
             )
         panel = self._read_partitioned_dataset(
             "derived.etf_aw_sleeve_daily",
@@ -2693,8 +2662,7 @@ class ETLService:
             _ETF_AW_BACKTEST_KERNEL_PROFILE
             if weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET
             else (
-                f"{_ETF_AW_BACKTEST_KERNEL_PROFILE}."
-                f"{baseline_name}.{baseline_version}"
+                f"{_ETF_AW_BACKTEST_KERNEL_PROFILE}.{baseline_name}.{baseline_version}"
             )
         )
 
@@ -2892,7 +2860,9 @@ class ETLService:
                 "requested_start": start.isoformat(),
                 "requested_end": end.isoformat(),
                 "records_written": 0,
-                "error_message": "ETF all-weather explainability has no valid rebalance keys",
+                "error_message": (
+                    "ETF all-weather explainability has no valid rebalance keys"
+                ),
             }
         validation = _validate_monthly_explainability_frame(explainability)
         if not all(validation.values()):
@@ -2977,13 +2947,11 @@ class ETLService:
             if not self._calendar_window_covered(
                 anchor, search_end, _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES
             ):
-                missing_calendar_windows.append(
-                    {
-                        "calendar_month": _calendar_month(month_start),
-                        "start": anchor.isoformat(),
-                        "end": search_end.isoformat(),
-                    }
-                )
+                missing_calendar_windows.append({
+                    "calendar_month": _calendar_month(month_start),
+                    "start": anchor.isoformat(),
+                    "end": search_end.isoformat(),
+                })
                 continue
             rebalance_date = self._first_common_open_day(
                 anchor,
@@ -2991,30 +2959,26 @@ class ETLService:
                 _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES,
             )
             if rebalance_date is None:
-                missing_calendar_windows.append(
-                    {
-                        "calendar_month": _calendar_month(month_start),
-                        "start": anchor.isoformat(),
-                        "end": search_end.isoformat(),
-                    }
-                )
-                continue
-            generated.append(
-                {
+                missing_calendar_windows.append({
                     "calendar_month": _calendar_month(month_start),
-                    "rebalance_date": rebalance_date,
-                    "effective_date": rebalance_date,
-                    "notes": json.dumps(
-                        {
-                            "anchor_day": _REBALANCE_ANCHOR_DAY,
-                            "calendar_month": _calendar_month(month_start),
-                            "exchanges": _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES,
-                            "rule_name": "first_common_open_day_on_or_after_20th",
-                        },
-                        sort_keys=True,
-                    ),
-                }
-            )
+                    "start": anchor.isoformat(),
+                    "end": search_end.isoformat(),
+                })
+                continue
+            generated.append({
+                "calendar_month": _calendar_month(month_start),
+                "rebalance_date": rebalance_date,
+                "effective_date": rebalance_date,
+                "notes": json.dumps(
+                    {
+                        "anchor_day": _REBALANCE_ANCHOR_DAY,
+                        "calendar_month": _calendar_month(month_start),
+                        "exchanges": _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES,
+                        "rule_name": "first_common_open_day_on_or_after_20th",
+                    },
+                    sort_keys=True,
+                ),
+            })
 
         if missing_calendar_windows:
             return {
@@ -3113,8 +3077,7 @@ class ETLService:
                 """,
                 [_REBALANCE_CALENDAR_NAME],
             )
-            self.conn.execute(
-                """
+            self.conn.execute("""
                 INSERT INTO canonical_rebalance_calendar (
                     calendar_name, calendar_month, rebalance_date, effective_date,
                     notes, updated_at
@@ -3122,8 +3085,7 @@ class ETLService:
                 SELECT calendar_name, calendar_month, rebalance_date, effective_date,
                        notes, updated_at
                 FROM stage_c_rebalance_calendar
-                """
-            )
+                """)
         finally:
             self.conn.unregister("stage_c_rebalance_calendar")
 
@@ -3537,9 +3499,11 @@ def _validate_rebalance_snapshot_frame(
         "non_empty": True,
         "five_rows_per_rebalance_date": bool((rows_per_date == 5).all()),
         "no_duplicate_business_keys": duplicate_count == 0,
-        "rebalance_dates_from_calendar": set(
-            frame["rebalance_date"].dropna().tolist()
-        ).issubset(valid_rebalance_dates),
+        "rebalance_dates_from_calendar": (
+            set(frame["rebalance_date"].dropna().tolist()).issubset(
+                valid_rebalance_dates
+            )
+        ),
         "known_frozen_sleeves_only": known_codes.issubset(set(_ETF_AW_SLEEVE_CODES)),
         "data_status_allowed": statuses.issubset(_ETF_AW_SNAPSHOT_STATUSES),
         "quality_notes_json": all(
@@ -3558,12 +3522,10 @@ def _regime_score_row(group: pd.DataFrame, ingested_at: datetime) -> dict[str, A
         role_scores.setdefault(str(signal["sleeve_role"]), []).append(
             signal["direction_score"]
         )
-    equity_score = _average_scores(
-        [
-            _average_scores(role_scores.get("equity_large", [])),
-            _average_scores(role_scores.get("equity_small", [])),
-        ]
-    )
+    equity_score = _average_scores([
+        _average_scores(role_scores.get("equity_large", [])),
+        _average_scores(role_scores.get("equity_small", [])),
+    ])
     bond_score = _average_scores(role_scores.get("bond", []))
     gold_score = _average_scores(role_scores.get("gold", []))
     cash_score = _average_scores(role_scores.get("cash", []))
@@ -3854,13 +3816,16 @@ def _validate_regime_score_frame(frame: pd.DataFrame) -> dict[str, bool]:
     return {
         "non_empty": True,
         "no_duplicate_business_keys": duplicate_count == 0,
-        "schema_version_supported": set(frame["schema_version"].astype(str))
-        == {_ETF_AW_REGIME_SCHEMA_VERSION},
-        "scoring_status_allowed": set(frame["scoring_status"].astype(str)).issubset(
-            _ETF_AW_REGIME_STATUSES
+        "schema_version_supported": (
+            set(frame["schema_version"].astype(str)) == {_ETF_AW_REGIME_SCHEMA_VERSION}
         ),
-        "label_allowed": set(frame["market_regime_label"].astype(str)).issubset(
-            _ETF_AW_REGIME_LABELS
+        "scoring_status_allowed": (
+            set(frame["scoring_status"].astype(str)).issubset(_ETF_AW_REGIME_STATUSES)
+        ),
+        "label_allowed": (
+            set(frame["market_regime_label"].astype(str)).issubset(
+                _ETF_AW_REGIME_LABELS
+            )
         ),
         "market_score_finite": all(value is not None for value in market_scores),
         "market_score_in_range": all(
@@ -4285,15 +4250,13 @@ def _validate_market_features_frame(frame: pd.DataFrame) -> dict[str, bool]:
             "no_macro_rates_features": False,
         }
     duplicate_count = int(
-        frame.duplicated(
-            [
-                "calendar_name",
-                "rebalance_date",
-                "feature_name",
-                "feature_scope",
-                "feature_subject",
-            ]
-        ).sum()
+        frame.duplicated([
+            "calendar_name",
+            "rebalance_date",
+            "feature_name",
+            "feature_scope",
+            "feature_subject",
+        ]).sum()
     )
     complete = frame[frame["feature_status"].astype(str) == "complete"]
     complete_values = [
@@ -4303,18 +4266,24 @@ def _validate_market_features_frame(frame: pd.DataFrame) -> dict[str, bool]:
         "non_empty": True,
         "required_columns_present": True,
         "no_duplicate_business_keys": duplicate_count == 0,
-        "schema_version_supported": set(frame["schema_version"].astype(str))
-        == {_ETF_AW_MARKET_FEATURES_SCHEMA_VERSION},
-        "feature_scope_allowed": set(frame["feature_scope"].astype(str)).issubset(
-            set(_ETF_AW_MARKET_FEATURE_SCOPE_NAMES)
+        "schema_version_supported": (
+            set(frame["schema_version"].astype(str))
+            == {_ETF_AW_MARKET_FEATURES_SCHEMA_VERSION}
+        ),
+        "feature_scope_allowed": (
+            set(frame["feature_scope"].astype(str)).issubset(
+                set(_ETF_AW_MARKET_FEATURE_SCOPE_NAMES)
+            )
         ),
         "feature_name_matches_scope": all(
             str(row["feature_name"])
             in _ETF_AW_MARKET_FEATURE_SCOPE_NAMES.get(str(row["feature_scope"]), set())
             for _, row in frame.iterrows()
         ),
-        "feature_status_allowed": set(frame["feature_status"].astype(str)).issubset(
-            _ETF_AW_MARKET_FEATURE_STATUSES
+        "feature_status_allowed": (
+            set(frame["feature_status"].astype(str)).issubset(
+                _ETF_AW_MARKET_FEATURE_STATUSES
+            )
         ),
         "complete_values_finite": all(value is not None for value in complete_values),
         "quality_notes_json": all(
@@ -4591,29 +4560,23 @@ def _stage_g_source_caveats(
         else {}
     )
     if quality_notes.get("macro_fields_deferred", macro_rates_context is None):
-        caveats.append(
-            {
-                "field_family": "macro.slow_fields",
-                "status": "deferred",
-                "reason": "required_macro_fields_missing",
-            }
-        )
+        caveats.append({
+            "field_family": "macro.slow_fields",
+            "status": "deferred",
+            "reason": "required_macro_fields_missing",
+        })
     if quality_notes.get("curve_fields_deferred", macro_rates_context is None):
-        caveats.append(
-            {
-                "field_family": "rates.gov_curve_points",
-                "status": "deferred",
-                "reason": "required_curve_fields_missing",
-            }
-        )
+        caveats.append({
+            "field_family": "rates.gov_curve_points",
+            "status": "deferred",
+            "reason": "required_curve_fields_missing",
+        })
     if macro_rates_context is None:
-        caveats.append(
-            {
-                "field_family": "macro_rates_read_service",
-                "status": "deferred",
-                "reason": "get_latest_etf_aw_macro_rates_context_not_available",
-            }
-        )
+        caveats.append({
+            "field_family": "macro_rates_read_service",
+            "status": "deferred",
+            "reason": "get_latest_etf_aw_macro_rates_context_not_available",
+        })
     return caveats
 
 
@@ -4628,13 +4591,11 @@ def _stage_g_revision_caveats(
         else []
     )
     if macro_rates_context is None:
-        caveats.append(
-            {
-                "field_family": "macro_or_curve",
-                "status": "deferred",
-                "reason": "revision_caveats_deferred_until_macro_curve_datasets_exist",
-            }
-        )
+        caveats.append({
+            "field_family": "macro_or_curve",
+            "status": "deferred",
+            "reason": "revision_caveats_deferred_until_macro_curve_datasets_exist",
+        })
     return caveats
 
 
@@ -4711,14 +4672,12 @@ def _validate_strategy_context_frame(frame: pd.DataFrame) -> dict[str, bool]:
             "deferred_context_has_point_in_time_notes": False,
         }
     duplicate_count = int(
-        frame.duplicated(
-            [
-                "calendar_name",
-                "rebalance_date",
-                "strategy_name",
-                "strategy_version",
-            ]
-        ).sum()
+        frame.duplicated([
+            "calendar_name",
+            "rebalance_date",
+            "strategy_name",
+            "strategy_version",
+        ]).sum()
     )
     forbidden_fields = {
         column
@@ -4763,8 +4722,8 @@ def _validate_strategy_context_frame(frame: pd.DataFrame) -> dict[str, bool]:
                 frame["readiness_level"].astype(str) == "research_ready"
             ].iterrows()
         ),
-        "context_basis_allowed": set(frame["context_basis"].astype(str)).issubset(
-            _ETF_AW_CONTEXT_BASES
+        "context_basis_allowed": (
+            set(frame["context_basis"].astype(str)).issubset(_ETF_AW_CONTEXT_BASES)
         ),
         "forbidden_fields_absent": not forbidden_fields,
         "json_fields_valid": all(
@@ -5317,25 +5276,21 @@ def _make_etf_aw_target_weight_frame(
             key=key,
             budget_group=group,
             panel=panel,
-            previous_target=previous_by_key.get(
-                (
-                    str(key[0]),
-                    _ETF_AW_STRATEGY_NAME,
-                    _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
-                )
-            ),
+            previous_target=previous_by_key.get((
+                str(key[0]),
+                _ETF_AW_STRATEGY_NAME,
+                _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
+            )),
             ingested_at=ingested_at,
         )
         if not generated:
             continue
         rows.extend(generated)
-        previous_by_key[
-            (
-                str(key[0]),
-                _ETF_AW_STRATEGY_NAME,
-                _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
-            )
-        ] = {str(row["sleeve_code"]): float(row["target_weight"]) for row in generated}
+        previous_by_key[(
+            str(key[0]),
+            _ETF_AW_STRATEGY_NAME,
+            _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
+        )] = {str(row["sleeve_code"]): float(row["target_weight"]) for row in generated}
     return pd.DataFrame(rows)
 
 
@@ -5390,13 +5345,11 @@ def _latest_previous_target_by_key(
         group = group.drop_duplicates("sleeve_code", keep="last")
         if set(group["sleeve_code"].astype(str)) != set(_ETF_AW_SLEEVE_CODES):
             continue
-        result[
-            (
-                str(calendar_name),
-                _ETF_AW_STRATEGY_NAME,
-                _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
-            )
-        ] = {
+        result[(
+            str(calendar_name),
+            _ETF_AW_STRATEGY_NAME,
+            _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
+        )] = {
             str(row["sleeve_code"]): float(row["target_weight"])
             for _, row in group.iterrows()
         }
@@ -5475,52 +5428,48 @@ def _target_weight_rows_for_rebalance(
         status = "partial" if role in insufficient_roles else str(row["budget_status"])
         if status not in _ETF_AW_TARGET_WEIGHT_STATUSES:
             status = "partial"
-        rows.append(
-            {
-                "schema_version": _ETF_AW_TARGET_WEIGHT_SCHEMA_VERSION,
-                "contract_version": _ETF_AW_TARGET_WEIGHT_CONTRACT_VERSION,
-                "calendar_name": str(calendar_name),
-                "rebalance_date": rebalance_date,
-                "effective_date": rebalance_date,
-                "strategy_name": _ETF_AW_STRATEGY_NAME,
-                "strategy_version": _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
-                "sleeve_code": code,
-                "sleeve_role": role,
-                "risk_budget": round(risk_budget[role], 6),
-                "volatility_estimate": round(vol_by_role[role], 6),
-                "volatility_floor": _ETF_AW_TARGET_WEIGHT_VOL_FLOOR,
-                "raw_target_weight": raw_rounded[role],
-                "constrained_target_weight": constrained_rounded[role],
-                "target_weight": target_rounded[code],
-                "target_weight_status": status,
-                "optimizer_name": "budgeted_inverse_vol",
-                "optimizer_basis": (
-                    "risk_budget divided by trailing adjusted-close volatility "
-                    "with sleeve caps and no-trade band"
-                ),
-                "turnover_estimate": turnover,
-                "quality_notes_json": json.dumps(
-                    {
-                        "reasons": sorted(set(reasons)),
-                        "volatility_window": _ETF_AW_TARGET_WEIGHT_VOL_WINDOW,
-                        "minimum_observations": (
-                            _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS
-                        ),
-                        "no_trade_band": _ETF_AW_TARGET_WEIGHT_NO_TRADE_BAND,
-                        "no_trade_band_normalization_drift": round(
-                            no_trade_band_drift,
-                            12,
-                        ),
-                        "sleeve_cap": _ETF_AW_TARGET_WEIGHT_CAPS[role],
-                        "source_budget_status": str(row["budget_status"]),
-                    },
-                    sort_keys=True,
-                ),
-                "source_risk_budget_rebalance_date": rebalance_date,
-                "source_sleeve_daily_max_trade_date": source_max_by_role.get(role),
-                "ingested_at": ingested_at,
-            }
-        )
+        rows.append({
+            "schema_version": _ETF_AW_TARGET_WEIGHT_SCHEMA_VERSION,
+            "contract_version": _ETF_AW_TARGET_WEIGHT_CONTRACT_VERSION,
+            "calendar_name": str(calendar_name),
+            "rebalance_date": rebalance_date,
+            "effective_date": rebalance_date,
+            "strategy_name": _ETF_AW_STRATEGY_NAME,
+            "strategy_version": _ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION,
+            "sleeve_code": code,
+            "sleeve_role": role,
+            "risk_budget": round(risk_budget[role], 6),
+            "volatility_estimate": round(vol_by_role[role], 6),
+            "volatility_floor": _ETF_AW_TARGET_WEIGHT_VOL_FLOOR,
+            "raw_target_weight": raw_rounded[role],
+            "constrained_target_weight": constrained_rounded[role],
+            "target_weight": target_rounded[code],
+            "target_weight_status": status,
+            "optimizer_name": "budgeted_inverse_vol",
+            "optimizer_basis": (
+                "risk_budget divided by trailing adjusted-close volatility "
+                "with sleeve caps and no-trade band"
+            ),
+            "turnover_estimate": turnover,
+            "quality_notes_json": json.dumps(
+                {
+                    "reasons": sorted(set(reasons)),
+                    "volatility_window": _ETF_AW_TARGET_WEIGHT_VOL_WINDOW,
+                    "minimum_observations": _ETF_AW_TARGET_WEIGHT_MIN_OBSERVATIONS,
+                    "no_trade_band": _ETF_AW_TARGET_WEIGHT_NO_TRADE_BAND,
+                    "no_trade_band_normalization_drift": round(
+                        no_trade_band_drift,
+                        12,
+                    ),
+                    "sleeve_cap": _ETF_AW_TARGET_WEIGHT_CAPS[role],
+                    "source_budget_status": str(row["budget_status"]),
+                },
+                sort_keys=True,
+            ),
+            "source_risk_budget_rebalance_date": rebalance_date,
+            "source_sleeve_daily_max_trade_date": source_max_by_role.get(role),
+            "ingested_at": ingested_at,
+        })
     return rows
 
 
@@ -5583,12 +5532,10 @@ def _target_weight_volatility(
         reasons: list[str] = []
         if len(returns) < min_observations:
             volatility = _ETF_AW_TARGET_WEIGHT_VOL_FLOOR
-            reasons.extend(
-                [
-                    "insufficient_volatility_observations",
-                    "volatility_floor_applied",
-                ]
-            )
+            reasons.extend([
+                "insufficient_volatility_observations",
+                "volatility_floor_applied",
+            ])
         else:
             estimated = float(returns.std(ddof=1))
             volatility = max(estimated, _ETF_AW_TARGET_WEIGHT_VOL_FLOOR)
@@ -5604,8 +5551,9 @@ def _budgeted_inverse_vol_weights(
     risk_budget: dict[str, float], vol_by_role: dict[str, float]
 ) -> dict[str, float]:
     scores = {
-        role: risk_budget[role]
-        / max(vol_by_role[role], _ETF_AW_TARGET_WEIGHT_VOL_FLOOR)
+        role: (
+            risk_budget[role] / max(vol_by_role[role], _ETF_AW_TARGET_WEIGHT_VOL_FLOOR)
+        )
         for role in ETF_AW_SLEEVE_ROLE_ORDER
     }
     total = sum(scores.values())
@@ -5747,39 +5695,37 @@ def _make_etf_aw_baseline_weight_frame(
         rounded = _round_role_weights(weights)
         for role in ETF_AW_SLEEVE_ROLE_ORDER:
             code = _role_code(role)
-            rows.append(
-                {
-                    "schema_version": _ETF_AW_BASELINE_WEIGHT_SCHEMA_VERSION,
-                    "contract_version": _ETF_AW_BASELINE_WEIGHT_CONTRACT_VERSION,
-                    "calendar_name": str(calendar_row["calendar_name"]),
-                    "rebalance_date": rebalance_date,
-                    "effective_date": rebalance_date,
-                    "baseline_name": _ETF_AW_BASELINE_NAME,
-                    "baseline_version": _ETF_AW_BASELINE_VERSION,
-                    "sleeve_code": code,
-                    "sleeve_role": role,
-                    "target_weight": rounded[role],
-                    "estimation_window_days": _ETF_AW_BASELINE_VOL_WINDOW,
-                    "min_observation_days": _ETF_AW_BASELINE_MIN_OBSERVATIONS,
-                    "volatility_estimate": round(vol_by_role[role], 6),
-                    "optimizer_name": _ETF_AW_BASELINE_NAME,
-                    "optimizer_basis": (
-                        "one divided by trailing adjusted-close volatility, "
-                        "normalized across frozen sleeves"
-                    ),
-                    "quality_notes_json": json.dumps(
-                        {
-                            "reasons": sorted(set(reasons_by_role.get(role, []))),
-                            "volatility_floor": _ETF_AW_TARGET_WEIGHT_VOL_FLOOR,
-                            "volatility_window": _ETF_AW_BASELINE_VOL_WINDOW,
-                            "minimum_observations": (_ETF_AW_BASELINE_MIN_OBSERVATIONS),
-                        },
-                        sort_keys=True,
-                    ),
-                    "source_sleeve_daily_max_trade_date": source_max_by_role.get(role),
-                    "ingested_at": ingested_at,
-                }
-            )
+            rows.append({
+                "schema_version": _ETF_AW_BASELINE_WEIGHT_SCHEMA_VERSION,
+                "contract_version": _ETF_AW_BASELINE_WEIGHT_CONTRACT_VERSION,
+                "calendar_name": str(calendar_row["calendar_name"]),
+                "rebalance_date": rebalance_date,
+                "effective_date": rebalance_date,
+                "baseline_name": _ETF_AW_BASELINE_NAME,
+                "baseline_version": _ETF_AW_BASELINE_VERSION,
+                "sleeve_code": code,
+                "sleeve_role": role,
+                "target_weight": rounded[role],
+                "estimation_window_days": _ETF_AW_BASELINE_VOL_WINDOW,
+                "min_observation_days": _ETF_AW_BASELINE_MIN_OBSERVATIONS,
+                "volatility_estimate": round(vol_by_role[role], 6),
+                "optimizer_name": _ETF_AW_BASELINE_NAME,
+                "optimizer_basis": (
+                    "one divided by trailing adjusted-close volatility, "
+                    "normalized across frozen sleeves"
+                ),
+                "quality_notes_json": json.dumps(
+                    {
+                        "reasons": sorted(set(reasons_by_role.get(role, []))),
+                        "volatility_floor": _ETF_AW_TARGET_WEIGHT_VOL_FLOOR,
+                        "volatility_window": _ETF_AW_BASELINE_VOL_WINDOW,
+                        "minimum_observations": _ETF_AW_BASELINE_MIN_OBSERVATIONS,
+                    },
+                    sort_keys=True,
+                ),
+                "source_sleeve_daily_max_trade_date": source_max_by_role.get(role),
+                "ingested_at": ingested_at,
+            })
     return pd.DataFrame(rows)
 
 
@@ -5966,14 +5912,12 @@ def _validate_target_weight_frame(frame: pd.DataFrame) -> dict[str, bool]:
             and abs(group["target_weight"].astype(float).sum() - 1.0) <= 1e-6
             and bool(
                 (
-                    group[
-                        [
-                            "risk_budget",
-                            "raw_target_weight",
-                            "constrained_target_weight",
-                            "target_weight",
-                        ]
-                    ]
+                    group[[
+                        "risk_budget",
+                        "raw_target_weight",
+                        "constrained_target_weight",
+                        "target_weight",
+                    ]]
                     >= 0.0
                 )
                 .all()
@@ -5981,9 +5925,11 @@ def _validate_target_weight_frame(frame: pd.DataFrame) -> dict[str, bool]:
             )
             for _, group in grouped
         ),
-        "status_values_allowed": set(
-            frame["target_weight_status"].astype(str)
-        ).issubset(_ETF_AW_TARGET_WEIGHT_STATUSES),
+        "status_values_allowed": (
+            set(frame["target_weight_status"].astype(str)).issubset(
+                _ETF_AW_TARGET_WEIGHT_STATUSES
+            )
+        ),
         "quality_notes_json": all(
             _is_json_text(value) for value in frame["quality_notes_json"]
         ),
@@ -6012,14 +5958,12 @@ def _equal_weight_backtest_fixture(rebalance: pd.DataFrame) -> pd.DataFrame:
     weight = 1.0 / len(_ETF_AW_SLEEVE_CODES)
     for _, row in rebalance.dropna(subset=["rebalance_date"]).iterrows():
         for sleeve_code in _ETF_AW_SLEEVE_CODES:
-            rows.append(
-                {
-                    "calendar_name": str(row["calendar_name"]),
-                    "rebalance_date": row["rebalance_date"],
-                    "sleeve_code": sleeve_code,
-                    "target_weight": weight,
-                }
-            )
+            rows.append({
+                "calendar_name": str(row["calendar_name"]),
+                "rebalance_date": row["rebalance_date"],
+                "sleeve_code": sleeve_code,
+                "target_weight": weight,
+            })
     return pd.DataFrame(rows)
 
 
@@ -6340,29 +6284,27 @@ def _backtest_diagnostic_rows(
 ) -> pd.DataFrame:
     """Return a validation-visible diagnostic row for blocked kernel inputs."""
 
-    return pd.DataFrame(
-        [
-            _backtest_row(
-                calendar_name=calendar_name,
-                strategy_name=strategy_name,
-                strategy_version=strategy_version,
-                weight_source_type=weight_source_type,
-                source_weight_dataset=source_weight_dataset,
-                observation_type="diagnostic",
-                observation_date=rebalance_date,
-                metric_name="input_validation",
-                metric_value=None,
-                net_value=None,
-                portfolio_return=None,
-                quality_notes={
-                    **diagnostics,
-                    "rebalance_date": rebalance_date.isoformat(),
-                },
-                ingested_at=ingested_at,
-            )
-            for rebalance_date in rebalance_dates
-        ]
-    )
+    return pd.DataFrame([
+        _backtest_row(
+            calendar_name=calendar_name,
+            strategy_name=strategy_name,
+            strategy_version=strategy_version,
+            weight_source_type=weight_source_type,
+            source_weight_dataset=source_weight_dataset,
+            observation_type="diagnostic",
+            observation_date=rebalance_date,
+            metric_name="input_validation",
+            metric_value=None,
+            net_value=None,
+            portfolio_return=None,
+            quality_notes={
+                **diagnostics,
+                "rebalance_date": rebalance_date.isoformat(),
+            },
+            ingested_at=ingested_at,
+        )
+        for rebalance_date in rebalance_dates
+    ])
 
 
 def _backtest_row(
@@ -7022,17 +6964,15 @@ def _validate_backtest_kernel_frame(frame: pd.DataFrame) -> dict[str, bool]:
             "quality_notes_json": False,
         }
     duplicate_count = int(
-        frame.duplicated(
-            [
-                "calendar_name",
-                "strategy_name",
-                "strategy_version",
-                "weight_source_type",
-                "observation_type",
-                "observation_date",
-                "metric_name",
-            ]
-        ).sum()
+        frame.duplicated([
+            "calendar_name",
+            "strategy_name",
+            "strategy_version",
+            "weight_source_type",
+            "observation_type",
+            "observation_date",
+            "metric_name",
+        ]).sum()
     )
     metric_values = [
         _nullable_float(value)
@@ -7046,9 +6986,9 @@ def _validate_backtest_kernel_frame(frame: pd.DataFrame) -> dict[str, bool]:
         "non_empty": True,
         "missing_required_columns": True,
         "no_duplicate_business_keys": duplicate_count == 0,
-        "observation_type_allowed": set(
-            frame["observation_type"].astype(str).tolist()
-        ).issubset(allowed_types),
+        "observation_type_allowed": (
+            set(frame["observation_type"].astype(str).tolist()).issubset(allowed_types)
+        ),
         "metric_values_finite": all(value is not None for value in metric_values),
         "quality_notes_json": all(
             _is_json_text(value) for value in frame["quality_notes_json"]
