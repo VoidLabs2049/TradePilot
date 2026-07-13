@@ -519,15 +519,13 @@ class StageJTargetWeightTests(unittest.TestCase):
 
     def test_update_plan_runs_target_weight_after_risk_budget(self) -> None:
         conn = duckdb.connect(":memory:")
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE etl_source_watermarks (
                 dataset_name VARCHAR PRIMARY KEY,
                 latest_fetched_date DATE,
                 updated_at TIMESTAMP
             )
-        """
-        )
+        """)
 
         plan = update_module.build_update_plan(
             conn=conn,
