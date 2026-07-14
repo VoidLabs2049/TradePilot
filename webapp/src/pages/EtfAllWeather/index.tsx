@@ -25,7 +25,7 @@ import {
   SyncOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
-import { Line, Pie } from "@ant-design/charts";
+import { Area, Column, Line, Pie } from "@ant-design/charts";
 import {
   getEtfAwShadowReport,
   getEtfAwShadowStatus,
@@ -109,6 +109,24 @@ function formatQuantity(value?: number | null) {
 
 function formatDecimal(value?: number | null) {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "-";
+}
+
+function buildReturnDistribution(values: number[], binCount = 24) {
+  if (values.length === 0) {
+    return [];
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const width = max === min ? 1 : (max - min) / binCount;
+  const counts = Array.from({ length: binCount }, () => 0);
+  values.forEach((value) => {
+    const index = Math.min(Math.floor((value - min) / width), binCount - 1);
+    counts[index] += 1;
+  });
+  return counts.map((count, index) => ({
+    range: formatPercent(min + width * (index + 0.5)),
+    count,
+  }));
 }
 
 function qualityReasons(notes?: Record<string, any>): string[] {
@@ -278,11 +296,36 @@ export default function EtfAllWeather() {
     series: row.strategy === primaryStrategy ? "ETF 全天候" : "静态风险平价 Baseline",
     value: row.period_return,
   }));
+  const primaryDailySeries = (performance?.series || [])
+    .filter((row) => row.strategy === primaryStrategy)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  let runningPeak = 0;
+  const drawdownSeries = primaryDailySeries.map((row) => {
+    runningPeak = Math.max(runningPeak, row.net_value);
+    return {
+      date: row.date,
+      value: runningPeak > 0 ? row.net_value / runningPeak - 1 : 0,
+    };
+  });
+  const rollingVolatilitySeries = primaryDailySeries.flatMap((row, index, rows) => {
+    if (index < 59) {
+      return [];
+    }
+    const window = rows.slice(index - 59, index + 1).map((item) => item.daily_return);
+    const mean = window.reduce((sum, value) => sum + value, 0) / window.length;
+    const variance = window.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (window.length - 1);
+    return [{ date: row.date, value: Math.sqrt(variance) * Math.sqrt(252) }];
+  });
+  const returnDistribution = buildReturnDistribution(primaryDailySeries.map((row) => row.daily_return));
   const strategyMetrics = Object.fromEntries(
     (performance?.metrics || [])
       .filter((row) => row.strategy === primaryStrategy)
       .map((row) => [row.metric, row.value]),
   );
+  const calmar =
+    typeof strategyMetrics.annualized_return === "number" && strategyMetrics.max_drawdown < 0
+      ? strategyMetrics.annualized_return / Math.abs(strategyMetrics.max_drawdown)
+      : null;
   const cost10Comparison = researchSummary?.robustness?.comparisons.find((row) => row.cost_scenario === "cost_10bps");
   const strategyRobustness = researchSummary?.robustness?.strategies.find((row) => row.label === "strategy");
   const baselineRobustness = researchSummary?.robustness?.strategies.find((row) => row.label === "baseline");
@@ -1178,12 +1221,17 @@ export default function EtfAllWeather() {
         description="历史效果展示动态月度权重净值；顶部多段模拟展示的是“当前最新权重固定不变”的稳健性测试，两者口径不同。"
       />
       <Row gutter={[12, 12]}>
-        <Col xs={12} lg={6}><Card size="small"><Statistic title="累计收益" value={formatPercent(strategyMetrics.total_return)} /></Card></Col>
-        <Col xs={12} lg={6}><Card size="small"><Statistic title="年化收益" value={formatPercent(strategyMetrics.annualized_return)} /></Card></Col>
-        <Col xs={12} lg={6}><Card size="small"><Statistic title="最大回撤" value={formatPercent(strategyMetrics.max_drawdown)} /></Card></Col>
-        <Col xs={12} lg={6}><Card size="small"><Statistic title="交易日" value={performance.observation_count} /></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="累计收益" value={formatPercent(strategyMetrics.total_return)} /></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="年化收益" value={formatPercent(strategyMetrics.annualized_return)} /></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="年化波动" value={formatPercent(strategyMetrics.annualized_volatility)} /></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="最大回撤" value={formatPercent(strategyMetrics.max_drawdown)} /></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Sharpe" value={formatDecimal(strategyMetrics.sharpe_ratio)} /></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Calmar" value={formatDecimal(calmar)} /></Card></Col>
       </Row>
-      <Card title="策略历史效果" extra={<Text type="secondary">{performance.start_date} 至 {performance.end_date}</Text>}>
+      <Card
+        title="累计收益与基准"
+        extra={<Text type="secondary">{performance.start_date} 至 {performance.end_date} · {performance.observation_count} 个交易日</Text>}
+      >
         <Line
           data={performanceSeries}
           xField="date"
@@ -1194,6 +1242,43 @@ export default function EtfAllWeather() {
           tooltip={{ items: [{ channel: "y", valueFormatter: (value: number) => formatPercent(value) }] }}
         />
       </Card>
+      <div className="etf-aw-chart-grid">
+        <Card title="回撤曲线" size="small">
+          <Area
+            data={drawdownSeries}
+            xField="date"
+            yField="value"
+            height={280}
+            style={{ fill: "#ffccc7", fillOpacity: 0.65, stroke: "#cf1322", lineWidth: 1.5 }}
+            axis={{ y: { labelFormatter: (value: number) => formatPercent(value) } }}
+            tooltip={{ items: [{ channel: "y", valueFormatter: (value: number) => formatPercent(value) }] }}
+          />
+        </Card>
+        <Card title="60 日滚动年化波动率" size="small">
+          {rollingVolatilitySeries.length > 0 ? (
+            <Line
+              data={rollingVolatilitySeries}
+              xField="date"
+              yField="value"
+              height={280}
+              style={{ stroke: "#d97706", lineWidth: 2 }}
+              axis={{ y: { labelFormatter: (value: number) => formatPercent(value) } }}
+              tooltip={{ items: [{ channel: "y", valueFormatter: (value: number) => formatPercent(value) }] }}
+            />
+          ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="至少需要 60 个交易日" />}
+        </Card>
+        <Card title="日收益率分布" size="small" className="etf-aw-chart-grid-wide">
+          <Column
+            data={returnDistribution}
+            xField="range"
+            yField="count"
+            height={280}
+            style={{ fill: "#69b1ff", stroke: "#1677ff" }}
+            axis={{ x: { title: "日收益率", labelAutoRotate: false }, y: { title: "交易日数" } }}
+            tooltip={{ items: [{ channel: "y", name: "交易日数" }] }}
+          />
+        </Card>
+      </div>
     </Space>
   ) : <Card><Empty description="本地 lakehouse 暂无历史绩效数据" /></Card>;
 

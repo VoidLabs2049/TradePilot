@@ -130,6 +130,16 @@
   gap: 16px;
 }
 
+.etf-aw-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.etf-aw-chart-grid-wide {
+  grid-column: 1 / -1;
+}
+
 .etf-aw-page .ant-card {
   border-color: var(--etf-aw-border);
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
@@ -212,5 +222,13 @@
   .etf-aw-workspace-tabs > .ant-tabs-nav {
     margin-right: -4px;
     margin-left: -4px;
+  }
+
+  .etf-aw-chart-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .etf-aw-chart-grid-wide {
+    grid-column: auto;
   }
 }
