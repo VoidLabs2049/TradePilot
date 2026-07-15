@@ -489,6 +489,15 @@ class StageHBacktestKernelTests(unittest.TestCase):
         self.assertIn("monthly_periods", metrics)
         self.assertIsNone(metrics["monthly_periods"])
 
+    def test_non_positive_final_nav_marks_return_metrics_unavailable(self) -> None:
+        for final_nav in (0.0, -0.5):
+            with self.subTest(final_nav=final_nav):
+                metrics = etl_service._backtest_metric_values([-1.0], [], final_nav)
+
+                self.assertIsNone(metrics["total_return"])
+                self.assertIsNone(metrics["annualized_return"])
+                self.assertIsNone(metrics["sharpe_ratio"])
+
     def _insert_rebalance(self, rebalance_date: date) -> None:
         self.conn.execute(
             """

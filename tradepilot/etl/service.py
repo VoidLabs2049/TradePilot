@@ -6464,17 +6464,22 @@ def _backtest_metric_values(
         }
     series = pd.Series(daily_returns, dtype=float)
     nav = (1.0 + series).cumprod()
-    annualized_return = final_nav ** (252.0 / len(series)) - 1.0
+    valid_final_nav = math.isfinite(final_nav) and final_nav > 0
+    annualized_return = (
+        final_nav ** (252.0 / len(series)) - 1.0 if valid_final_nav else None
+    )
     annualized_volatility = float(series.std(ddof=1) * math.sqrt(252))
     sharpe_ratio = (
         float(annualized_return / annualized_volatility)
-        if annualized_volatility > 0
+        if annualized_return is not None and annualized_volatility > 0
         else None
     )
     drawdown = nav / nav.cummax() - 1.0
     return {
-        "total_return": float(final_nav - 1.0),
-        "annualized_return": float(annualized_return),
+        "total_return": float(final_nav - 1.0) if valid_final_nav else None,
+        "annualized_return": (
+            float(annualized_return) if annualized_return is not None else None
+        ),
         "annualized_volatility": annualized_volatility,
         "sharpe_ratio": sharpe_ratio,
         "max_drawdown": float(drawdown.min()),

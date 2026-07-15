@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from functools import lru_cache
 import math
 
 from fastapi import APIRouter, Query
@@ -26,6 +27,7 @@ from tradepilot.etf_aw.rebalance_plan import REBALANCE_PLAN_DATASET
 from tradepilot.etl.etf_aw_universe import ETF_AW_SLEEVE_CODES
 from tradepilot.etl.models import StorageZone
 from tradepilot.etl.read_models import get_latest_etf_aw_risk_budget
+from tradepilot.etl.storage import build_zone_path
 from tradepilot.workflow.models import (
     EtfAwRiskBudgetResponse,
     WorkflowContextPayload,
@@ -120,6 +122,37 @@ def get_latest_etf_aw_risk_budget_context(
 @router.get("/etf-aw/research-summary")
 def get_etf_aw_research_summary() -> dict:
     """Return current target weights, latest plan, and cost-aware backtest result."""
+    return _cached_etf_aw_research_summary(_research_artifact_signature())
+
+
+_RESEARCH_DATASETS = (
+    "derived.etf_aw_target_weight",
+    "derived.etf_aw_backtest_kernel",
+    "derived.etf_aw_baseline_weight",
+    "derived.etf_aw_sleeve_daily",
+    "derived.etf_aw_risk_budget",
+    "derived.etf_aw_strategy_context",
+    REBALANCE_PLAN_DATASET,
+)
+
+
+def _research_artifact_signature() -> tuple[tuple[str, int, int], ...]:
+    """Return a cache key that changes when a research parquet artifact changes."""
+    files: list[tuple[str, int, int]] = []
+    for dataset_name in _RESEARCH_DATASETS:
+        root = build_zone_path(dataset_name, StorageZone.DERIVED, LAKEHOUSE_ROOT)
+        for path in sorted(root.rglob("*.parquet")) if root.exists() else []:
+            stat = path.stat()
+            files.append((str(path), stat.st_mtime_ns, stat.st_size))
+    return tuple(files)
+
+
+@lru_cache(maxsize=2)
+def _cached_etf_aw_research_summary(
+    artifact_signature: tuple[tuple[str, int, int], ...],
+) -> dict:
+    """Build and cache the expensive research summary for frozen artifacts."""
+    del artifact_signature
     target_weight = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_target_weight")
     kernel = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_backtest_kernel")
     baseline_weight = read_shadow_dataset(

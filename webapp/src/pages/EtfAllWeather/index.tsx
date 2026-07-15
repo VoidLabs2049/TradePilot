@@ -293,7 +293,7 @@ export default function EtfAllWeather() {
     performance?.metrics?.[0]?.strategy;
   const performanceSeries = (performance?.series || []).map((row) => ({
     date: row.date,
-    series: row.strategy === primaryStrategy ? "ETF 全天候" : "静态风险平价 Baseline",
+    series: row.strategy === primaryStrategy ? "ETF 全天候" : "静态逆波动率基准",
     value: row.period_return,
   }));
   const primaryDailySeries = (performance?.series || [])
@@ -306,6 +306,34 @@ export default function EtfAllWeather() {
       date: row.date,
       value: runningPeak > 0 ? row.net_value / runningPeak - 1 : 0,
     };
+  });
+  let currentUnderwaterDays = 0;
+  let maxUnderwaterDays = 0;
+  let currentDrawdownPeakIndex = 0;
+  let maxDrawdownPeakIndex = 0;
+  let maxDrawdownIndex = 0;
+  let maxDrawdownValue = 0;
+  let maxDrawdownRecoveryDays: number | null = null;
+  let peakValue = 0;
+  primaryDailySeries.forEach((row, index) => {
+    if (row.net_value >= peakValue) {
+      if (maxDrawdownRecoveryDays === null && index > maxDrawdownIndex && maxDrawdownValue < 0) {
+        maxDrawdownRecoveryDays = index - maxDrawdownPeakIndex;
+      }
+      peakValue = row.net_value;
+      currentDrawdownPeakIndex = index;
+      currentUnderwaterDays = 0;
+      return;
+    }
+    currentUnderwaterDays += 1;
+    maxUnderwaterDays = Math.max(maxUnderwaterDays, currentUnderwaterDays);
+    const drawdown = peakValue > 0 ? row.net_value / peakValue - 1 : 0;
+    if (drawdown < maxDrawdownValue) {
+      maxDrawdownValue = drawdown;
+      maxDrawdownPeakIndex = currentDrawdownPeakIndex;
+      maxDrawdownIndex = index;
+      maxDrawdownRecoveryDays = null;
+    }
   });
   const rollingVolatilitySeries = primaryDailySeries.flatMap((row, index, rows) => {
     if (index < 59) {
@@ -1227,6 +1255,8 @@ export default function EtfAllWeather() {
         <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="最大回撤" value={formatPercent(strategyMetrics.max_drawdown)} /></Card></Col>
         <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Sharpe" value={formatDecimal(strategyMetrics.sharpe_ratio)} /></Card></Col>
         <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Calmar" value={formatDecimal(calmar)} /></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="最长水下" value={maxUnderwaterDays} suffix="交易日" /></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="最大回撤恢复" value={maxDrawdownRecoveryDays ?? "未恢复"} suffix={maxDrawdownRecoveryDays === null ? undefined : "交易日"} /></Card></Col>
       </Row>
       <Card
         title="累计收益与基准"
