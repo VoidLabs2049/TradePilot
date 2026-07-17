@@ -1284,6 +1284,13 @@ def update_local_shadow_artifacts(
     """Update a research shadow account from local lakehouse artifacts."""
 
     target_weight = read_shadow_dataset(lakehouse_root, "derived.etf_aw_target_weight")
+    target_weight = _current_artifact_rows(
+        target_weight,
+        name_column="strategy_name",
+        name=_CURRENT_STRATEGY_NAME,
+        version_column="strategy_version",
+        version=_CURRENT_TARGET_WEIGHT_VERSION,
+    )
     sleeve_daily = read_shadow_dataset(lakehouse_root, "derived.etf_aw_sleeve_daily")
     baseline = read_shadow_dataset(lakehouse_root, "derived.etf_aw_backtest_kernel")
     existing_seed = read_shadow_dataset(lakehouse_root, SHADOW_ACCOUNT_SEED_DATASET)
