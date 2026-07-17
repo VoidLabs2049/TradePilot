@@ -47,6 +47,7 @@ import {
 import "./index.css";
 
 const { Text, Title } = Typography;
+const DEFAULT_SHADOW_ACCOUNT = "etf-aw-v2-paper";
 
 const ROLE_LABELS: Record<EtfAwSleeveRole, string> = {
   equity_large: "大盘权益",
@@ -197,7 +198,7 @@ export default function EtfAllWeather() {
   const refresh = async (selectedAccountId?: string) => {
     setLoading(true);
     setError(null);
-    const requestedAccountId = selectedAccountId || accountId || "etf-aw-paper";
+    const requestedAccountId = selectedAccountId || accountId || DEFAULT_SHADOW_ACCOUNT;
     const failures: string[] = [];
     try {
       const [budgetResult, shadowResult, performanceResult, statusResult, researchResult] = await Promise.allSettled([
@@ -217,7 +218,11 @@ export default function EtfAllWeather() {
       if (shadowResult.status === "fulfilled") {
         setShadow(shadowResult.value);
         if (!accountId && shadowResult.value.accounts.length > 0) {
-          setAccountId(shadowResult.value.accounts[0]);
+          setAccountId(
+            shadowResult.value.accounts.includes(requestedAccountId)
+              ? requestedAccountId
+              : shadowResult.value.accounts[0],
+          );
         }
       } else {
         setShadow(null);
@@ -257,7 +262,7 @@ export default function EtfAllWeather() {
   }, []);
 
   const updateLocalShadow = async () => {
-    const selectedAccountId = accountId || shadow?.accounts[0] || "etf-aw-paper";
+    const selectedAccountId = accountId || shadow?.accounts[0] || DEFAULT_SHADOW_ACCOUNT;
     setUpdatingShadow(true);
     setError(null);
     try {

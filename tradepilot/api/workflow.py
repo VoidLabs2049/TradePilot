@@ -252,7 +252,7 @@ def get_etf_aw_shadow_report(account_id: str | None = None) -> dict:
 
 @router.post("/etf-aw/shadow/update-local")
 def update_etf_aw_local_shadow(
-    account_id: str = "etf-aw-paper",
+    account_id: str = "etf-aw-v2-paper",
     initial_asset: float = 1_000_000.0,
     seed_date: date | None = None,
     end_date: date | None = None,
@@ -282,7 +282,7 @@ def update_etf_aw_local_shadow(
 
 
 @router.get("/etf-aw/shadow/status")
-def get_etf_aw_shadow_status(account_id: str = "etf-aw-paper") -> dict:
+def get_etf_aw_shadow_status(account_id: str = "etf-aw-v2-paper") -> dict:
     """Return local lakehouse freshness and shadow observation coverage."""
     sleeve_daily = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_sleeve_daily")
     target_weight = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_target_weight")

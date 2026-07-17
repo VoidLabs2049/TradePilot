@@ -654,7 +654,7 @@ def initialize_shadow_account(
 
 
 @main.command("update-local-shadow")
-@click.option("--account-id", default="etf-aw-paper", show_default=True)
+@click.option("--account-id", default="etf-aw-v2-paper", show_default=True)
 @click.option("--initial-asset", type=float, default=1_000_000.0, show_default=True)
 @click.option("--seed-date", type=str, default=None)
 @click.option("--end-date", type=str, default=None)
