@@ -20,7 +20,14 @@ from tradepilot.etl.read_models import (
 )
 from tradepilot.etl.service import ETLService
 
-_V1_CODES = ("510300.SH", "159845.SZ", "511010.SH", "518850.SH", "159001.SZ")
+_ETF_AW_CODES = (
+    "510300.SH",
+    "159845.SZ",
+    "513100.SH",
+    "511010.SH",
+    "518850.SH",
+    "159001.SZ",
+)
 _ETF_AW_HISTORY_START = date(2016, 1, 1)
 _MACRO_RATES_HISTORY_START = date(2025, 1, 1)
 _BOOTSTRAP_STARTS = {
@@ -74,7 +81,7 @@ _DERIVED_PROFILES = (
     "derived.etf_aw_backtest_kernel.baseline.build",
     "derived.etf_aw_monthly_explainability.build",
 )
-_SLEEVE_PROFILE = "reference.etf_aw_sleeves.frozen_v1"
+_SLEEVE_PROFILE = "reference.etf_aw_sleeves.frozen_v2"
 _BASELINE_BACKTEST_KERNEL_PROFILE = "derived.etf_aw_backtest_kernel.baseline.build"
 _CALENDAR_DATASET = "reference.trading_calendar"
 
@@ -115,7 +122,7 @@ class UpdatePlanItem:
 @click.option(
     "--codes",
     type=str,
-    default=",".join(_V1_CODES),
+    default=",".join(_ETF_AW_CODES),
     show_default=True,
     help="Comma-separated ETF codes to download.",
 )
@@ -645,7 +652,8 @@ def _print_freshness(conn: duckdb.DuckDBPyConnection, lakehouse_root: Path) -> N
     """Print post-update freshness markers for operator review."""
 
     click.echo("\nETF all-weather freshness:")
-    rows = conn.execute("""
+    rows = conn.execute(
+        """
         SELECT dataset_name, latest_fetched_date
         FROM etl_source_watermarks
         WHERE dataset_name IN (
@@ -658,7 +666,8 @@ def _print_freshness(conn: duckdb.DuckDBPyConnection, lakehouse_root: Path) -> N
             'rates.gov_curve_points'
         )
         ORDER BY dataset_name
-        """).fetchall()
+        """
+    ).fetchall()
     for dataset_name, latest_fetched_date in rows:
         click.echo(f"- {dataset_name}: latest_fetched_date={latest_fetched_date}")
     snapshot = get_latest_etf_aw_snapshot(lakehouse_root=lakehouse_root)

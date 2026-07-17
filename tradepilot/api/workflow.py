@@ -563,10 +563,10 @@ def _local_robustness_summary(
             "strategy_context": strategy_context,
             "sleeve_daily": sleeve_daily,
         },
-        strategy_name="etf_aw_v1",
-        strategy_version="target_weight_inverse_vol_v1",
+        strategy_name="etf_aw_v2",
+        strategy_version="target_weight_inverse_vol_v2",
         baseline_name="static_inverse_vol",
-        baseline_version="static_inverse_vol_v1",
+        baseline_version="static_inverse_vol_v2",
         start=dates[0],
         end=dates[-1],
     )

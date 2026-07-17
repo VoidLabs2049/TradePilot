@@ -70,6 +70,12 @@ _BASELINE_WEIGHT_PROFILE = "derived.etf_aw_baseline_weight.build"
 _BACKTEST_KERNEL_PROFILE = "derived.etf_aw_backtest_kernel.build"
 _MONTHLY_EXPLAINABILITY_PROFILE = "derived.etf_aw_monthly_explainability.build"
 _ROBUSTNESS_REPORT_VERSION = "etf_aw_backtest_robustness_report_v1"
+_CURRENT_CALENDAR_NAME = "etf_aw_v2_monthly_post_20"
+_CURRENT_STRATEGY_NAME = "etf_aw_v2"
+_CURRENT_RISK_BUDGET_VERSION = "risk_budget_v2"
+_CURRENT_TARGET_WEIGHT_VERSION = "target_weight_inverse_vol_v2"
+_CURRENT_BASELINE_NAME = "static_inverse_vol"
+_CURRENT_BASELINE_VERSION = "static_inverse_vol_v2"
 _ROBUSTNESS_COST_MODEL_NAME = "half_l1_turnover_sensitivity"
 _ROBUSTNESS_COST_MODEL_VERSION = "half_l1_turnover_sensitivity_v1"
 _ROBUSTNESS_COST_SCENARIOS = (
@@ -189,6 +195,13 @@ def build_target_weight(
         budget = service._read_partitioned_dataset(
             "derived.etf_aw_risk_budget", start, end, StorageZone.DERIVED
         )
+        budget = _current_artifact_rows(
+            budget,
+            name_column="strategy_name",
+            name=_CURRENT_STRATEGY_NAME,
+            version_column="strategy_version",
+            version=_CURRENT_RISK_BUDGET_VERSION,
+        )
         findings = _health_findings(
             _validate_risk_budget_frame(budget),
             _status_warnings(budget, "budget_status"),
@@ -276,6 +289,13 @@ def health_check_risk_budget(
         frame = service._read_partitioned_dataset(
             "derived.etf_aw_risk_budget", start, end, StorageZone.DERIVED
         )
+    frame = _current_artifact_rows(
+        frame,
+        name_column="strategy_name",
+        name=_CURRENT_STRATEGY_NAME,
+        version_column="strategy_version",
+        version=_CURRENT_RISK_BUDGET_VERSION,
+    )
     findings = _health_findings(
         _validate_risk_budget_frame(frame),
         _status_warnings(frame, "budget_status"),
@@ -311,6 +331,13 @@ def health_check_target_weight(
         frame = service._read_partitioned_dataset(
             "derived.etf_aw_target_weight", start, end, StorageZone.DERIVED
         )
+    frame = _current_artifact_rows(
+        frame,
+        name_column="strategy_name",
+        name=_CURRENT_STRATEGY_NAME,
+        version_column="strategy_version",
+        version=_CURRENT_TARGET_WEIGHT_VERSION,
+    )
     findings = _health_findings(
         _validate_target_weight_frame(frame),
         _status_warnings(frame, "target_weight_status"),
@@ -346,6 +373,13 @@ def health_check_baseline_weight(
         frame = service._read_partitioned_dataset(
             "derived.etf_aw_baseline_weight", start, end, StorageZone.DERIVED
         )
+    frame = _current_artifact_rows(
+        frame,
+        name_column="baseline_name",
+        name=_CURRENT_BASELINE_NAME,
+        version_column="baseline_version",
+        version=_CURRENT_BASELINE_VERSION,
+    )
     findings = _health_findings(_validate_baseline_weight_frame(frame), [])
     _print_findings("baseline-weight", findings)
     if _has_fail(findings):
@@ -409,7 +443,7 @@ def backtest_kernel(
             end,
             weight_source_type="baseline",
             baseline_name="static_inverse_vol",
-            baseline_version="static_inverse_vol_v1",
+            baseline_version="static_inverse_vol_v2",
         )
     _print_bootstrap_result(result)
 
@@ -1153,6 +1187,26 @@ def _health_findings(
     return findings
 
 
+def _current_artifact_rows(
+    frame: pd.DataFrame,
+    *,
+    name_column: str,
+    name: str,
+    version_column: str,
+    version: str,
+) -> pd.DataFrame:
+    """Return rows for the current V2 artifact identity."""
+
+    required = {"calendar_name", name_column, version_column}
+    if frame.empty or not required.issubset(frame.columns):
+        return frame
+    return frame[
+        frame["calendar_name"].astype(str).eq(_CURRENT_CALENDAR_NAME)
+        & frame[name_column].astype(str).eq(name)
+        & frame[version_column].astype(str).eq(version)
+    ].copy()
+
+
 def _status_warnings(frame: pd.DataFrame, status_column: str) -> list[tuple[str, str]]:
     if frame.empty or status_column not in frame.columns:
         return []
@@ -1507,7 +1561,7 @@ def _local_baseline_observation(
     rows = rows[
         rows["observation_date"].eq(observation_date)
         & rows["strategy_name"].astype(str).eq("static_inverse_vol")
-        & rows["strategy_version"].astype(str).eq("static_inverse_vol_v1")
+        & rows["strategy_version"].astype(str).eq("static_inverse_vol_v2")
         & rows["observation_type"].astype(str).eq("daily_nav")
     ]
     if rows.empty:
@@ -1516,7 +1570,7 @@ def _local_baseline_observation(
     return BaselineObservationInput(
         observation_date=observation_date,
         strategy_name="static_inverse_vol",
-        strategy_version="static_inverse_vol_v1",
+        strategy_version="static_inverse_vol_v2",
         baseline_daily_return=float(row["portfolio_return"]),
         baseline_net_value=float(row["net_value"]),
         source_artifact="derived.etf_aw_backtest_kernel",
@@ -1565,9 +1619,11 @@ def _backtest_report(frame: pd.DataFrame) -> dict:
         ),
     )
     report = {"strategies": grouped, "comparison": _baseline_comparison(grouped)}
-    target = next(
-        (item for item in grouped if item.get("weight_source_type") == "target_weight"),
-        None,
+    target = _preferred_backtest_strategy(
+        grouped,
+        weight_source_type="target_weight",
+        strategy_name=_CURRENT_STRATEGY_NAME,
+        strategy_version=_CURRENT_TARGET_WEIGHT_VERSION,
     )
     if target is not None:
         report.update(target)
@@ -1618,17 +1674,17 @@ def _single_backtest_report(frame: pd.DataFrame, values: dict[str, object]) -> d
 
 
 def _baseline_comparison(strategies: list[dict]) -> dict | None:
-    target = next(
-        (
-            item
-            for item in strategies
-            if item.get("weight_source_type") == "target_weight"
-        ),
-        None,
+    target = _preferred_backtest_strategy(
+        strategies,
+        weight_source_type="target_weight",
+        strategy_name=_CURRENT_STRATEGY_NAME,
+        strategy_version=_CURRENT_TARGET_WEIGHT_VERSION,
     )
-    baseline = next(
-        (item for item in strategies if item.get("weight_source_type") == "baseline"),
-        None,
+    baseline = _preferred_backtest_strategy(
+        strategies,
+        weight_source_type="baseline",
+        strategy_name=_CURRENT_BASELINE_NAME,
+        strategy_version=_CURRENT_BASELINE_VERSION,
     )
     if target is None or baseline is None:
         return None
@@ -1656,6 +1712,31 @@ def _baseline_comparison(strategies: list[dict]) -> dict | None:
         "target_diagnostics": target.get("diagnostics", []),
         "baseline_diagnostics": baseline.get("diagnostics", []),
     }
+
+
+def _preferred_backtest_strategy(
+    strategies: list[dict],
+    *,
+    weight_source_type: str,
+    strategy_name: str,
+    strategy_version: str,
+) -> dict | None:
+    """Return the current V2 strategy, falling back for historical reports."""
+
+    candidates = [
+        item
+        for item in strategies
+        if item.get("weight_source_type") == weight_source_type
+    ]
+    return next(
+        (
+            item
+            for item in candidates
+            if item.get("strategy_name") == strategy_name
+            and item.get("strategy_version") == strategy_version
+        ),
+        candidates[0] if candidates else None,
+    )
 
 
 def _observation_range(frame: pd.DataFrame) -> tuple[str | None, str | None]:
@@ -2347,7 +2428,7 @@ def _complete_weight_dates(
 
 
 def _complete_weight_group(group: pd.DataFrame) -> bool:
-    if len(set(group["sleeve_code"].astype(str))) != 5:
+    if set(group["sleeve_code"].astype(str)) != set(ETF_AW_SLEEVE_CODES):
         return False
     for status_column in ("target_weight_status", "baseline_weight_status"):
         if status_column in group.columns and not all(

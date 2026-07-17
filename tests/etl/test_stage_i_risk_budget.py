@@ -66,15 +66,23 @@ class StageIRiskBudgetTests(unittest.TestCase):
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
         self.assertTrue(all(result["validation"].values()))
         frame = self._read_budget_file(2024, 7)
-        self.assertEqual(len(frame), 5)
+        self.assertEqual(len(frame), 6)
         self.assertEqual(
             frame["sleeve_role"].tolist(),
-            ["equity_large", "equity_small", "bond", "gold", "cash"],
+            [
+                "equity_large",
+                "equity_small",
+                "equity_overseas",
+                "bond",
+                "gold",
+                "cash",
+            ],
         )
         self.assertAlmostEqual(float(frame["tilted_budget"].sum()), 1.0, places=6)
         by_role = frame.set_index("sleeve_role")
-        self.assertEqual(by_role.loc["equity_large", "tilted_budget"], 0.235)
-        self.assertEqual(by_role.loc["equity_small", "tilted_budget"], 0.235)
+        self.assertEqual(by_role.loc["equity_large", "tilted_budget"], 0.1745)
+        self.assertEqual(by_role.loc["equity_small", "tilted_budget"], 0.1745)
+        self.assertEqual(by_role.loc["equity_overseas", "tilted_budget"], 0.121)
         self.assertEqual(by_role.loc["cash", "tilted_budget"], 0.165)
         notes = json.loads(by_role.loc["equity_large", "quality_notes_json"])
         self.assertEqual(notes["effective_confidence_score"], 0.7)
@@ -94,7 +102,17 @@ class StageIRiskBudgetTests(unittest.TestCase):
         frame = self._read_budget_file(2024, 7)
         self.assertEqual(set(frame["budget_status"]), {"partial"})
         self.assertEqual(set(frame["budget_basis"]), {"degraded_neutral_budget"})
-        self.assertTrue((frame["tilted_budget"] == 0.2).all())
+        self.assertEqual(
+            frame.set_index("sleeve_role")["tilted_budget"].to_dict(),
+            {
+                "equity_large": 0.15,
+                "equity_small": 0.15,
+                "equity_overseas": 0.10,
+                "bond": 0.20,
+                "gold": 0.20,
+                "cash": 0.20,
+            },
+        )
         notes = json.loads(frame.iloc[0]["quality_notes_json"])
         self.assertIn("low_or_missing_confidence", notes["reasons"])
 
@@ -116,8 +134,9 @@ class StageIRiskBudgetTests(unittest.TestCase):
         frame = self._read_budget_file(2024, 7)
         self.assertEqual(set(frame["budget_status"]), {"partial"})
         by_role = frame.set_index("sleeve_role")
-        self.assertEqual(by_role.loc["equity_large", "tilted_budget"], 0.2175)
-        self.assertEqual(by_role.loc["equity_small", "tilted_budget"], 0.2175)
+        self.assertEqual(by_role.loc["equity_large", "tilted_budget"], 0.16225)
+        self.assertEqual(by_role.loc["equity_small", "tilted_budget"], 0.16225)
+        self.assertEqual(by_role.loc["equity_overseas", "tilted_budget"], 0.1105)
         self.assertEqual(by_role.loc["cash", "tilted_budget"], 0.1825)
         notes = json.loads(by_role.loc["equity_large", "quality_notes_json"])
         self.assertEqual(notes["effective_confidence_score"], 0.35)
@@ -140,7 +159,14 @@ class StageIRiskBudgetTests(unittest.TestCase):
         self.assertLessEqual(abs(float(frame["tilted_budget"].sum()) - 1.0), 1e-6)
         self.assertEqual(
             frame.sort_values("sleeve_role")["sleeve_role"].tolist(),
-            ["bond", "cash", "equity_large", "equity_small", "gold"],
+            [
+                "bond",
+                "cash",
+                "equity_large",
+                "equity_overseas",
+                "equity_small",
+                "gold",
+            ],
         )
 
     def test_budget_rounding_distributes_remainder_without_breaking_floor(
@@ -152,9 +178,10 @@ class StageIRiskBudgetTests(unittest.TestCase):
             {
                 "equity_large": 0.0500004,
                 "equity_small": 0.0500004,
-                "bond": 0.2999998,
-                "gold": 0.2999997,
-                "cash": 0.2999997,
+                "equity_overseas": 0.0500004,
+                "bond": 0.2833330,
+                "gold": 0.2833329,
+                "cash": 0.2833329,
             }
         )
 
@@ -274,7 +301,7 @@ class StageIRiskBudgetTests(unittest.TestCase):
         self.assertEqual(latest["schema_version"], "etf_aw_risk_budget_v1")
         self.assertEqual(latest["contract_version"], "etf_aw_risk_budget_contract_v1")
         self.assertEqual(latest["rebalance_date"], "2024-07-22")
-        self.assertEqual(len(latest["budgets"]), 5)
+        self.assertEqual(len(latest["budgets"]), 6)
         self.assertAlmostEqual(latest["tilted_budget_sum"], 1.0, places=6)
 
     def test_update_plan_includes_risk_budget_after_strategy_context(self) -> None:
@@ -302,12 +329,12 @@ class StageIRiskBudgetTests(unittest.TestCase):
         return {
             "schema_version": "etf_aw_strategy_context_v1",
             "contract_version": "etf_aw_strategy_context_contract_v1",
-            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
             "calendar_month": rebalance_date.strftime("%Y-%m"),
             "rebalance_date": rebalance_date,
             "effective_date": rebalance_date,
-            "strategy_name": "etf_aw_v1",
-            "strategy_version": "stage_g_v1",
+            "strategy_name": "etf_aw_v2",
+            "strategy_version": "stage_g_v2",
             "context_status": context_status,
             "readiness_level": readiness_level,
             "context_basis": "market_plus_macro_rates",
@@ -335,7 +362,7 @@ class StageIRiskBudgetTests(unittest.TestCase):
     ) -> dict:
         return {
             "schema_version": "etf_aw_regime_score_v1",
-            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
             "calendar_month": rebalance_date.strftime("%Y-%m"),
             "rebalance_date": rebalance_date,
             "scorer_name": "etf_aw_market_only_regime",
@@ -371,13 +398,15 @@ class StageIRiskBudgetTests(unittest.TestCase):
         )
 
     def _create_watermark_table(self, conn: duckdb.DuckDBPyConnection) -> None:
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE etl_source_watermarks (
                 dataset_name VARCHAR PRIMARY KEY,
                 latest_fetched_date DATE,
                 updated_at TIMESTAMP
             )
-        """)
+        """
+        )
 
 
 if __name__ == "__main__":

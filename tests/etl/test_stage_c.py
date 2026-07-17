@@ -102,22 +102,24 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
         self.assertEqual(result["months_total"], 2)
         self.assertEqual(result["records_written"], 2)
-        rows = self.conn.execute("""
+        rows = self.conn.execute(
+            """
             SELECT calendar_name, calendar_month, rebalance_date, effective_date, notes
             FROM canonical_rebalance_calendar
             ORDER BY rebalance_date
-            """).fetchall()
+            """
+        ).fetchall()
         self.assertEqual(
             [(row[0], row[1], row[2], row[3]) for row in rows],
             [
                 (
-                    "etf_aw_v1_monthly_post_20",
+                    "etf_aw_v2_monthly_post_20",
                     "2024-01",
                     date(2024, 1, 22),
                     date(2024, 1, 22),
                 ),
                 (
-                    "etf_aw_v1_monthly_post_20",
+                    "etf_aw_v2_monthly_post_20",
                     "2024-02",
                     date(2024, 2, 20),
                     date(2024, 2, 20),
@@ -132,12 +134,14 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
 
     def test_rebalance_calendar_uses_first_common_open_day(self) -> None:
         self._insert_calendar_window(date(2024, 5, 20), date(2024, 5, 31))
-        self.conn.execute("""
+        self.conn.execute(
+            """
             UPDATE canonical_trading_calendar
             SET is_open = FALSE
             WHERE exchange = 'SZ'
               AND trade_date = DATE '2024-05-20'
-        """)
+        """
+        )
 
         result = self.service.run_bootstrap(
             "reference.rebalance_calendar.monthly_post_20",
@@ -147,11 +151,13 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
 
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
         self.assertEqual(result["records_written"], 1)
-        row = self.conn.execute("""
+        row = self.conn.execute(
+            """
             SELECT rebalance_date, effective_date
             FROM canonical_rebalance_calendar
             WHERE calendar_month = '2024-05'
-            """).fetchone()
+            """
+        ).fetchone()
         self.assertEqual(row, (date(2024, 5, 21), date(2024, 5, 21)))
 
     def test_rebalance_calendar_requires_complete_sh_sz_calendar(self) -> None:
@@ -202,10 +208,12 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
         self.assertEqual(first["status"], RunStatus.SUCCESS.value)
         self.assertEqual(second["status"], RunStatus.SUCCESS.value)
         self.assertEqual(second["duplicate_calendar_months"], 0)
-        rows = self.conn.execute("""
+        rows = self.conn.execute(
+            """
             SELECT COUNT(*), COUNT(DISTINCT rebalance_date)
             FROM canonical_rebalance_calendar
-            """).fetchone()
+            """
+        ).fetchone()
         self.assertEqual(rows, (1, 1))
 
     def test_rebalance_calendar_replaces_changed_date_for_same_month(self) -> None:
@@ -216,11 +224,13 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
             start=date(2024, 1, 1),
             end=date(2024, 1, 31),
         )
-        self.conn.execute("""
+        self.conn.execute(
+            """
             UPDATE canonical_trading_calendar
             SET is_open = FALSE
             WHERE trade_date = DATE '2024-01-22'
-        """)
+        """
+        )
         second = self.service.run_bootstrap(
             "reference.rebalance_calendar.monthly_post_20",
             start=date(2024, 1, 1),
@@ -230,29 +240,40 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
         self.assertEqual(first["status"], RunStatus.SUCCESS.value)
         self.assertEqual(second["status"], RunStatus.SUCCESS.value)
         self.assertEqual(second["duplicate_calendar_months"], 0)
-        rows = self.conn.execute("""
+        rows = self.conn.execute(
+            """
             SELECT calendar_month, rebalance_date
             FROM canonical_rebalance_calendar
             ORDER BY calendar_month, rebalance_date
-            """).fetchall()
+            """
+        ).fetchall()
         self.assertEqual(rows, [("2024-01", date(2024, 1, 23))])
 
     def test_frozen_etf_aw_sleeves_are_materialized(self) -> None:
-        result = self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v1")
+        result = self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v2")
 
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
-        self.assertEqual(result["records_written"], 5)
+        self.assertEqual(result["records_written"], 6)
         self.assertEqual(
             result["sleeve_codes"],
-            ["510300.SH", "159845.SZ", "511010.SH", "518850.SH", "159001.SZ"],
+            [
+                "510300.SH",
+                "159845.SZ",
+                "513100.SH",
+                "511010.SH",
+                "518850.SH",
+                "159001.SZ",
+            ],
         )
         self.assertTrue(all(result["validation"].values()))
-        rows = self.conn.execute("""
+        rows = self.conn.execute(
+            """
             SELECT sleeve_code, sleeve_role, sleeve_type, listing_exchange,
                    benchmark_name, exposure_note, is_active
             FROM canonical_sleeves
             ORDER BY sleeve_code
-            """).fetchall()
+            """
+        ).fetchall()
         self.assertEqual(
             [(row[0], row[1], row[2], row[3], row[6]) for row in rows],
             [
@@ -260,17 +281,22 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
                 ("159845.SZ", "equity_small", "equity_small", "SZ", True),
                 ("510300.SH", "equity_large", "equity_large", "SH", True),
                 ("511010.SH", "bond", "bond", "SH", True),
+                ("513100.SH", "equity_overseas", "equity_overseas", "SH", True),
                 ("518850.SH", "gold", "gold", "SH", True),
             ],
         )
         self.assertTrue(all(row[4] for row in rows))
         self.assertTrue(all(row[5] for row in rows))
 
-        list_dates = dict(self.conn.execute("""
+        list_dates = dict(
+            self.conn.execute(
+                """
                 SELECT sleeve_code, list_date
                 FROM canonical_sleeves
                 WHERE sleeve_code IN ('510300.SH', '159845.SZ', '518850.SH')
-                """).fetchall())
+                """
+            ).fetchall()
+        )
         self.assertEqual(
             list_dates,
             {
@@ -280,28 +306,34 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
             },
         )
 
-        instrument_count = self.conn.execute("""
+        instrument_count = self.conn.execute(
+            """
             SELECT COUNT(*)
             FROM canonical_instruments
             WHERE instrument_id IN (
-                '510300.SH', '159845.SZ', '511010.SH', '518850.SH', '159001.SZ'
+                '510300.SH', '159845.SZ', '513100.SH', '511010.SH',
+                '518850.SH', '159001.SZ'
             )
               AND instrument_type = 'etf'
-            """).fetchone()[0]
-        self.assertEqual(instrument_count, 5)
+            """
+        ).fetchone()[0]
+        self.assertEqual(instrument_count, 6)
 
     def test_frozen_etf_aw_sleeves_do_not_include_old_bond_candidate(self) -> None:
         self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v1")
 
-        count = self.conn.execute("""
+        count = self.conn.execute(
+            """
             SELECT COUNT(*)
             FROM canonical_sleeves
             WHERE sleeve_code = '511020.SH'
-            """).fetchone()[0]
+            """
+        ).fetchone()[0]
         self.assertEqual(count, 0)
 
     def test_frozen_etf_aw_sleeves_do_not_overwrite_existing_instrument(self) -> None:
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT INTO canonical_instruments (
                 instrument_id, source_instrument_id, instrument_name,
                 instrument_type, exchange, is_active, source_name
@@ -309,16 +341,19 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
                 '510300.SH', '510300.SH', 'Existing Tushare Name',
                 'etf', 'SH', TRUE, 'tushare'
             )
-            """)
+            """
+        )
 
         result = self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v1")
 
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
-        instrument = self.conn.execute("""
+        instrument = self.conn.execute(
+            """
             SELECT instrument_name, source_name
             FROM canonical_instruments
             WHERE instrument_id = '510300.SH'
-            """).fetchone()
+            """
+        ).fetchone()
         self.assertEqual(instrument, ("Existing Tushare Name", "tushare"))
 
     def test_etf_adj_factor_sync_writes_normalized_partition(self) -> None:
@@ -372,12 +407,14 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
         self.assertEqual(frame["instrument_id"].tolist(), ["510300.SH", "510300.SH"])
         self.assertEqual(frame["adj_factor"].tolist(), [1.0, 1.01])
 
-        watermark = self.conn.execute("""
+        watermark = self.conn.execute(
+            """
             SELECT latest_fetched_date
             FROM etl_source_watermarks
             WHERE dataset_name = 'market.etf_adj_factor'
               AND source_name = 'tushare'
-            """).fetchone()[0]
+            """
+        ).fetchone()[0]
         self.assertEqual(watermark, date(2024, 1, 23))
 
     def test_etf_adj_factor_repeat_sync_updates_existing_keys(self) -> None:

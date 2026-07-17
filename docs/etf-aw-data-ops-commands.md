@@ -144,6 +144,12 @@ journalctl --user -u tradepilot-etf-aw-update.service -n 120 --no-pager
 ./scripts/etl/update-etf-aw.sh --codes 510300.SH,159845.SZ --start 2026-06-01 --end 2026-06-07
 ```
 
+默认代码列表已包含纳指 ETF `513100.SH`。仅补回该标的数据时：
+
+```bash
+./scripts/etl/update-etf-aw.sh --codes 513100.SH --start 2025-01-01 --end 2026-07-17
+```
+
 扩大回补窗口，例如回补最近 90 天：
 
 ```bash
