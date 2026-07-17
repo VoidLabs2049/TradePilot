@@ -417,6 +417,36 @@ class StageOShadowRunTests(unittest.TestCase):
         )
         self.assertEqual(len(observation), 12)
 
+    def test_update_local_shadow_accepts_baseline_weights(self) -> None:
+        self._write_local_shadow_inputs()
+
+        self._run_ok(
+            [
+                "update-local-shadow",
+                "--account-id",
+                "baseline-paper",
+                "--weight-source",
+                "baseline",
+                "--initial-asset",
+                "100000",
+                "--seed-date",
+                "2024-07-22",
+                "--end-date",
+                "2024-07-24",
+            ]
+        )
+
+        seed = pd.read_parquet(
+            self.lakehouse_root
+            / "derived"
+            / "derived.etf_aw_shadow_account_seed"
+            / "baseline-paper"
+            / "part-00000.parquet"
+        )
+        self.assertEqual(len(seed), 6)
+        self.assertEqual(set(seed["account_id"]), {"baseline-paper"})
+        self.assertEqual(set(seed["source_plan_id"]), {"local-baseline:2024-07-22"})
+
     def test_observation_uses_price_as_of_for_active_plan(self) -> None:
         future_plan = self._plan_frame().copy()
         future_plan["plan_id"] = "future-plan"
@@ -624,6 +654,31 @@ class StageOShadowRunTests(unittest.TestCase):
         write_dataset_parquet(
             pd.DataFrame(target_rows),
             "derived.etf_aw_target_weight",
+            StorageZone.DERIVED,
+            [("year", 2024), ("month", "07")],
+            lakehouse_root=self.lakehouse_root,
+        )
+
+        baseline_weight_rows = []
+        for symbol, role, _ in sleeves:
+            baseline_weight_rows.append(
+                {
+                    "schema_version": "etf_aw_baseline_weight_v1",
+                    "contract_version": "etf_aw_baseline_weight_contract_v1",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
+                    "rebalance_date": date(2024, 7, 22),
+                    "effective_date": date(2024, 7, 22),
+                    "baseline_name": "static_inverse_vol",
+                    "baseline_version": "static_inverse_vol_v2",
+                    "sleeve_code": symbol,
+                    "sleeve_role": role,
+                    "target_weight": 1.0 / len(sleeves),
+                    "ingested_at": pd.Timestamp("2024-07-22 15:00:00"),
+                }
+            )
+        write_dataset_parquet(
+            pd.DataFrame(baseline_weight_rows),
+            "derived.etf_aw_baseline_weight",
             StorageZone.DERIVED,
             [("year", 2024), ("month", "07")],
             lakehouse_root=self.lakehouse_root,

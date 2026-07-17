@@ -254,6 +254,7 @@ def get_etf_aw_shadow_report(account_id: str | None = None) -> dict:
 def update_etf_aw_local_shadow(
     account_id: str = "etf-aw-v2-paper",
     initial_asset: float = 1_000_000.0,
+    weight_source: str = "target-weight",
     seed_date: date | None = None,
     end_date: date | None = None,
 ) -> dict:
@@ -268,6 +269,7 @@ def update_etf_aw_local_shadow(
         result = update_local_shadow_artifacts(
             account_id=account_id,
             initial_asset=initial_asset,
+            weight_source_type=weight_source,
             seed_date=seed_date,
             end_date=end_date,
             lakehouse_root=LAKEHOUSE_ROOT,

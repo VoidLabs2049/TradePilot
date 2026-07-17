@@ -656,6 +656,12 @@ def initialize_shadow_account(
 @main.command("update-local-shadow")
 @click.option("--account-id", default="etf-aw-v2-paper", show_default=True)
 @click.option("--initial-asset", type=float, default=1_000_000.0, show_default=True)
+@click.option(
+    "--weight-source",
+    type=click.Choice(["target-weight", "baseline"]),
+    default="target-weight",
+    show_default=True,
+)
 @click.option("--seed-date", type=str, default=None)
 @click.option("--end-date", type=str, default=None)
 @click.option(
@@ -667,6 +673,7 @@ def initialize_shadow_account(
 def update_local_shadow(
     account_id: str,
     initial_asset: float,
+    weight_source: str,
     seed_date: str | None,
     end_date: str | None,
     lakehouse_root: Path,
@@ -679,6 +686,7 @@ def update_local_shadow(
         result = update_local_shadow_artifacts(
             account_id=account_id,
             initial_asset=initial_asset,
+            weight_source_type=weight_source,
             seed_date=(
                 None if seed_date is None else _parse_date(seed_date, "seed-date")
             ),
@@ -1277,20 +1285,45 @@ def update_local_shadow_artifacts(
     *,
     account_id: str,
     initial_asset: float,
+    weight_source_type: str,
     seed_date: date | None,
     end_date: date | None,
     lakehouse_root: Path,
 ) -> dict[str, object]:
     """Update a research shadow account from local lakehouse artifacts."""
 
-    target_weight = read_shadow_dataset(lakehouse_root, "derived.etf_aw_target_weight")
-    target_weight = _current_artifact_rows(
-        target_weight,
-        name_column="strategy_name",
-        name=_CURRENT_STRATEGY_NAME,
-        version_column="strategy_version",
-        version=_CURRENT_TARGET_WEIGHT_VERSION,
-    )
+    if weight_source_type == "target-weight":
+        target_weight = read_shadow_dataset(
+            lakehouse_root, "derived.etf_aw_target_weight"
+        )
+        target_weight = _current_artifact_rows(
+            target_weight,
+            name_column="strategy_name",
+            name=_CURRENT_STRATEGY_NAME,
+            version_column="strategy_version",
+            version=_CURRENT_TARGET_WEIGHT_VERSION,
+        )
+    elif weight_source_type == "baseline":
+        target_weight = read_shadow_dataset(
+            lakehouse_root, "derived.etf_aw_baseline_weight"
+        )
+        target_weight = _current_artifact_rows(
+            target_weight,
+            name_column="baseline_name",
+            name=_CURRENT_BASELINE_NAME,
+            version_column="baseline_version",
+            version=_CURRENT_BASELINE_VERSION,
+        ).rename(
+            columns={
+                "baseline_name": "strategy_name",
+                "baseline_version": "strategy_version",
+            }
+        )
+        target_weight["target_weight_status"] = "complete"
+    else:
+        raise ShadowRunError(
+            ["invalid_weight_source"], {"weight_source_type": weight_source_type}
+        )
     sleeve_daily = read_shadow_dataset(lakehouse_root, "derived.etf_aw_sleeve_daily")
     baseline = read_shadow_dataset(lakehouse_root, "derived.etf_aw_backtest_kernel")
     existing_seed = read_shadow_dataset(lakehouse_root, SHADOW_ACCOUNT_SEED_DATASET)
@@ -1306,6 +1339,7 @@ def update_local_shadow_artifacts(
             sleeve_daily=sleeve_daily,
             account_id=account_id,
             initial_asset=initial_asset,
+            weight_source_type=weight_source_type,
             seed_date=seed_date,
         )
         seed_artifact = append_dataset(
@@ -1332,6 +1366,7 @@ def update_local_shadow_artifacts(
         "seed_created": seed_created,
         "observations_written": written,
         "seed_artifact": seed_artifact,
+        "weight_source_type": weight_source_type,
     }
 
 
@@ -1341,6 +1376,7 @@ def _local_shadow_seed_frame(
     sleeve_daily: pd.DataFrame,
     account_id: str,
     initial_asset: float,
+    weight_source_type: str,
     seed_date: date | None,
 ) -> tuple[pd.DataFrame, date]:
     """Build a research-only shadow seed from local target weights and closes."""
@@ -1396,7 +1432,7 @@ def _local_shadow_seed_frame(
     )
     plan = selected_weights.rename(columns={"sleeve_code": "symbol"}).copy()
     plan["account_id"] = account_id
-    plan["plan_id"] = f"local-target-weight:{source_weight_date.isoformat()}"
+    plan["plan_id"] = f"local-{weight_source_type}:{source_weight_date.isoformat()}"
     return (
         build_shadow_seed_rows(
             plan=plan,
