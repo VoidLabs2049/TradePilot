@@ -468,8 +468,8 @@ export const getEtfAwShadowReport = (accountId?: string) =>
   fetchJson<EtfAwShadowReportResponse>(`/workflow/etf-aw/shadow-report${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ""}`);
 export const getEtfAwShadowStatus = (accountId = "etf-aw-v2-paper") =>
   fetchJson<EtfAwShadowStatus>(`/workflow/etf-aw/shadow/status?account_id=${encodeURIComponent(accountId)}`);
-export const updateEtfAwLocalShadow = (accountId = "etf-aw-v2-paper") =>
-  fetch(`${API_BASE}/workflow/etf-aw/shadow/update-local?account_id=${encodeURIComponent(accountId)}`, { method: "POST" }).then((res) => {
+export const updateEtfAwLocalShadow = (accountId = "etf-aw-v2-paper", weightSource = "target-weight") =>
+  fetch(`${API_BASE}/workflow/etf-aw/shadow/update-local?account_id=${encodeURIComponent(accountId)}&weight_source=${encodeURIComponent(weightSource)}`, { method: "POST" }).then((res) => {
     if (!res.ok) {
       throw new Error(`${res.status} ${res.statusText}`);
     }

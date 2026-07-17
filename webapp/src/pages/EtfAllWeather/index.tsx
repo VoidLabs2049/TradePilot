@@ -48,6 +48,7 @@ import "./index.css";
 
 const { Text, Title } = Typography;
 const DEFAULT_SHADOW_ACCOUNT = "etf-aw-v2-paper";
+const BASELINE_SHADOW_ACCOUNT = "etf-aw-baseline-v2-paper";
 
 const ROLE_LABELS: Record<EtfAwSleeveRole, string> = {
   equity_large: "大盘权益",
@@ -185,6 +186,8 @@ export default function EtfAllWeather() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [shadow, setShadow] = useState<EtfAwShadowReportResponse | null>(null);
+  const [dynamicShadow, setDynamicShadow] = useState<EtfAwShadowReportResponse | null>(null);
+  const [baselineShadow, setBaselineShadow] = useState<EtfAwShadowReportResponse | null>(null);
   const [accountId, setAccountId] = useState<string>();
   const [performance, setPerformance] = useState<EtfAwLocalPerformance | null>(null);
   const [researchSummary, setResearchSummary] = useState<EtfAwResearchSummary | null>(null);
@@ -201,9 +204,11 @@ export default function EtfAllWeather() {
     const requestedAccountId = selectedAccountId || accountId || DEFAULT_SHADOW_ACCOUNT;
     const failures: string[] = [];
     try {
-      const [budgetResult, shadowResult, performanceResult, statusResult, researchResult] = await Promise.allSettled([
+      const [budgetResult, shadowResult, dynamicShadowResult, baselineShadowResult, performanceResult, statusResult, researchResult] = await Promise.allSettled([
         getLatestEtfAwRiskBudget(),
         getEtfAwShadowReport(requestedAccountId),
+        getEtfAwShadowReport(DEFAULT_SHADOW_ACCOUNT),
+        getEtfAwShadowReport(BASELINE_SHADOW_ACCOUNT),
         getEtfAwLocalPerformance(),
         getEtfAwShadowStatus(requestedAccountId),
         getEtfAwResearchSummary(),
@@ -227,6 +232,18 @@ export default function EtfAllWeather() {
       } else {
         setShadow(null);
         failures.push(`模拟盘：${shadowResult.reason instanceof Error ? shadowResult.reason.message : "读取失败"}`);
+      }
+      if (dynamicShadowResult.status === "fulfilled") {
+        setDynamicShadow(dynamicShadowResult.value);
+      } else {
+        setDynamicShadow(null);
+        failures.push(`动态模拟：${dynamicShadowResult.reason instanceof Error ? dynamicShadowResult.reason.message : "读取失败"}`);
+      }
+      if (baselineShadowResult.status === "fulfilled") {
+        setBaselineShadow(baselineShadowResult.value);
+      } else {
+        setBaselineShadow(null);
+        failures.push(`基线模拟：${baselineShadowResult.reason instanceof Error ? baselineShadowResult.reason.message : "读取失败"}`);
       }
       if (performanceResult.status === "fulfilled") {
         setPerformance(performanceResult.value);
@@ -266,7 +283,10 @@ export default function EtfAllWeather() {
     setUpdatingShadow(true);
     setError(null);
     try {
-      const result = await updateEtfAwLocalShadow(selectedAccountId);
+      const result = await updateEtfAwLocalShadow(
+        selectedAccountId,
+        selectedAccountId === BASELINE_SHADOW_ACCOUNT ? "baseline" : "target-weight",
+      );
       setShadowUpdate(result);
       if (result.state === "invalid") {
         setError((result.blocking_reasons || ["本地模拟盘更新失败"]).join(" / "));
@@ -311,6 +331,28 @@ export default function EtfAllWeather() {
       ? [{ date: row.observation_date, series: "相对收益", value: row.relative_cumulative_return }]
       : []),
   ]);
+  const shadowComparisonSeries = [
+    ...(dynamicShadow?.report?.daily_series || []).map((row) => ({
+      date: row.observation_date,
+      series: "动态风险预算",
+      value: row.cumulative_return,
+    })),
+    ...(baselineShadow?.report?.daily_series || []).map((row) => ({
+      date: row.observation_date,
+      series: "静态逆波动率",
+      value: row.cumulative_return,
+    })),
+  ];
+  const shadowComparisonRows = [
+    { key: "dynamic", strategy: "动态风险预算", report: dynamicShadow?.report },
+    { key: "baseline", strategy: "静态逆波动率", report: baselineShadow?.report },
+  ].filter((row) => row.report);
+  const dynamicReturn = dynamicShadow?.report?.metrics.period_return;
+  const baselineReturn = baselineShadow?.report?.metrics.period_return;
+  const returnLead =
+    typeof dynamicReturn === "number" && typeof baselineReturn === "number"
+      ? dynamicReturn - baselineReturn
+      : null;
   const primaryStrategy =
     (performance?.metrics || []).find((row) => row.strategy !== "static_inverse_vol")?.strategy ||
     performance?.metrics?.[0]?.strategy;
@@ -1207,13 +1249,61 @@ export default function EtfAllWeather() {
           description={`账户 ${shadowUpdate.account_id || "-"} · seed ${shadowUpdate.seed_date || "-"}`}
         />
       ) : null}
+      {shadowComparisonRows.length === 2 ? (
+        <>
+          <Alert
+            type={typeof returnLead === "number" && returnLead >= 0 ? "success" : "info"}
+            showIcon
+            message={
+              typeof returnLead === "number"
+                ? `动态策略区间收益${returnLead >= 0 ? "领先" : "落后"} ${formatPercent(Math.abs(returnLead))}`
+                : "动态策略与静态基线并行观察"
+            }
+            description="两组账户使用相同初始资产和观察区间；短样本只用于前向跟踪，不作为单独调参依据。"
+          />
+          <Card title="策略模拟对比" extra={<Tag color="blue">同区间</Tag>}>
+            <Table
+              size="small"
+              pagination={false}
+              rowKey="key"
+              dataSource={shadowComparisonRows}
+              columns={[
+                { title: "策略", dataIndex: "strategy" },
+                { title: "期末资产", render: (_, row) => formatCurrency(row.report?.metrics.ending_asset) },
+                { title: "区间收益", render: (_, row) => formatSignedPercent(row.report?.metrics.period_return) },
+                { title: "年化波动", render: (_, row) => formatPercent(row.report?.metrics.annualized_volatility) },
+                { title: "最大回撤", render: (_, row) => formatPercent(row.report?.metrics.max_drawdown) },
+                { title: "交易日", render: (_, row) => row.report?.integrity.observation_count || 0 },
+              ]}
+              scroll={{ x: 720 }}
+            />
+          </Card>
+          <Card
+            title="动态策略 vs 静态基线"
+            extra={<Text type="secondary">{dynamicShadow?.report?.start_date} 至 {dynamicShadow?.report?.end_date}</Text>}
+          >
+            <Line
+              data={shadowComparisonSeries}
+              xField="date"
+              yField="value"
+              colorField="series"
+              height={320}
+              scale={{ color: { range: ["#1677ff", "#595959"] } }}
+              axis={{ y: { labelFormatter: (value: number) => formatPercent(value) } }}
+              tooltip={{ items: [{ channel: "y", valueFormatter: (value: number) => formatPercent(value) }] }}
+            />
+          </Card>
+        </>
+      ) : (
+        <Alert type="info" showIcon message="对比账户数据尚未就绪" />
+      )}
       <Row gutter={[12, 12]}>
         <Col xs={12} lg={6}><Card size="small"><Statistic title="区间收益" value={formatPercent(shadow.report.metrics.period_return)} /></Card></Col>
         <Col xs={12} lg={6}><Card size="small"><Statistic title="最大回撤" value={formatPercent(shadow.report.metrics.max_drawdown)} /></Card></Col>
         <Col xs={12} lg={6}><Card size="small"><Statistic title="年化波动" value={formatPercent(shadow.report.metrics.annualized_volatility)} /></Card></Col>
         <Col xs={12} lg={6}><Card size="small"><Statistic title="观察交易日" value={shadow.report.integrity.observation_count} /></Card></Col>
       </Row>
-      <Card title="Forward 净值表现" extra={<Text type="secondary">{shadow.report.start_date} 至 {shadow.report.end_date}</Text>}>
+      <Card title={`账户明细 · ${shadow.report.account_id}`} extra={<Text type="secondary">{shadow.report.start_date} 至 {shadow.report.end_date}</Text>}>
         <Line
           data={shadowSeries}
           xField="date"
