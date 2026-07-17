@@ -355,7 +355,7 @@ export interface EtfAwResearchSummary {
       objective: string;
       best_candidate_name: string;
       candidates: Array<{
-      candidate_name: string;
+        candidate_name: string;
         shrinkage_to_equal_weight?: number;
         search_method?: string;
         weights: Record<string, number>;
@@ -370,6 +370,32 @@ export interface EtfAwResearchSummary {
           worst_max_drawdown: number | null;
         };
       }>;
+      recent_return_frontier: {
+        objective: string;
+        search_method: string;
+        solutions: Array<{
+          max_drawdown_limit: number;
+          feasible_candidate_count: number;
+          solution: {
+            candidate_name: string;
+            weights: Record<string, number>;
+            recent_6m: {
+              total_return: number | null;
+              annualized_return: number | null;
+              annualized_volatility: number | null;
+              sharpe_ratio: number | null;
+              max_drawdown: number | null;
+            };
+            validation: Record<string, {
+              total_return: number | null;
+              annualized_return: number | null;
+              annualized_volatility: number | null;
+              sharpe_ratio: number | null;
+              max_drawdown: number | null;
+            }>;
+          } | null;
+        }>;
+      };
     };
   } | null;
 }

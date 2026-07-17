@@ -433,6 +433,10 @@ export default function EtfAllWeather() {
   );
   const currentCandidate = fixedBacktest?.optimization.candidates.find((row) => row.candidate_name === "当前权重");
   const equalCandidate = fixedBacktest?.optimization.candidates.find((row) => row.candidate_name === "等权");
+  const recentFrontier = fixedBacktest?.optimization.recent_return_frontier;
+  const balancedRecentSolution = recentFrontier?.solutions.find(
+    (row) => row.max_drawdown_limit === 0.07,
+  )?.solution;
   const comparisonCards = [
     { name: "当前权重", candidate: currentCandidate, color: "orange" },
     { name: "优化候选", candidate: optimizedCandidate, color: "green" },
@@ -897,6 +901,82 @@ export default function EtfAllWeather() {
           message={`判定：${verdictText}`}
           description={`规则：${researchSummary.robustness?.decision_rule || "-"}。当前用于研究展示，不代表未来收益保证。`}
         />
+        {recentFrontier ? (
+          <Card
+            size="small"
+            title="近期收益 / 回撤约束前沿"
+            extra={<Tag color="blue">近 6 个月优化</Tag>}
+          >
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="在最大回撤阈值内最大化近期收益"
+              description="5% / 7% / 10% 三档使用同一 long-only 搜索空间；近 12 个月、样本外和全区间仅用于复核，不参与近期目标排序。"
+            />
+            <Table
+              size="small"
+              pagination={false}
+              rowKey="max_drawdown_limit"
+              scroll={{ x: 760 }}
+              dataSource={recentFrontier.solutions}
+              columns={[
+                { title: "回撤上限", dataIndex: "max_drawdown_limit", render: formatPercent },
+                { title: "可行组合", dataIndex: "feasible_candidate_count" },
+                { title: "近 6 月收益", render: (_, row) => formatPercent(row.solution?.recent_6m.total_return) },
+                { title: "实际回撤", render: (_, row) => formatPercent(row.solution?.recent_6m.max_drawdown) },
+                { title: "近 6 月 Sharpe", render: (_, row) => formatDecimal(row.solution?.recent_6m.sharpe_ratio) },
+                { title: "近 12 月收益", render: (_, row) => formatPercent(row.solution?.validation.recent_12m?.total_return) },
+                { title: "样本外收益", render: (_, row) => formatPercent(row.solution?.validation.out_of_sample?.total_return) },
+              ]}
+            />
+            {balancedRecentSolution ? (
+              <>
+                <Alert
+                  type="success"
+                  showIcon
+                  style={{ marginTop: 12, marginBottom: 12 }}
+                  message={`7% 平衡档：近 6 个月收益 ${formatPercent(balancedRecentSolution.recent_6m.total_return)}，回撤 ${formatPercent(balancedRecentSolution.recent_6m.max_drawdown)}`}
+                  description="研究候选，不会自动覆盖当前目标权重或模拟账户。"
+                />
+                <Table
+                  size="small"
+                  pagination={false}
+                  rowKey="role"
+                  dataSource={ROLE_ORDER.map((role) => {
+                    const code = codeByRole[role];
+                    const currentWeight = researchSummary.target_weight.rows.find(
+                      (row) => row.sleeve_role === role,
+                    )?.target_weight || 0;
+                    const candidateWeight = code ? balancedRecentSolution.weights[code] || 0 : 0;
+                    return {
+                      role,
+                      code,
+                      currentWeight,
+                      candidateWeight,
+                      delta: candidateWeight - currentWeight,
+                    };
+                  })}
+                  columns={[
+                    {
+                      title: "资产",
+                      dataIndex: "role",
+                      render: (value: string, row) => (
+                        <Space direction="vertical" size={0}>
+                          <Text>{roleLabel(value)}</Text>
+                          <Text type="secondary">{row.code}</Text>
+                        </Space>
+                      ),
+                    },
+                    { title: "当前权重", dataIndex: "currentWeight", render: formatPercent },
+                    { title: "7% 平衡档", dataIndex: "candidateWeight", render: formatPercent },
+                    { title: "变化", dataIndex: "delta", render: formatSignedPercent },
+                  ]}
+                />
+              </>
+            ) : null}
+          </Card>
+        ) : null}
         <Row gutter={[12, 12]}>
           {comparisonCards.map((item) => (
             <Col xs={24} md={8} key={item.name}>
