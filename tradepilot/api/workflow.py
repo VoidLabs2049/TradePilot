@@ -26,7 +26,10 @@ from tradepilot.etf_aw.shadow_run import (
 from tradepilot.etf_aw.rebalance_plan import REBALANCE_PLAN_DATASET
 from tradepilot.etl.etf_aw_universe import ETF_AW_SLEEVE_CODES
 from tradepilot.etl.models import StorageZone
-from tradepilot.etl.read_models import get_latest_etf_aw_risk_budget
+from tradepilot.etl.read_models import (
+    get_latest_etf_aw_risk_budget,
+    get_latest_etf_aw_snapshot,
+)
 from tradepilot.etl.storage import build_zone_path
 from tradepilot.workflow.models import (
     EtfAwRiskBudgetResponse,
@@ -41,6 +44,13 @@ from tradepilot.workflow.service import DailyWorkflowService
 
 router = APIRouter()
 _service = DailyWorkflowService()
+
+_ETF_AW_CALENDAR = "etf_aw_v2_monthly_post_20"
+_ETF_AW_STRATEGY = "etf_aw_v2"
+_ETF_AW_TARGET_VERSION = "target_weight_inverse_vol_v2"
+_ETF_AW_RISK_BUDGET_VERSION = "risk_budget_v2"
+_ETF_AW_BASELINE = "static_inverse_vol"
+_ETF_AW_BASELINE_VERSION = "static_inverse_vol_v2"
 
 
 @router.get("/latest", response_model=WorkflowRunResponse | None)
@@ -103,7 +113,10 @@ def get_latest_etf_aw_context(
     ),
 ) -> dict | None:
     """Return the latest ETF all-weather snapshot context."""
-    return _service.get_latest_etf_aw_context(as_of_date=as_of_date)
+    return get_latest_etf_aw_snapshot(
+        as_of_date=as_of_date,
+        calendar_name=_ETF_AW_CALENDAR,
+    )
 
 
 @router.get(
@@ -116,7 +129,12 @@ def get_latest_etf_aw_risk_budget_context(
     ),
 ) -> EtfAwRiskBudgetResponse | None:
     """Return the latest frozen ETF all-weather risk budget."""
-    return get_latest_etf_aw_risk_budget(as_of_date=as_of_date)
+    return get_latest_etf_aw_risk_budget(
+        as_of_date=as_of_date,
+        calendar_name=_ETF_AW_CALENDAR,
+        strategy_name=_ETF_AW_STRATEGY,
+        strategy_version=_ETF_AW_RISK_BUDGET_VERSION,
+    )
 
 
 @router.get("/etf-aw/research-summary")
@@ -159,15 +177,22 @@ def _cached_etf_aw_research_summary(
         LAKEHOUSE_ROOT, "derived.etf_aw_baseline_weight"
     )
     sleeve_daily = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_sleeve_daily")
+    target_weight = _current_target_weight_rows(target_weight)
+    kernel = _current_kernel_rows(kernel)
+    baseline_weight = _current_baseline_weight_rows(baseline_weight)
+    risk_budget = _current_risk_budget_rows(
+        read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_risk_budget")
+    )
+    strategy_context = _current_strategy_context_rows(
+        read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_strategy_context")
+    )
     latest_target = _latest_complete_target_weight_rows(target_weight)
     robustness = _local_robustness_summary(
         kernel=kernel,
         target_weight=target_weight,
         baseline_weight=baseline_weight,
-        risk_budget=read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_risk_budget"),
-        strategy_context=read_shadow_dataset(
-            LAKEHOUSE_ROOT, "derived.etf_aw_strategy_context"
-        ),
+        risk_budget=risk_budget,
+        strategy_context=strategy_context,
         sleeve_daily=sleeve_daily,
     )
     return _json_safe(
@@ -261,6 +286,7 @@ def get_etf_aw_shadow_status(account_id: str = "etf-aw-paper") -> dict:
     """Return local lakehouse freshness and shadow observation coverage."""
     sleeve_daily = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_sleeve_daily")
     target_weight = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_target_weight")
+    target_weight = _current_target_weight_rows(target_weight)
     observations = read_shadow_dataset(LAKEHOUSE_ROOT, SHADOW_OBSERVATION_DATASET)
 
     price_dates = _complete_etf_aw_price_dates(sleeve_daily)
@@ -314,6 +340,7 @@ def get_etf_aw_shadow_status(account_id: str = "etf-aw-paper") -> dict:
 def get_etf_aw_local_performance() -> dict | None:
     """Return strategy and baseline performance from the local backtest artifact."""
     frame = read_shadow_dataset(LAKEHOUSE_ROOT, "derived.etf_aw_backtest_kernel")
+    frame = _current_kernel_rows(frame)
     if frame.empty:
         return None
     daily = frame[frame["observation_type"].astype(str).eq("daily_nav")].copy()
@@ -428,8 +455,93 @@ def _account_observation_dates(frame: pd.DataFrame, account_id: str) -> list[dat
     )
 
 
+def _current_target_weight_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return current V2 target-weight rows."""
+
+    return _current_strategy_rows(
+        frame,
+        strategy_name=_ETF_AW_STRATEGY,
+        strategy_version=_ETF_AW_TARGET_VERSION,
+    )
+
+
+def _current_risk_budget_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return current V2 risk-budget rows."""
+
+    return _current_strategy_rows(
+        frame,
+        strategy_name=_ETF_AW_STRATEGY,
+        strategy_version=_ETF_AW_RISK_BUDGET_VERSION,
+    )
+
+
+def _current_strategy_context_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return current V2 strategy-context rows."""
+
+    return _current_strategy_rows(
+        frame,
+        strategy_name=_ETF_AW_STRATEGY,
+        strategy_version="stage_g_v2",
+    )
+
+
+def _current_kernel_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return current V2 target and baseline kernel rows."""
+
+    if frame.empty:
+        return frame
+    required = {"calendar_name", "strategy_name", "strategy_version"}
+    if not required.issubset(frame.columns):
+        return frame.iloc[0:0].copy()
+    current_identity = (
+        frame["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY)
+        & frame["strategy_version"].astype(str).eq(_ETF_AW_TARGET_VERSION)
+    ) | (
+        frame["strategy_name"].astype(str).eq(_ETF_AW_BASELINE)
+        & frame["strategy_version"].astype(str).eq(_ETF_AW_BASELINE_VERSION)
+    )
+    return frame[
+        frame["calendar_name"].astype(str).eq(_ETF_AW_CALENDAR) & current_identity
+    ].copy()
+
+
+def _current_baseline_weight_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return current V2 baseline-weight rows."""
+
+    if frame.empty:
+        return frame
+    required = {"calendar_name", "baseline_name", "baseline_version"}
+    if not required.issubset(frame.columns):
+        return frame.iloc[0:0].copy()
+    return frame[
+        frame["calendar_name"].astype(str).eq(_ETF_AW_CALENDAR)
+        & frame["baseline_name"].astype(str).eq(_ETF_AW_BASELINE)
+        & frame["baseline_version"].astype(str).eq(_ETF_AW_BASELINE_VERSION)
+    ].copy()
+
+
+def _current_strategy_rows(
+    frame: pd.DataFrame,
+    *,
+    strategy_name: str,
+    strategy_version: str,
+) -> pd.DataFrame:
+    """Return current-calendar rows for one strategy identity."""
+
+    if frame.empty:
+        return frame
+    required = {"calendar_name", "strategy_name", "strategy_version"}
+    if not required.issubset(frame.columns):
+        return frame.iloc[0:0].copy()
+    return frame[
+        frame["calendar_name"].astype(str).eq(_ETF_AW_CALENDAR)
+        & frame["strategy_name"].astype(str).eq(strategy_name)
+        & frame["strategy_version"].astype(str).eq(strategy_version)
+    ].copy()
+
+
 def _latest_complete_target_weight_rows(frame: pd.DataFrame) -> dict:
-    """Return the latest complete five-sleeve target-weight vector."""
+    """Return the latest complete current-universe target-weight vector."""
     if frame.empty or "rebalance_date" not in frame.columns:
         return {"rebalance_date": None, "rows": [], "status_counts": {}}
     rows = frame.copy()
@@ -470,9 +582,10 @@ def _latest_complete_target_weight_rows(frame: pd.DataFrame) -> dict:
         {
             "equity_large": 0,
             "equity_small": 1,
-            "bond": 2,
-            "gold": 3,
-            "cash": 4,
+            "equity_overseas": 2,
+            "bond": 3,
+            "gold": 4,
+            "cash": 5,
         }
     )
     latest = latest.sort_values(["_role_order", "sleeve_code"])

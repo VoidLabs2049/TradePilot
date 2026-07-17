@@ -57,7 +57,7 @@ def fixed_weight_segment_backtests(
     return {
         "weight_rebalance_date": target.get("rebalance_date"),
         "weight_basis": "latest complete target weights applied as fixed weights",
-        "baseline": "equal_weight_fixed_20pct_each",
+        "baseline": "equal_weight_fixed",
         "segments": results,
         "summary": summary,
         "optimization": _weight_shrinkage_optimization(
@@ -201,7 +201,7 @@ def _weight_shrinkage_optimization(
     )
     best = max(candidates, key=_candidate_rank)
     return {
-        "method": "shrinkage_plus_focused_5pct_grid_search",
+        "method": "shrinkage_plus_focused_6_sleeve_grid_search",
         "objective": "优先提高跑赢等权的分段数，其次盈利分段数、平均相对收益和最差回撤",
         "best_candidate_name": best["candidate_name"],
         "candidates": candidates,
@@ -216,35 +216,51 @@ def _grid_weight_candidates(
 ) -> list[dict]:
     """Return the best focused-grid candidate under simple long-only caps."""
     best: dict | None = None
-    for first in (0.10, 0.15, 0.20, 0.25):
-        for second in (0.20, 0.25, 0.30, 0.35, 0.40, 0.45):
-            for third in (0.20, 0.25, 0.30, 0.35, 0.40):
-                for fourth in (0.15, 0.20, 0.25):
-                    fifth = 1.0 - first - second - third - fourth
-                    if fifth < 0 or fifth > 0.35:
-                        continue
-                    weights_list = [first, second, third, fourth, fifth]
-                    if max(weights_list) > 0.45 or weights_list[4] > 0.35:
-                        continue
-                    weights = dict(zip(ETF_AW_SLEEVE_CODES, weights_list, strict=True))
-                    results = _fixed_weight_results(
-                        returns=returns,
-                        equal_weight=equal_weight_returns,
-                        segments=segments,
-                        weights=weights,
-                    )
-                    summary = _fixed_weight_summary(results)
-                    candidate = {
-                        "candidate_name": "候选优化",
-                        "search_method": "focused_5pct_long_only_grid_caps",
-                        "weights": weights,
-                        "summary": summary,
-                        "score": _candidate_score(summary),
-                    }
-                    if best is None or _candidate_rank(candidate) > _candidate_rank(
-                        best
-                    ):
-                        best = candidate
+    for equity_large in (0.10, 0.15, 0.20):
+        for equity_small in (0.10, 0.15, 0.20):
+            for equity_overseas in (0.05, 0.10, 0.15, 0.20):
+                for bond in (0.20, 0.25, 0.30):
+                    for gold in (0.10, 0.15, 0.20):
+                        cash = round(
+                            1.0
+                            - equity_large
+                            - equity_small
+                            - equity_overseas
+                            - bond
+                            - gold,
+                            10,
+                        )
+                        weights_list = [
+                            equity_large,
+                            equity_small,
+                            equity_overseas,
+                            bond,
+                            gold,
+                            cash,
+                        ]
+                        if cash < 0 or cash > 0.35 or max(weights_list) > 0.45:
+                            continue
+                        weights = dict(
+                            zip(ETF_AW_SLEEVE_CODES, weights_list, strict=True)
+                        )
+                        results = _fixed_weight_results(
+                            returns=returns,
+                            equal_weight=equal_weight_returns,
+                            segments=segments,
+                            weights=weights,
+                        )
+                        summary = _fixed_weight_summary(results)
+                        candidate = {
+                            "candidate_name": "候选优化",
+                            "search_method": "focused_6_sleeve_long_only_grid_caps",
+                            "weights": weights,
+                            "summary": summary,
+                            "score": _candidate_score(summary),
+                        }
+                        if best is None or _candidate_rank(candidate) > _candidate_rank(
+                            best
+                        ):
+                            best = candidate
     return [] if best is None else [best]
 
 

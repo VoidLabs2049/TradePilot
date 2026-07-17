@@ -42,28 +42,46 @@ import {
   type EtfAwLocalPerformance,
   type EtfAwRiskBudget,
   type EtfAwRiskBudgetSleeve,
+  type EtfAwSleeveRole,
 } from "../../services/api";
 import "./index.css";
 
 const { Text, Title } = Typography;
 
-const ROLE_LABELS: Record<string, string> = {
+const ROLE_LABELS: Record<EtfAwSleeveRole, string> = {
   equity_large: "大盘权益",
   equity_small: "小盘权益",
+  equity_overseas: "纳指权益",
   bond: "债券",
   gold: "黄金",
   cash: "现金",
 };
 
-const ROLE_COLORS: Record<string, string> = {
+const ROLE_COLORS: Record<EtfAwSleeveRole, string> = {
   equity_large: "#1677ff",
   equity_small: "#13c2c2",
+  equity_overseas: "#722ed1",
   bond: "#52c41a",
   gold: "#faad14",
   cash: "#8c8c8c",
 };
 
-const ROLE_ORDER = ["equity_large", "equity_small", "bond", "gold", "cash"];
+const ROLE_ORDER: EtfAwSleeveRole[] = [
+  "equity_large",
+  "equity_small",
+  "equity_overseas",
+  "bond",
+  "gold",
+  "cash",
+];
+
+function roleLabel(role: string) {
+  return ROLE_LABELS[role as EtfAwSleeveRole] || role;
+}
+
+function roleColor(role: string) {
+  return ROLE_COLORS[role as EtfAwSleeveRole] || "#1677ff";
+}
 
 type PositionInput = Record<string, number>;
 
@@ -152,7 +170,7 @@ function BudgetBar({ row }: { row: EtfAwRiskBudgetSleeve }) {
           style={{
             width: `${Math.max(0, Math.min(value * 100, 100))}%`,
             height: "100%",
-            background: ROLE_COLORS[row.sleeve_role] || "#1677ff",
+            background: roleColor(row.sleeve_role),
           }}
         />
       </div>
@@ -266,13 +284,13 @@ export default function EtfAllWeather() {
     () =>
       budgets
         .filter((row) => typeof row.delta_budget === "number" && row.delta_budget !== 0)
-        .map((row) => `${ROLE_LABELS[row.sleeve_role] || row.sleeve_role} ${formatSignedPercent(row.delta_budget)}`),
+        .map((row) => `${roleLabel(row.sleeve_role)} ${formatSignedPercent(row.delta_budget)}`),
     [budgets],
   );
   const allocationData = budgets
     .filter((row) => typeof row.tilted_budget === "number")
     .map((row) => ({
-      role: ROLE_LABELS[row.sleeve_role] || row.sleeve_role,
+      role: roleLabel(row.sleeve_role),
       value: row.tilted_budget as number,
       sleeveRole: row.sleeve_role,
     }));
@@ -486,7 +504,7 @@ export default function EtfAllWeather() {
                   innerRadius={0.62}
                   height={280}
                   scale={{
-                    color: { range: allocationData.map((item) => ROLE_COLORS[item.sleeveRole] || "#1677ff") },
+                    color: { range: allocationData.map((item) => roleColor(item.sleeveRole)) },
                   }}
                   label={{ text: (item: { value: number }) => formatPercent(item.value), position: "outside" }}
                   legend={{ color: { position: "bottom", layout: { justifyContent: "center" } } }}
@@ -530,10 +548,10 @@ export default function EtfAllWeather() {
                           width: 10,
                           height: 10,
                           borderRadius: 2,
-                          background: ROLE_COLORS[value] || "#1677ff",
+                          background: roleColor(value),
                         }}
                       />
-                      <Text>{ROLE_LABELS[value] || value}</Text>
+                      <Text>{roleLabel(value)}</Text>
                       <Text type="secondary">{value}</Text>
                     </Space>
                   ),
@@ -652,7 +670,7 @@ export default function EtfAllWeather() {
             innerRadius={0.62}
             height={260}
             scale={{
-              color: { range: allocationData.map((item) => ROLE_COLORS[item.sleeveRole] || "#1677ff") },
+              color: { range: allocationData.map((item) => roleColor(item.sleeveRole)) },
             }}
             label={{ text: (item: { value: number }) => formatPercent(item.value), position: "outside" }}
             legend={{ color: { position: "bottom", layout: { justifyContent: "center" } } }}
@@ -688,10 +706,10 @@ export default function EtfAllWeather() {
                         width: 10,
                         height: 10,
                         borderRadius: 2,
-                        background: ROLE_COLORS[value] || "#1677ff",
+                        background: roleColor(value),
                       }}
                     />
-                    <Text>{ROLE_LABELS[value] || value}</Text>
+                    <Text>{roleLabel(value)}</Text>
                   </Space>
                 ),
               },
@@ -761,7 +779,7 @@ export default function EtfAllWeather() {
             <Col xs={24} sm={12} lg={8} xl={4} key={role}>
               <Card size="small">
                 <Space direction="vertical" size={6} style={{ width: "100%" }}>
-                  <Text>{ROLE_LABELS[role] || role}</Text>
+                  <Text>{roleLabel(role)}</Text>
                   <Text type="secondary">{codeByRole[role] || "-"}</Text>
                   <InputNumber
                     min={0}
@@ -789,7 +807,7 @@ export default function EtfAllWeather() {
               fixed: "left",
               render: (value: string, row) => (
                 <Space direction="vertical" size={0}>
-                  <Text>{ROLE_LABELS[value] || value}</Text>
+                  <Text>{roleLabel(value)}</Text>
                   <Text type="secondary">{row.symbol}</Text>
                 </Space>
               ),
@@ -903,7 +921,7 @@ export default function EtfAllWeather() {
                   dataIndex: "role",
                   render: (value: string, row) => (
                     <Space direction="vertical" size={0}>
-                      <Text>{ROLE_LABELS[value] || value}</Text>
+                      <Text>{roleLabel(value)}</Text>
                       <Text type="secondary">{row.code}</Text>
                     </Space>
                   ),
@@ -1072,7 +1090,7 @@ export default function EtfAllWeather() {
                       {ROLE_ORDER.map((role) => {
                         const code = codeByRole[role];
                         const value = code ? row.weights[code] : undefined;
-                        return <Tag key={role}>{ROLE_LABELS[role] || role} {formatPercent(value)}</Tag>;
+                        return <Tag key={role}>{roleLabel(role)} {formatPercent(value)}</Tag>;
                       })}
                     </Space>
                   ),
@@ -1101,7 +1119,7 @@ export default function EtfAllWeather() {
                     dataIndex: "sleeve_role",
                     render: (value: string, row) => (
                       <Space direction="vertical" size={0}>
-                        <Text>{ROLE_LABELS[value] || value}</Text>
+                        <Text>{roleLabel(value)}</Text>
                         <Text type="secondary">{row.sleeve_code}</Text>
                       </Space>
                     ),
@@ -1139,7 +1157,7 @@ export default function EtfAllWeather() {
                       fixed: "left",
                       render: (value: string, row) => (
                         <Space direction="vertical" size={0}>
-                          <Text>{ROLE_LABELS[value] || value}</Text>
+                          <Text>{roleLabel(value)}</Text>
                           <Text type="secondary">{row.sleeve_code}</Text>
                         </Space>
                       ),
