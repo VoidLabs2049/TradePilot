@@ -90,11 +90,11 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
         self.assertEqual(len(frame), 1)
         row = frame.iloc[0]
         self.assertEqual(row["market_regime_label"], "risk_on")
-        self.assertEqual(row["source_context_strategy_version"], "stage_g_v1")
-        self.assertEqual(row["source_risk_budget_strategy_version"], "risk_budget_v1")
+        self.assertEqual(row["source_context_strategy_version"], "stage_g_v2")
+        self.assertEqual(row["source_risk_budget_strategy_version"], "risk_budget_v2")
         self.assertEqual(
             row["source_target_weight_strategy_version"],
-            "target_weight_inverse_vol_v1",
+            "target_weight_inverse_vol_v2",
         )
         self.assertTrue(bool(row["macro_rates_missing"]))
         self.assertEqual(row["risk_budget_status"], "partial")
@@ -106,7 +106,7 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
         self.assertTrue(constraints["cap_triggered"])
         self.assertTrue(constraints["no_trade_band_triggered"])
         target = json.loads(row["target_weight_explanation_json"])
-        self.assertEqual(len(target["weights"]), 5)
+        self.assertEqual(len(target["weights"]), 6)
 
     def test_monthly_explainability_ignores_other_context_strategy_version(
         self,
@@ -137,7 +137,7 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
 
         self.assertEqual(len(frame), 1)
         self.assertEqual(frame.iloc[0]["market_regime_label"], "risk_on")
-        self.assertEqual(frame.iloc[0]["source_context_strategy_version"], "stage_g_v1")
+        self.assertEqual(frame.iloc[0]["source_context_strategy_version"], "stage_g_v2")
 
     def test_monthly_explainability_missing_required_columns_returns_empty(
         self,
@@ -260,12 +260,12 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
         return {
             "schema_version": "etf_aw_strategy_context_v1",
             "contract_version": "etf_aw_strategy_context_contract_v1",
-            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
             "calendar_month": rebalance_date.strftime("%Y-%m"),
             "rebalance_date": rebalance_date,
             "effective_date": rebalance_date,
-            "strategy_name": "etf_aw_v1",
-            "strategy_version": "stage_g_v1",
+            "strategy_name": "etf_aw_v2",
+            "strategy_version": "stage_g_v2",
             "context_status": "partial",
             "readiness_level": "degraded_research",
             "context_basis": "market_only",
@@ -292,10 +292,10 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
         return {
             "schema_version": "etf_aw_risk_budget_v1",
             "contract_version": "etf_aw_risk_budget_contract_v1",
-            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
             "rebalance_date": rebalance_date,
-            "strategy_name": "etf_aw_v1",
-            "strategy_version": "risk_budget_v1",
+            "strategy_name": "etf_aw_v2",
+            "strategy_version": "risk_budget_v2",
             "confidence_score": 0.5,
             "effective_confidence_score": 0.35,
             "market_regime_label": "risk_on",
@@ -313,27 +313,35 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
             "source_strategy_context_rebalance_date": rebalance_date,
             "source_regime_rebalance_date": rebalance_date,
             "sleeve_role": role,
-            "base_budget": 0.2,
+            "base_budget": 0.0 if role == "equity_overseas" else 0.2,
             "delta_budget": 0.0,
-            "tilted_budget": 0.2,
+            "tilted_budget": 0.0 if role == "equity_overseas" else 0.2,
             "ingested_at": pd.Timestamp("2024-07-22 15:00:00"),
         }
 
     def _target_weight_row(self, rebalance_date: date, role: str) -> dict:
-        raw = 0.50 if role == "equity_large" else 0.125
-        constrained = 0.45 if role == "equity_large" else 0.1375
+        raw = (
+            0.0
+            if role == "equity_overseas"
+            else (0.50 if role == "equity_large" else 0.125)
+        )
+        constrained = (
+            0.0
+            if role == "equity_overseas"
+            else (0.45 if role == "equity_large" else 0.1375)
+        )
         target = constrained + 0.001 if role == "bond" else constrained
         return {
             "schema_version": "etf_aw_target_weight_v1",
             "contract_version": "etf_aw_target_weight_contract_v1",
-            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
             "rebalance_date": rebalance_date,
             "effective_date": rebalance_date,
-            "strategy_name": "etf_aw_v1",
-            "strategy_version": "target_weight_inverse_vol_v1",
+            "strategy_name": "etf_aw_v2",
+            "strategy_version": "target_weight_inverse_vol_v2",
             "sleeve_code": ETF_AW_SLEEVE_CODE_BY_ROLE[role],
             "sleeve_role": role,
-            "risk_budget": 0.2,
+            "risk_budget": 0.0 if role == "equity_overseas" else 0.2,
             "volatility_estimate": 0.005 if role == "gold" else 0.01,
             "volatility_floor": 0.005,
             "raw_target_weight": raw,
@@ -358,9 +366,9 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
     def _turnover_row(self, rebalance_date: date) -> dict:
         return {
             "schema_version": "etf_aw_backtest_kernel_v1",
-            "calendar_name": "etf_aw_v1_monthly_post_20",
-            "strategy_name": "etf_aw_v1",
-            "strategy_version": "target_weight_inverse_vol_v1",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
+            "strategy_name": "etf_aw_v2",
+            "strategy_version": "target_weight_inverse_vol_v2",
             "observation_type": "turnover",
             "observation_date": rebalance_date,
             "metric_name": "monthly_turnover",
@@ -380,9 +388,9 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
     def _diagnostic_row(self, rebalance_date: date) -> dict:
         return {
             "schema_version": "etf_aw_backtest_kernel_v1",
-            "calendar_name": "etf_aw_v1_monthly_post_20",
-            "strategy_name": "etf_aw_v1",
-            "strategy_version": "target_weight_inverse_vol_v1",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
+            "strategy_name": "etf_aw_v2",
+            "strategy_version": "target_weight_inverse_vol_v2",
             "observation_type": "diagnostic",
             "observation_date": rebalance_date,
             "metric_name": "input_validation",

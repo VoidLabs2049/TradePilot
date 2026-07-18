@@ -1,4 +1,4 @@
-"""Frozen ETF all-weather v1 sleeve universe helpers."""
+"""Frozen ETF all-weather sleeve universe helpers."""
 
 from __future__ import annotations
 
@@ -25,6 +25,19 @@ ETF_AW_SLEEVES: list[dict[str, Any]] = [
         "benchmark_name": "中证1000指数收益率",
         "list_date": date(2021, 3, 31),
         "exposure_note": "Small-cap and higher-beta China equity proxy.",
+    },
+    {
+        "sleeve_code": "513100.SH",
+        "sleeve_role": "equity_overseas",
+        "sleeve_name": "纳指ETF国泰",
+        "listing_exchange": "SH",
+        "benchmark_name": "纳斯达克100指数（人民币计价）",
+        "list_date": date(2013, 5, 15),
+        "exposure_note": (
+            "US large-cap growth equity proxy traded in CNY; QDII quota, "
+            "subscription suspension, market premium, FX, and overseas "
+            "calendar risks can cause tracking divergence."
+        ),
     },
     {
         "sleeve_code": "511010.SH",
@@ -61,6 +74,7 @@ ETF_AW_SLEEVES: list[dict[str, Any]] = [
 ETF_AW_SLEEVE_ROLE_ORDER = [
     "equity_large",
     "equity_small",
+    "equity_overseas",
     "bond",
     "gold",
     "cash",

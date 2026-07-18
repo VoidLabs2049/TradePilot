@@ -38,7 +38,7 @@ class UpdateEtfAwDataTests(unittest.TestCase):
             codes=["510300.SH"],
         )
 
-        self.assertEqual(plan[0].name, "reference.etf_aw_sleeves.frozen_v1")
+        self.assertEqual(plan[0].name, "reference.etf_aw_sleeves.frozen_v2")
         calendar = plan[1]
         self.assertEqual(calendar.name, "reference.trading_calendar")
         self.assertEqual(calendar.start, date(2016, 1, 1))

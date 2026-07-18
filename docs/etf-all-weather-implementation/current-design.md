@@ -97,28 +97,31 @@ strategy_context
 
 关键结果记录在 `docs/stage-b-ingestion-real-data-test-report.md`。
 
-### Stage C：ETF 全天候 v1 数据基座
+### Stage C：ETF 全天候 v2 数据基座
 
 已完成本地回补：
 
 - `reference.trading_calendar.full_history`
 - `reference.rebalance_calendar.monthly_post_20`
-- `reference.etf_aw_sleeves.frozen_v1`
+- `reference.etf_aw_sleeves.frozen_v2`
 - `market.etf_daily`
 - `market.etf_adj_factor`
 - `derived.etf_aw_sleeve_daily`
 
-当前 v1 frozen sleeves：
+当前 v2 frozen sleeves：
 
 | Role | Code | 用途 |
 | --- | --- | --- |
 | `equity_large` | `510300.SH` | 大盘权益 |
 | `equity_small` | `159845.SZ` | 小盘权益 |
+| `equity_overseas` | `513100.SH` | 纳斯达克 100 海外成长权益 |
 | `bond` | `511010.SH` | 债券防御 |
 | `gold` | `518850.SH` | 黄金/压力对冲 |
 | `cash` | `159001.SZ` | 现金/中性缓冲 |
 
 `derived.etf_aw_sleeve_daily` 使用 adjustment-aware 语义。ETF daily `volume` 继承 Tushare `fund_daily` 的 `vol` 单位：手；`amount` 单位：千元人民币，不在 derived 层做单位转换。
+
+`513100.SH` 是在上交所以人民币交易的 QDII ETF，pipeline 直接使用境内二级市场价格，不额外换算美元。该价格会同时反映标的指数、汇率、境内外交易日错位、QDII 额度与供需溢价；当前基金存在暂停申购和二级市场溢价风险，因此这些差异属于策略与执行 caveat，不能把场内价格简单解释为无摩擦的 Nasdaq 100 指数收益。
 
 关键结果记录在 `docs/stage-c-data-backfill-report.md`。
 
@@ -126,7 +129,7 @@ strategy_context
 
 已实现 `derived.etf_aw_rebalance_snapshot.build` 和 read model：
 
-- 每个 rebalance date 生成 5 个 sleeve 行。
+- 每个 rebalance date 生成 6 个 sleeve 行。
 - 输出 1M/3M/6M 收益、3M 波动、6M 回撤、数据状态和诊断信息。
 - read model 输出 `etf_aw_snapshot_v1` / `etf_aw_snapshot_contract_v1`。
 
@@ -271,7 +274,7 @@ strategy_context
 已实现 `derived.etf_aw_baseline_weight.build` 和双权重源回测：
 
 - baseline 使用最近 63 个交易日收益估计波动率，至少要求 42 个有效观测，并沿用 `0.005` volatility floor。
-- 每个 rebalance date 必须生成 5 个完整、非负且权重和为 1 的 frozen sleeve 权重；不写出 partial baseline。
+- 每个 rebalance date 必须生成 6 个完整、非负且权重和为 1 的 frozen sleeve 权重；不写出 partial baseline。
 - `derived.etf_aw_backtest_kernel` 可分别消费 `target_weight` 和 `baseline`，并保留 `weight_source_type` 与 `source_weight_dataset`。
 - `backtest-report` 可输出两条策略的指标、换手、diagnostics 和差值。
 - 旧 backtest kernel 分区缺少权重来源字段时，会按原有语义补为 `target_weight` / `derived.etf_aw_target_weight` 后再 upsert，不需要删除历史分区。
@@ -297,7 +300,7 @@ Stage N 消费已冻结的目标权重、当前持仓、现金、账户总资产
 
 订单计算必须满足：
 
-- 最新目标权重包含完整 5-sleeve，且权重和偏离 `1.0` 不超过 `1e-6`。
+- 最新目标权重包含完整 6-sleeve，且权重和偏离 `1.0` 不超过 `1e-6`。
 - BUY 和 SELL 均按交易单位向下取整；SELL 不得超过 `available_quantity`。
 - 买入后保留固定现金缓冲；不足一手时输出 `HOLD` 和 `below_lot_size` warning。
 - symbol、价格、持仓映射、可用现金或可用持仓缺失时阻断计划。
@@ -744,7 +747,7 @@ calendar_name + rebalance_date + strategy_name + sleeve_code
 
    初始健康检查要求：
 
-   - FAIL：每个 rebalance date 不是 5 个 sleeve。
+   - FAIL：每个 rebalance date 不是 6 个 sleeve。
    - FAIL：`raw_target_weight` 或 `constrained_target_weight` 合计不等于 `1`，容忍浮点误差不超过 `1e-6`。
    - FAIL：任一权重为负数、非数值或超过 V1 单 sleeve 上限。
    - FAIL：来源 `derived.etf_aw_risk_budget` 缺失、未通过健康检查或 business key 不唯一。

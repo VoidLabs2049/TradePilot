@@ -111,13 +111,13 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
             [(row[0], row[1], row[2], row[3]) for row in rows],
             [
                 (
-                    "etf_aw_v1_monthly_post_20",
+                    "etf_aw_v2_monthly_post_20",
                     "2024-01",
                     date(2024, 1, 22),
                     date(2024, 1, 22),
                 ),
                 (
-                    "etf_aw_v1_monthly_post_20",
+                    "etf_aw_v2_monthly_post_20",
                     "2024-02",
                     date(2024, 2, 20),
                     date(2024, 2, 20),
@@ -238,13 +238,20 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
         self.assertEqual(rows, [("2024-01", date(2024, 1, 23))])
 
     def test_frozen_etf_aw_sleeves_are_materialized(self) -> None:
-        result = self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v1")
+        result = self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v2")
 
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
-        self.assertEqual(result["records_written"], 5)
+        self.assertEqual(result["records_written"], 6)
         self.assertEqual(
             result["sleeve_codes"],
-            ["510300.SH", "159845.SZ", "511010.SH", "518850.SH", "159001.SZ"],
+            [
+                "510300.SH",
+                "159845.SZ",
+                "513100.SH",
+                "511010.SH",
+                "518850.SH",
+                "159001.SZ",
+            ],
         )
         self.assertTrue(all(result["validation"].values()))
         rows = self.conn.execute("""
@@ -260,6 +267,7 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
                 ("159845.SZ", "equity_small", "equity_small", "SZ", True),
                 ("510300.SH", "equity_large", "equity_large", "SH", True),
                 ("511010.SH", "bond", "bond", "SH", True),
+                ("513100.SH", "equity_overseas", "equity_overseas", "SH", True),
                 ("518850.SH", "gold", "gold", "SH", True),
             ],
         )
@@ -284,14 +292,15 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
             SELECT COUNT(*)
             FROM canonical_instruments
             WHERE instrument_id IN (
-                '510300.SH', '159845.SZ', '511010.SH', '518850.SH', '159001.SZ'
+                '510300.SH', '159845.SZ', '513100.SH', '511010.SH',
+                '518850.SH', '159001.SZ'
             )
               AND instrument_type = 'etf'
             """).fetchone()[0]
-        self.assertEqual(instrument_count, 5)
+        self.assertEqual(instrument_count, 6)
 
     def test_frozen_etf_aw_sleeves_do_not_include_old_bond_candidate(self) -> None:
-        self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v1")
+        self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v2")
 
         count = self.conn.execute("""
             SELECT COUNT(*)
@@ -311,7 +320,7 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
             )
             """)
 
-        result = self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v1")
+        result = self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v2")
 
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
         instrument = self.conn.execute("""

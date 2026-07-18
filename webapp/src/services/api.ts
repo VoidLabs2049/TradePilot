@@ -87,11 +87,19 @@ export interface WorkflowContextPayload {
 // ETF all-weather sleeve metrics are adjustment-aware and measured at the
 // monthly rebalance snapshot boundary. Return, volatility, and drawdown values
 // are decimal ratios, e.g. 0.05 means 5%.
+export type EtfAwSleeveRole =
+  | "equity_large"
+  | "equity_small"
+  | "equity_overseas"
+  | "bond"
+  | "gold"
+  | "cash";
+
 export interface EtfAwSleeveSnapshot {
-  // Frozen v1 sleeve instrument code, such as 510300.SH or 511010.SH.
+  // Frozen v2 sleeve instrument code, such as 510300.SH or 513100.SH.
   sleeve_code: string;
-  // Canonical role in the all-weather sleeve set: equity_large, bond, gold, etc.
-  sleeve_role: string;
+  // Canonical role in the six-sleeve all-weather universe.
+  sleeve_role: EtfAwSleeveRole;
   // Raw close is kept for inspection; adjusted close is the canonical return base.
   close?: number | null;
   adj_factor?: number | null;
@@ -126,7 +134,7 @@ export interface EtfAwSnapshotContext {
 }
 
 export interface EtfAwRiskBudgetSleeve {
-  sleeve_role: string;
+  sleeve_role: EtfAwSleeveRole;
   base_budget?: number | null;
   delta_budget?: number | null;
   tilted_budget?: number | null;
@@ -205,7 +213,7 @@ export interface EtfAwShadowStatus {
   missing_observation_dates: string[];
   latest_prices: Array<{
     sleeve_code: string;
-    sleeve_role: string;
+    sleeve_role: EtfAwSleeveRole;
     close: number;
     trade_date: string;
   }>;
@@ -231,7 +239,7 @@ export interface EtfAwLocalPerformance {
 
 export interface EtfAwTargetWeightRow {
   sleeve_code: string;
-  sleeve_role: string;
+  sleeve_role: EtfAwSleeveRole;
   target_weight: number | null;
   target_weight_status: string;
   turnover_estimate?: number | null;
@@ -239,7 +247,7 @@ export interface EtfAwTargetWeightRow {
 
 export interface EtfAwPlanOrderRow {
   sleeve_code: string;
-  sleeve_role: string;
+  sleeve_role: EtfAwSleeveRole;
   target_weight: number | null;
   latest_price: number | null;
   order_side: string;
@@ -347,7 +355,7 @@ export interface EtfAwResearchSummary {
       objective: string;
       best_candidate_name: string;
       candidates: Array<{
-      candidate_name: string;
+        candidate_name: string;
         shrinkage_to_equal_weight?: number;
         search_method?: string;
         weights: Record<string, number>;
@@ -362,6 +370,32 @@ export interface EtfAwResearchSummary {
           worst_max_drawdown: number | null;
         };
       }>;
+      recent_return_frontier: {
+        objective: string;
+        search_method: string;
+        solutions: Array<{
+          max_drawdown_limit: number;
+          feasible_candidate_count: number;
+          solution: {
+            candidate_name: string;
+            weights: Record<string, number>;
+            recent_6m: {
+              total_return: number | null;
+              annualized_return: number | null;
+              annualized_volatility: number | null;
+              sharpe_ratio: number | null;
+              max_drawdown: number | null;
+            };
+            validation: Record<string, {
+              total_return: number | null;
+              annualized_return: number | null;
+              annualized_volatility: number | null;
+              sharpe_ratio: number | null;
+              max_drawdown: number | null;
+            }>;
+          } | null;
+        }>;
+      };
     };
   } | null;
 }
@@ -458,10 +492,10 @@ export const getLatestEtfAwRiskBudget = (asOfDate?: string) =>
   fetchJson<EtfAwRiskBudget | null>(`/workflow/etf-aw/risk-budget/latest${asOfDate ? `?as_of_date=${encodeURIComponent(asOfDate)}` : ""}`);
 export const getEtfAwShadowReport = (accountId?: string) =>
   fetchJson<EtfAwShadowReportResponse>(`/workflow/etf-aw/shadow-report${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ""}`);
-export const getEtfAwShadowStatus = (accountId = "etf-aw-paper") =>
+export const getEtfAwShadowStatus = (accountId = "etf-aw-v2-paper") =>
   fetchJson<EtfAwShadowStatus>(`/workflow/etf-aw/shadow/status?account_id=${encodeURIComponent(accountId)}`);
-export const updateEtfAwLocalShadow = (accountId = "etf-aw-paper") =>
-  fetch(`${API_BASE}/workflow/etf-aw/shadow/update-local?account_id=${encodeURIComponent(accountId)}`, { method: "POST" }).then((res) => {
+export const updateEtfAwLocalShadow = (accountId = "etf-aw-v2-paper", weightSource = "target-weight") =>
+  fetch(`${API_BASE}/workflow/etf-aw/shadow/update-local?account_id=${encodeURIComponent(accountId)}&weight_source=${encodeURIComponent(weightSource)}`, { method: "POST" }).then((res) => {
     if (!res.ok) {
       throw new Error(`${res.status} ${res.statusText}`);
     }

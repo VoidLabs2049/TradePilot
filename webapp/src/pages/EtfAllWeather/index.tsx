@@ -42,28 +42,48 @@ import {
   type EtfAwLocalPerformance,
   type EtfAwRiskBudget,
   type EtfAwRiskBudgetSleeve,
+  type EtfAwSleeveRole,
 } from "../../services/api";
 import "./index.css";
 
 const { Text, Title } = Typography;
+const DEFAULT_SHADOW_ACCOUNT = "etf-aw-v2-paper";
+const BASELINE_SHADOW_ACCOUNT = "etf-aw-baseline-v2-paper";
 
-const ROLE_LABELS: Record<string, string> = {
+const ROLE_LABELS: Record<EtfAwSleeveRole, string> = {
   equity_large: "大盘权益",
   equity_small: "小盘权益",
+  equity_overseas: "纳指权益",
   bond: "债券",
   gold: "黄金",
   cash: "现金",
 };
 
-const ROLE_COLORS: Record<string, string> = {
+const ROLE_COLORS: Record<EtfAwSleeveRole, string> = {
   equity_large: "#1677ff",
   equity_small: "#13c2c2",
+  equity_overseas: "#722ed1",
   bond: "#52c41a",
   gold: "#faad14",
   cash: "#8c8c8c",
 };
 
-const ROLE_ORDER = ["equity_large", "equity_small", "bond", "gold", "cash"];
+const ROLE_ORDER: EtfAwSleeveRole[] = [
+  "equity_large",
+  "equity_small",
+  "equity_overseas",
+  "bond",
+  "gold",
+  "cash",
+];
+
+function roleLabel(role: string) {
+  return ROLE_LABELS[role as EtfAwSleeveRole] || role;
+}
+
+function roleColor(role: string) {
+  return ROLE_COLORS[role as EtfAwSleeveRole] || "#1677ff";
+}
 
 type PositionInput = Record<string, number>;
 
@@ -80,7 +100,7 @@ function statusColor(status?: string | null) {
 }
 
 function formatPercent(value?: number | null) {
-  return typeof value === "number" ? `${(value * 100).toFixed(2)}%` : "-";
+  return typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "-";
 }
 
 function formatSignedPercent(value?: number | null) {
@@ -152,7 +172,7 @@ function BudgetBar({ row }: { row: EtfAwRiskBudgetSleeve }) {
           style={{
             width: `${Math.max(0, Math.min(value * 100, 100))}%`,
             height: "100%",
-            background: ROLE_COLORS[row.sleeve_role] || "#1677ff",
+            background: roleColor(row.sleeve_role),
           }}
         />
       </div>
@@ -166,6 +186,8 @@ export default function EtfAllWeather() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [shadow, setShadow] = useState<EtfAwShadowReportResponse | null>(null);
+  const [dynamicShadow, setDynamicShadow] = useState<EtfAwShadowReportResponse | null>(null);
+  const [baselineShadow, setBaselineShadow] = useState<EtfAwShadowReportResponse | null>(null);
   const [accountId, setAccountId] = useState<string>();
   const [performance, setPerformance] = useState<EtfAwLocalPerformance | null>(null);
   const [researchSummary, setResearchSummary] = useState<EtfAwResearchSummary | null>(null);
@@ -179,12 +201,14 @@ export default function EtfAllWeather() {
   const refresh = async (selectedAccountId?: string) => {
     setLoading(true);
     setError(null);
-    const requestedAccountId = selectedAccountId || accountId || "etf-aw-paper";
+    const requestedAccountId = selectedAccountId || accountId || DEFAULT_SHADOW_ACCOUNT;
     const failures: string[] = [];
     try {
-      const [budgetResult, shadowResult, performanceResult, statusResult, researchResult] = await Promise.allSettled([
+      const [budgetResult, shadowResult, dynamicShadowResult, baselineShadowResult, performanceResult, statusResult, researchResult] = await Promise.allSettled([
         getLatestEtfAwRiskBudget(),
         getEtfAwShadowReport(requestedAccountId),
+        getEtfAwShadowReport(DEFAULT_SHADOW_ACCOUNT),
+        getEtfAwShadowReport(BASELINE_SHADOW_ACCOUNT),
         getEtfAwLocalPerformance(),
         getEtfAwShadowStatus(requestedAccountId),
         getEtfAwResearchSummary(),
@@ -199,11 +223,27 @@ export default function EtfAllWeather() {
       if (shadowResult.status === "fulfilled") {
         setShadow(shadowResult.value);
         if (!accountId && shadowResult.value.accounts.length > 0) {
-          setAccountId(shadowResult.value.accounts[0]);
+          setAccountId(
+            shadowResult.value.accounts.includes(requestedAccountId)
+              ? requestedAccountId
+              : shadowResult.value.accounts[0],
+          );
         }
       } else {
         setShadow(null);
         failures.push(`模拟盘：${shadowResult.reason instanceof Error ? shadowResult.reason.message : "读取失败"}`);
+      }
+      if (dynamicShadowResult.status === "fulfilled") {
+        setDynamicShadow(dynamicShadowResult.value);
+      } else {
+        setDynamicShadow(null);
+        failures.push(`动态模拟：${dynamicShadowResult.reason instanceof Error ? dynamicShadowResult.reason.message : "读取失败"}`);
+      }
+      if (baselineShadowResult.status === "fulfilled") {
+        setBaselineShadow(baselineShadowResult.value);
+      } else {
+        setBaselineShadow(null);
+        failures.push(`基线模拟：${baselineShadowResult.reason instanceof Error ? baselineShadowResult.reason.message : "读取失败"}`);
       }
       if (performanceResult.status === "fulfilled") {
         setPerformance(performanceResult.value);
@@ -239,11 +279,14 @@ export default function EtfAllWeather() {
   }, []);
 
   const updateLocalShadow = async () => {
-    const selectedAccountId = accountId || shadow?.accounts[0] || "etf-aw-paper";
+    const selectedAccountId = accountId || shadow?.accounts[0] || DEFAULT_SHADOW_ACCOUNT;
     setUpdatingShadow(true);
     setError(null);
     try {
-      const result = await updateEtfAwLocalShadow(selectedAccountId);
+      const result = await updateEtfAwLocalShadow(
+        selectedAccountId,
+        selectedAccountId === BASELINE_SHADOW_ACCOUNT ? "baseline" : "target-weight",
+      );
       setShadowUpdate(result);
       if (result.state === "invalid") {
         setError((result.blocking_reasons || ["本地模拟盘更新失败"]).join(" / "));
@@ -266,13 +309,13 @@ export default function EtfAllWeather() {
     () =>
       budgets
         .filter((row) => typeof row.delta_budget === "number" && row.delta_budget !== 0)
-        .map((row) => `${ROLE_LABELS[row.sleeve_role] || row.sleeve_role} ${formatSignedPercent(row.delta_budget)}`),
+        .map((row) => `${roleLabel(row.sleeve_role)} ${formatSignedPercent(row.delta_budget)}`),
     [budgets],
   );
   const allocationData = budgets
     .filter((row) => typeof row.tilted_budget === "number")
     .map((row) => ({
-      role: ROLE_LABELS[row.sleeve_role] || row.sleeve_role,
+      role: roleLabel(row.sleeve_role),
       value: row.tilted_budget as number,
       sleeveRole: row.sleeve_role,
     }));
@@ -288,6 +331,28 @@ export default function EtfAllWeather() {
       ? [{ date: row.observation_date, series: "相对收益", value: row.relative_cumulative_return }]
       : []),
   ]);
+  const shadowComparisonSeries = [
+    ...(dynamicShadow?.report?.daily_series || []).map((row) => ({
+      date: row.observation_date,
+      series: "动态风险预算",
+      value: row.cumulative_return,
+    })),
+    ...(baselineShadow?.report?.daily_series || []).map((row) => ({
+      date: row.observation_date,
+      series: "静态逆波动率",
+      value: row.cumulative_return,
+    })),
+  ];
+  const shadowComparisonRows = [
+    { key: "dynamic", strategy: "动态风险预算", report: dynamicShadow?.report },
+    { key: "baseline", strategy: "静态逆波动率", report: baselineShadow?.report },
+  ].filter((row) => row.report);
+  const dynamicReturn = dynamicShadow?.report?.metrics.period_return;
+  const baselineReturn = baselineShadow?.report?.metrics.period_return;
+  const returnLead =
+    typeof dynamicReturn === "number" && typeof baselineReturn === "number"
+      ? dynamicReturn - baselineReturn
+      : null;
   const primaryStrategy =
     (performance?.metrics || []).find((row) => row.strategy !== "static_inverse_vol")?.strategy ||
     performance?.metrics?.[0]?.strategy;
@@ -368,6 +433,10 @@ export default function EtfAllWeather() {
   );
   const currentCandidate = fixedBacktest?.optimization.candidates.find((row) => row.candidate_name === "当前权重");
   const equalCandidate = fixedBacktest?.optimization.candidates.find((row) => row.candidate_name === "等权");
+  const recentFrontier = fixedBacktest?.optimization.recent_return_frontier;
+  const balancedRecentSolution = recentFrontier?.solutions.find(
+    (row) => row.max_drawdown_limit === 0.07,
+  )?.solution;
   const comparisonCards = [
     { name: "当前权重", candidate: currentCandidate, color: "orange" },
     { name: "优化候选", candidate: optimizedCandidate, color: "green" },
@@ -486,7 +555,7 @@ export default function EtfAllWeather() {
                   innerRadius={0.62}
                   height={280}
                   scale={{
-                    color: { range: allocationData.map((item) => ROLE_COLORS[item.sleeveRole] || "#1677ff") },
+                    color: { range: allocationData.map((item) => roleColor(item.sleeveRole)) },
                   }}
                   label={{ text: (item: { value: number }) => formatPercent(item.value), position: "outside" }}
                   legend={{ color: { position: "bottom", layout: { justifyContent: "center" } } }}
@@ -530,10 +599,10 @@ export default function EtfAllWeather() {
                           width: 10,
                           height: 10,
                           borderRadius: 2,
-                          background: ROLE_COLORS[value] || "#1677ff",
+                          background: roleColor(value),
                         }}
                       />
-                      <Text>{ROLE_LABELS[value] || value}</Text>
+                      <Text>{roleLabel(value)}</Text>
                       <Text type="secondary">{value}</Text>
                     </Space>
                   ),
@@ -652,7 +721,7 @@ export default function EtfAllWeather() {
             innerRadius={0.62}
             height={260}
             scale={{
-              color: { range: allocationData.map((item) => ROLE_COLORS[item.sleeveRole] || "#1677ff") },
+              color: { range: allocationData.map((item) => roleColor(item.sleeveRole)) },
             }}
             label={{ text: (item: { value: number }) => formatPercent(item.value), position: "outside" }}
             legend={{ color: { position: "bottom", layout: { justifyContent: "center" } } }}
@@ -688,10 +757,10 @@ export default function EtfAllWeather() {
                         width: 10,
                         height: 10,
                         borderRadius: 2,
-                        background: ROLE_COLORS[value] || "#1677ff",
+                        background: roleColor(value),
                       }}
                     />
-                    <Text>{ROLE_LABELS[value] || value}</Text>
+                    <Text>{roleLabel(value)}</Text>
                   </Space>
                 ),
               },
@@ -761,7 +830,7 @@ export default function EtfAllWeather() {
             <Col xs={24} sm={12} lg={8} xl={4} key={role}>
               <Card size="small">
                 <Space direction="vertical" size={6} style={{ width: "100%" }}>
-                  <Text>{ROLE_LABELS[role] || role}</Text>
+                  <Text>{roleLabel(role)}</Text>
                   <Text type="secondary">{codeByRole[role] || "-"}</Text>
                   <InputNumber
                     min={0}
@@ -789,7 +858,7 @@ export default function EtfAllWeather() {
               fixed: "left",
               render: (value: string, row) => (
                 <Space direction="vertical" size={0}>
-                  <Text>{ROLE_LABELS[value] || value}</Text>
+                  <Text>{roleLabel(value)}</Text>
                   <Text type="secondary">{row.symbol}</Text>
                 </Space>
               ),
@@ -832,6 +901,82 @@ export default function EtfAllWeather() {
           message={`判定：${verdictText}`}
           description={`规则：${researchSummary.robustness?.decision_rule || "-"}。当前用于研究展示，不代表未来收益保证。`}
         />
+        {recentFrontier ? (
+          <Card
+            size="small"
+            title="近期收益 / 回撤约束前沿"
+            extra={<Tag color="blue">近 6 个月优化</Tag>}
+          >
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="在最大回撤阈值内最大化近期收益"
+              description="5% / 7% / 10% 三档使用同一 long-only 搜索空间；近 12 个月、样本外和全区间仅用于复核，不参与近期目标排序。"
+            />
+            <Table
+              size="small"
+              pagination={false}
+              rowKey="max_drawdown_limit"
+              scroll={{ x: 760 }}
+              dataSource={recentFrontier.solutions}
+              columns={[
+                { title: "回撤上限", dataIndex: "max_drawdown_limit", render: formatPercent },
+                { title: "可行组合", dataIndex: "feasible_candidate_count" },
+                { title: "近 6 月收益", render: (_, row) => formatPercent(row.solution?.recent_6m.total_return) },
+                { title: "实际回撤", render: (_, row) => formatPercent(row.solution?.recent_6m.max_drawdown) },
+                { title: "近 6 月 Sharpe", render: (_, row) => formatDecimal(row.solution?.recent_6m.sharpe_ratio) },
+                { title: "近 12 月收益", render: (_, row) => formatPercent(row.solution?.validation.recent_12m?.total_return) },
+                { title: "样本外收益", render: (_, row) => formatPercent(row.solution?.validation.out_of_sample?.total_return) },
+              ]}
+            />
+            {balancedRecentSolution ? (
+              <>
+                <Alert
+                  type="success"
+                  showIcon
+                  style={{ marginTop: 12, marginBottom: 12 }}
+                  message={`7% 平衡档：近 6 个月收益 ${formatPercent(balancedRecentSolution.recent_6m.total_return)}，回撤 ${formatPercent(balancedRecentSolution.recent_6m.max_drawdown)}`}
+                  description="研究候选，不会自动覆盖当前目标权重或模拟账户。"
+                />
+                <Table
+                  size="small"
+                  pagination={false}
+                  rowKey="role"
+                  dataSource={ROLE_ORDER.map((role) => {
+                    const code = codeByRole[role];
+                    const currentWeight = researchSummary.target_weight.rows.find(
+                      (row) => row.sleeve_role === role,
+                    )?.target_weight || 0;
+                    const candidateWeight = code ? balancedRecentSolution.weights[code] || 0 : 0;
+                    return {
+                      role,
+                      code,
+                      currentWeight,
+                      candidateWeight,
+                      delta: candidateWeight - currentWeight,
+                    };
+                  })}
+                  columns={[
+                    {
+                      title: "资产",
+                      dataIndex: "role",
+                      render: (value: string, row) => (
+                        <Space direction="vertical" size={0}>
+                          <Text>{roleLabel(value)}</Text>
+                          <Text type="secondary">{row.code}</Text>
+                        </Space>
+                      ),
+                    },
+                    { title: "当前权重", dataIndex: "currentWeight", render: formatPercent },
+                    { title: "7% 平衡档", dataIndex: "candidateWeight", render: formatPercent },
+                    { title: "变化", dataIndex: "delta", render: formatSignedPercent },
+                  ]}
+                />
+              </>
+            ) : null}
+          </Card>
+        ) : null}
         <Row gutter={[12, 12]}>
           {comparisonCards.map((item) => (
             <Col xs={24} md={8} key={item.name}>
@@ -903,7 +1048,7 @@ export default function EtfAllWeather() {
                   dataIndex: "role",
                   render: (value: string, row) => (
                     <Space direction="vertical" size={0}>
-                      <Text>{ROLE_LABELS[value] || value}</Text>
+                      <Text>{roleLabel(value)}</Text>
                       <Text type="secondary">{row.code}</Text>
                     </Space>
                   ),
@@ -1072,7 +1217,7 @@ export default function EtfAllWeather() {
                       {ROLE_ORDER.map((role) => {
                         const code = codeByRole[role];
                         const value = code ? row.weights[code] : undefined;
-                        return <Tag key={role}>{ROLE_LABELS[role] || role} {formatPercent(value)}</Tag>;
+                        return <Tag key={role}>{roleLabel(role)} {formatPercent(value)}</Tag>;
                       })}
                     </Space>
                   ),
@@ -1101,7 +1246,7 @@ export default function EtfAllWeather() {
                     dataIndex: "sleeve_role",
                     render: (value: string, row) => (
                       <Space direction="vertical" size={0}>
-                        <Text>{ROLE_LABELS[value] || value}</Text>
+                        <Text>{roleLabel(value)}</Text>
                         <Text type="secondary">{row.sleeve_code}</Text>
                       </Space>
                     ),
@@ -1139,7 +1284,7 @@ export default function EtfAllWeather() {
                       fixed: "left",
                       render: (value: string, row) => (
                         <Space direction="vertical" size={0}>
-                          <Text>{ROLE_LABELS[value] || value}</Text>
+                          <Text>{roleLabel(value)}</Text>
                           <Text type="secondary">{row.sleeve_code}</Text>
                         </Space>
                       ),
@@ -1184,13 +1329,61 @@ export default function EtfAllWeather() {
           description={`账户 ${shadowUpdate.account_id || "-"} · seed ${shadowUpdate.seed_date || "-"}`}
         />
       ) : null}
+      {shadowComparisonRows.length === 2 ? (
+        <>
+          <Alert
+            type={typeof returnLead === "number" && returnLead >= 0 ? "success" : "info"}
+            showIcon
+            message={
+              typeof returnLead === "number"
+                ? `动态策略区间收益${returnLead >= 0 ? "领先" : "落后"} ${formatPercent(Math.abs(returnLead))}`
+                : "动态策略与静态基线并行观察"
+            }
+            description="两组账户使用相同初始资产和观察区间；短样本只用于前向跟踪，不作为单独调参依据。"
+          />
+          <Card title="策略模拟对比" extra={<Tag color="blue">同区间</Tag>}>
+            <Table
+              size="small"
+              pagination={false}
+              rowKey="key"
+              dataSource={shadowComparisonRows}
+              columns={[
+                { title: "策略", dataIndex: "strategy" },
+                { title: "期末资产", render: (_, row) => formatCurrency(row.report?.metrics.ending_asset) },
+                { title: "区间收益", render: (_, row) => formatSignedPercent(row.report?.metrics.period_return) },
+                { title: "年化波动", render: (_, row) => formatPercent(row.report?.metrics.annualized_volatility) },
+                { title: "最大回撤", render: (_, row) => formatPercent(row.report?.metrics.max_drawdown) },
+                { title: "交易日", render: (_, row) => row.report?.integrity.observation_count || 0 },
+              ]}
+              scroll={{ x: 720 }}
+            />
+          </Card>
+          <Card
+            title="动态策略 vs 静态基线"
+            extra={<Text type="secondary">{dynamicShadow?.report?.start_date} 至 {dynamicShadow?.report?.end_date}</Text>}
+          >
+            <Line
+              data={shadowComparisonSeries}
+              xField="date"
+              yField="value"
+              colorField="series"
+              height={320}
+              scale={{ color: { range: ["#1677ff", "#595959"] } }}
+              axis={{ y: { labelFormatter: (value: number) => formatPercent(value) } }}
+              tooltip={{ items: [{ channel: "y", valueFormatter: (value: number) => formatPercent(value) }] }}
+            />
+          </Card>
+        </>
+      ) : (
+        <Alert type="info" showIcon message="对比账户数据尚未就绪" />
+      )}
       <Row gutter={[12, 12]}>
         <Col xs={12} lg={6}><Card size="small"><Statistic title="区间收益" value={formatPercent(shadow.report.metrics.period_return)} /></Card></Col>
         <Col xs={12} lg={6}><Card size="small"><Statistic title="最大回撤" value={formatPercent(shadow.report.metrics.max_drawdown)} /></Card></Col>
         <Col xs={12} lg={6}><Card size="small"><Statistic title="年化波动" value={formatPercent(shadow.report.metrics.annualized_volatility)} /></Card></Col>
         <Col xs={12} lg={6}><Card size="small"><Statistic title="观察交易日" value={shadow.report.integrity.observation_count} /></Card></Col>
       </Row>
-      <Card title="Forward 净值表现" extra={<Text type="secondary">{shadow.report.start_date} 至 {shadow.report.end_date}</Text>}>
+      <Card title={`账户明细 · ${shadow.report.account_id}`} extra={<Text type="secondary">{shadow.report.start_date} 至 {shadow.report.end_date}</Text>}>
         <Line
           data={shadowSeries}
           xField="date"

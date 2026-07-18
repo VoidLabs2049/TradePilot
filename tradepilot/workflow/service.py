@@ -514,21 +514,32 @@ class DailyWorkflowService:
     def get_latest_etf_aw_context(self, as_of_date: date | None = None) -> dict | None:
         """Return the latest ETF all-weather snapshot context."""
 
-        return get_latest_etf_aw_snapshot(as_of_date=as_of_date)
+        return get_latest_etf_aw_snapshot(
+            as_of_date=as_of_date,
+            calendar_name="etf_aw_v2_monthly_post_20",
+        )
 
     def get_latest_etf_aw_regime_context(
         self, as_of_date: date | None = None
     ) -> dict | None:
         """Return the latest ETF all-weather regime context."""
 
-        return get_latest_etf_aw_regime_context(as_of_date=as_of_date)
+        return get_latest_etf_aw_regime_context(
+            as_of_date=as_of_date,
+            calendar_name="etf_aw_v2_monthly_post_20",
+        )
 
     def get_latest_etf_aw_strategy_context(
         self, as_of_date: date | None = None
     ) -> dict | None:
         """Return the latest ETF all-weather strategy context."""
 
-        return get_latest_etf_aw_strategy_context(as_of_date=as_of_date)
+        return get_latest_etf_aw_strategy_context(
+            as_of_date=as_of_date,
+            calendar_name="etf_aw_v2_monthly_post_20",
+            strategy_name="etf_aw_v2",
+            strategy_version="stage_g_v2",
+        )
 
     def build_context_payload(self, run: WorkflowRunRecord) -> WorkflowContextPayload:
         """Convert one workflow run into the stage-1 context contract.

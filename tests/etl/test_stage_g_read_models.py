@@ -105,7 +105,7 @@ class StageGReadModelTests(unittest.TestCase):
         assert features is not None
         self.assertEqual(features["schema_version"], "etf_aw_market_features_v1")
         self.assertEqual(features["rebalance_date"], "2024-07-22")
-        self.assertEqual(len(features["features"]), 37)
+        self.assertEqual(len(features["features"]), 43)
 
     def test_list_strategy_contexts_uses_latest_ingested_row_per_key(self) -> None:
         self._run_pipeline(date(2024, 7, 22))
@@ -177,6 +177,14 @@ class StageGReadModelTests(unittest.TestCase):
         return [
             self._row(rebalance_date, "510300.SH", "equity_large", 0.02, 0.04, 0.06),
             self._row(rebalance_date, "159845.SZ", "equity_small", 0.02, 0.04, 0.06),
+            self._row(
+                rebalance_date,
+                "513100.SH",
+                "equity_overseas",
+                0.02,
+                0.04,
+                0.06,
+            ),
             self._row(rebalance_date, "511010.SH", "bond", -0.02, -0.04, -0.06),
             self._row(rebalance_date, "518850.SH", "gold", -0.02, -0.04, -0.06),
             self._row(rebalance_date, "159001.SZ", "cash", 0.0, 0.0, 0.0),
@@ -192,7 +200,7 @@ class StageGReadModelTests(unittest.TestCase):
         return_6m: float | None,
     ) -> dict:
         return {
-            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
             "calendar_month": f"{rebalance_date.year:04d}-{rebalance_date.month:02d}",
             "rebalance_date": rebalance_date,
             "effective_date": rebalance_date,

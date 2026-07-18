@@ -38,7 +38,7 @@ class StageNRebalancePlanTests(unittest.TestCase):
         )
 
         self.assertFalse(diagnostics.blocked)
-        self.assertEqual(summary["plan_id"], "etf_aw_rp_132ba92e529c28b2")
+        self.assertEqual(summary["plan_id"], "etf_aw_rp_65c96721137271df")
         by_symbol = frame.set_index("symbol")
         self.assertEqual(by_symbol.loc["510300.SH", "order_side"], "BUY")
         self.assertEqual(by_symbol.loc["510300.SH", "order_quantity"], 900)
@@ -56,7 +56,7 @@ class StageNRebalancePlanTests(unittest.TestCase):
 
     def test_sell_above_available_quantity_blocks_whole_plan(self) -> None:
         account = self._account_snapshot(cash=30000.0)
-        account.positions[2].available_quantity = 900
+        account.positions[3].available_quantity = 900
 
         frame, summary, diagnostics = build_rebalance_plan(
             target_weight=self._target_weight_frame(),
@@ -138,7 +138,7 @@ class StageNRebalancePlanTests(unittest.TestCase):
 
     def test_blocked_markdown_shows_reasons_instead_of_empty_orders(self) -> None:
         account = self._account_snapshot(cash=30000.0)
-        account.positions[2].available_quantity = 900
+        account.positions[3].available_quantity = 900
         frame, summary, diagnostics = build_rebalance_plan(
             target_weight=self._target_weight_frame(),
             account=account,
@@ -212,7 +212,7 @@ class StageNRebalancePlanTests(unittest.TestCase):
                 / "07"
                 / "part-00000.parquet"
             )
-            self.assertEqual(len(artifact), 5)
+            self.assertEqual(len(artifact), 6)
             self.assertTrue(artifact["plan_status"].eq("DRAFT").all())
             self.assertFalse(
                 {"broker_account", "filled_quantity"} & set(artifact.columns)
@@ -255,7 +255,7 @@ class StageNRebalancePlanTests(unittest.TestCase):
                 / "07"
                 / "part-00000.parquet"
             )
-            self.assertEqual(len(stored_after_duplicate), 5)
+            self.assertEqual(len(stored_after_duplicate), 6)
 
     def test_rebalance_plan_dataset_definition_is_frozen_draft_contract(self) -> None:
         definition = build_derived_etf_aw_rebalance_plan_dataset()
@@ -276,6 +276,7 @@ class StageNRebalancePlanTests(unittest.TestCase):
         sleeves = [
             ("510300.SH", "equity_large"),
             ("159845.SZ", "equity_small"),
+            ("513100.SH", "equity_overseas"),
             ("511010.SH", "bond"),
             ("518850.SH", "gold"),
             ("159001.SZ", "cash"),
@@ -283,13 +284,13 @@ class StageNRebalancePlanTests(unittest.TestCase):
         return pd.DataFrame(
             [
                 {
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": date(2024, 7, 22),
-                    "strategy_name": "etf_aw_v1",
-                    "strategy_version": "target_weight_inverse_vol_v1",
+                    "strategy_name": "etf_aw_v2",
+                    "strategy_version": "target_weight_inverse_vol_v2",
                     "sleeve_code": code,
                     "sleeve_role": role,
-                    "target_weight": 0.2,
+                    "target_weight": 0.0 if role == "equity_overseas" else 0.2,
                 }
                 for code, role in sleeves
             ]
@@ -307,6 +308,7 @@ class StageNRebalancePlanTests(unittest.TestCase):
             "positions": [
                 self._position("510300.SH", 1000, 1000, 10000.0),
                 self._position("159845.SZ", 2000, 2000, 20000.0),
+                self._position("513100.SH", 0, 0, 0.0),
                 self._position("511010.SH", 3000, 3000, 30000.0),
                 self._position("518850.SH", 1980, 1980, 19800.0),
                 self._position("159001.SZ", 0, 0, 0.0),
@@ -334,6 +336,7 @@ class StageNRebalancePlanTests(unittest.TestCase):
                 for symbol in [
                     "510300.SH",
                     "159845.SZ",
+                    "513100.SH",
                     "511010.SH",
                     "518850.SH",
                     "159001.SZ",

@@ -222,7 +222,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
             end=date(2024, 1, 31),
             weight_source_type="baseline",
             baseline_name="static_inverse_vol",
-            baseline_version="static_inverse_vol_v1",
+            baseline_version="static_inverse_vol_v2",
         )
 
         self.assertEqual(result["status"], RunStatus.FAILED.value)
@@ -230,12 +230,12 @@ class StageHBacktestKernelTests(unittest.TestCase):
             result["profile_name"],
             (
                 "derived.etf_aw_backtest_kernel.build."
-                "static_inverse_vol.static_inverse_vol_v1"
+                "static_inverse_vol.static_inverse_vol_v2"
             ),
         )
         self.assertEqual(result["weight_source_type"], "baseline")
         self.assertEqual(result["baseline_name"], "static_inverse_vol")
-        self.assertEqual(result["baseline_version"], "static_inverse_vol_v1")
+        self.assertEqual(result["baseline_version"], "static_inverse_vol_v2")
         self.assertEqual(
             result["source_weight_dataset"],
             "derived.etf_aw_baseline_weight",
@@ -251,7 +251,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
             end=date(2024, 1, 31),
             weight_source_type="baseline",
             baseline_name="",
-            baseline_version="static_inverse_vol_v1",
+            baseline_version="static_inverse_vol_v2",
         )
 
         self.assertEqual(result["status"], RunStatus.FAILED.value)
@@ -265,7 +265,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
         rebalance = pd.DataFrame(
             [
                 {
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": date(2024, 1, 22),
                 }
             ]
@@ -289,7 +289,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
         rebalance = pd.DataFrame(
             [
                 {
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": date(2024, 1, 22),
                 }
             ]
@@ -312,7 +312,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
         rebalance = pd.DataFrame(
             [
                 {
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": date(2024, 1, 22),
                 }
             ]
@@ -345,14 +345,14 @@ class StageHBacktestKernelTests(unittest.TestCase):
         rebalance = pd.DataFrame(
             [
                 {
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": rebalance_date,
                 }
             ]
         )
         weights = self._equal_weights(rebalance_date)
-        weights["strategy_name"] = "etf_aw_v1"
-        weights["strategy_version"] = "target_weight_inverse_vol_v1"
+        weights["strategy_name"] = "etf_aw_v2"
+        weights["strategy_version"] = "target_weight_inverse_vol_v2"
         panel = self._sleeve_daily_frame(rebalance_date, date(2024, 1, 31))
         panel = panel[panel["sleeve_code"] != "518850.SH"].copy()
 
@@ -365,10 +365,10 @@ class StageHBacktestKernelTests(unittest.TestCase):
         )
 
         self.assertEqual(set(frame["observation_type"]), {"diagnostic"})
-        self.assertEqual(frame.iloc[0]["strategy_name"], "etf_aw_v1")
+        self.assertEqual(frame.iloc[0]["strategy_name"], "etf_aw_v2")
         self.assertEqual(
             frame.iloc[0]["strategy_version"],
-            "target_weight_inverse_vol_v1",
+            "target_weight_inverse_vol_v2",
         )
         self.assertEqual(frame.iloc[0]["observation_date"], rebalance_date)
         notes = json.loads(frame.iloc[0]["quality_notes_json"])
@@ -380,7 +380,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
         rebalance = pd.DataFrame(
             [
                 {
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": date(2024, 1, 20),
                 }
             ]
@@ -405,14 +405,14 @@ class StageHBacktestKernelTests(unittest.TestCase):
         rebalance = pd.DataFrame(
             [
                 {
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": rebalance_date,
                 }
             ]
         )
         weights = self._equal_weights(rebalance_date)
-        weights["strategy_name"] = "etf_aw_v1"
-        weights["strategy_version"] = "target_weight_inverse_vol_v1"
+        weights["strategy_name"] = "etf_aw_v2"
+        weights["strategy_version"] = "target_weight_inverse_vol_v2"
         weights["weight_source_type"] = "target_weight"
         weights["source_weight_dataset"] = "derived.etf_aw_target_weight"
         broken_panel = self._sleeve_daily_frame(rebalance_date, date(2024, 1, 31))
@@ -444,7 +444,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
         rebalance = pd.DataFrame(
             [
                 {
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": date(2024, 1, 30),
                 }
             ]
@@ -506,7 +506,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
             ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             [
-                "etf_aw_v1_monthly_post_20",
+                "etf_aw_v2_monthly_post_20",
                 f"{rebalance_date.year:04d}-{rebalance_date.month:02d}",
                 rebalance_date,
                 rebalance_date,
@@ -522,6 +522,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
         sleeves = [
             ("510300.SH", "equity_large"),
             ("159845.SZ", "equity_small"),
+            ("513100.SH", "equity_overseas"),
             ("511010.SH", "bond"),
             ("518850.SH", "gold"),
             ("159001.SZ", "cash"),
@@ -532,19 +533,19 @@ class StageHBacktestKernelTests(unittest.TestCase):
                     {
                         "schema_version": "etf_aw_target_weight_v1",
                         "contract_version": "etf_aw_target_weight_contract_v1",
-                        "calendar_name": "etf_aw_v1_monthly_post_20",
+                        "calendar_name": "etf_aw_v2_monthly_post_20",
                         "rebalance_date": rebalance_date,
                         "effective_date": rebalance_date,
-                        "strategy_name": "etf_aw_v1",
-                        "strategy_version": "target_weight_inverse_vol_v1",
+                        "strategy_name": "etf_aw_v2",
+                        "strategy_version": "target_weight_inverse_vol_v2",
                         "sleeve_code": code,
                         "sleeve_role": role,
-                        "risk_budget": 0.2,
+                        "risk_budget": 1.0 / len(sleeves),
                         "volatility_estimate": 0.01,
                         "volatility_floor": 0.005,
-                        "raw_target_weight": 0.2,
-                        "constrained_target_weight": 0.2,
-                        "target_weight": 0.2,
+                        "raw_target_weight": 1.0 / len(sleeves),
+                        "constrained_target_weight": 1.0 / len(sleeves),
+                        "target_weight": 1.0 / len(sleeves),
                         "target_weight_status": "complete",
                         "optimizer_name": "budgeted_inverse_vol",
                         "optimizer_basis": "fixture",
@@ -562,6 +563,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
         codes = [
             ("510300.SH", "equity_large", 0.001),
             ("159845.SZ", "equity_small", 0.0015),
+            ("513100.SH", "equity_overseas", 0.0012),
             ("511010.SH", "bond", 0.0002),
             ("518850.SH", "gold", 0.0006),
             ("159001.SZ", "cash", 0.0001),
@@ -609,6 +611,7 @@ class StageHBacktestKernelTests(unittest.TestCase):
         codes = [
             ("510300.SH", "equity_large"),
             ("159845.SZ", "equity_small"),
+            ("513100.SH", "equity_overseas"),
             ("511010.SH", "bond"),
             ("518850.SH", "gold"),
             ("159001.SZ", "cash"),
@@ -641,14 +644,21 @@ class StageHBacktestKernelTests(unittest.TestCase):
         return pd.DataFrame(rows)
 
     def _equal_weights(self, rebalance_date: date) -> pd.DataFrame:
-        codes = ["510300.SH", "159845.SZ", "511010.SH", "518850.SH", "159001.SZ"]
+        codes = [
+            "510300.SH",
+            "159845.SZ",
+            "513100.SH",
+            "511010.SH",
+            "518850.SH",
+            "159001.SZ",
+        ]
         return pd.DataFrame(
             [
                 {
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": rebalance_date,
                     "sleeve_code": code,
-                    "target_weight": 0.2,
+                    "target_weight": 1.0 / len(codes),
                 }
                 for code in codes
             ]

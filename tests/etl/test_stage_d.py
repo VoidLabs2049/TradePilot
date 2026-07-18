@@ -48,7 +48,7 @@ class StageDRebalanceSnapshotTests(unittest.TestCase):
         db._initialized = self._original_initialized
         self._temp_dir.cleanup()
 
-    def test_snapshot_builder_outputs_five_complete_sleeve_rows(self) -> None:
+    def test_snapshot_builder_outputs_complete_sleeve_rows(self) -> None:
         self._insert_rebalance(date(2024, 7, 22))
         self._write_sleeve_daily(
             date(2024, 1, 1),
@@ -64,10 +64,10 @@ class StageDRebalanceSnapshotTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
-        self.assertEqual(result["records_written"], 5)
+        self.assertEqual(result["records_written"], 6)
         self.assertTrue(all(result["validation"].values()))
         frame = self._read_snapshot_file(2024, 7)
-        self.assertEqual(len(frame), 5)
+        self.assertEqual(len(frame), 6)
         self.assertEqual(set(frame["data_status"]), {"complete"})
         equity = frame[frame["sleeve_code"] == "510300.SH"].iloc[0]
         self.assertAlmostEqual(equity["return_1m"], (1.001**21) - 1, places=8)
@@ -93,7 +93,7 @@ class StageDRebalanceSnapshotTests(unittest.TestCase):
 
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
         frame = self._read_snapshot_file(2024, 7)
-        self.assertEqual(len(frame), 5)
+        self.assertEqual(len(frame), 6)
         missing = frame[frame["sleeve_code"] == "518850.SH"].iloc[0]
         self.assertEqual(missing["data_status"], "missing")
         self.assertTrue(pd.isna(missing["close"]))
@@ -163,8 +163,8 @@ class StageDRebalanceSnapshotTests(unittest.TestCase):
         )
 
         frame = self._read_snapshot_file(2024, 7)
-        self.assertEqual(result["records_updated"], 5)
-        self.assertEqual(len(frame), 5)
+        self.assertEqual(result["records_updated"], 6)
+        self.assertEqual(len(frame), 6)
         self.assertFalse(
             frame.duplicated(["calendar_name", "rebalance_date", "sleeve_code"]).any()
         )
@@ -189,7 +189,7 @@ class StageDRebalanceSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["schema_version"], "etf_aw_snapshot_v1")
         self.assertEqual(snapshot["contract_version"], "etf_aw_snapshot_contract_v1")
         self.assertEqual(snapshot["rebalance_date"], "2024-07-22")
-        self.assertEqual(len(snapshot["sleeves"]), 5)
+        self.assertEqual(len(snapshot["sleeves"]), 6)
 
     def test_read_service_skips_future_partitions_for_as_of_date(self) -> None:
         self._insert_rebalance(date(2024, 7, 22))
@@ -246,7 +246,7 @@ class StageDRebalanceSnapshotTests(unittest.TestCase):
         self.assertEqual(len(snapshots), 2)
         self.assertEqual(
             {snapshot["calendar_name"] for snapshot in snapshots},
-            {"alternate_calendar", "etf_aw_v1_monthly_post_20"},
+            {"alternate_calendar", "etf_aw_v2_monthly_post_20"},
         )
 
     def _insert_rebalance(self, rebalance_date: date) -> None:
@@ -257,7 +257,7 @@ class StageDRebalanceSnapshotTests(unittest.TestCase):
             ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             [
-                "etf_aw_v1_monthly_post_20",
+                "etf_aw_v2_monthly_post_20",
                 f"{rebalance_date.year:04d}-{rebalance_date.month:02d}",
                 rebalance_date,
                 rebalance_date,
@@ -294,6 +294,7 @@ class StageDRebalanceSnapshotTests(unittest.TestCase):
         codes = [
             ("510300.SH", "equity_large"),
             ("159845.SZ", "equity_small"),
+            ("513100.SH", "equity_overseas"),
             ("511010.SH", "bond"),
             ("518850.SH", "gold"),
             ("159001.SZ", "cash"),

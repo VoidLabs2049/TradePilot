@@ -58,8 +58,9 @@ class StageJTargetWeightTests(unittest.TestCase):
 
     def test_documented_inverse_vol_fixture(self) -> None:
         budgets = {
-            "equity_large": 0.235,
-            "equity_small": 0.235,
+            "equity_large": 0.1745,
+            "equity_small": 0.1745,
+            "equity_overseas": 0.121,
             "bond": 0.186,
             "gold": 0.179,
             "cash": 0.165,
@@ -67,6 +68,7 @@ class StageJTargetWeightTests(unittest.TestCase):
         vol = {
             "equity_large": 0.012,
             "equity_small": 0.016,
+            "equity_overseas": 0.018,
             "bond": 0.006,
             "gold": 0.010,
             "cash": 0.005,
@@ -74,20 +76,22 @@ class StageJTargetWeightTests(unittest.TestCase):
 
         raw = etl_service._budgeted_inverse_vol_weights(budgets, vol)
 
-        self.assertAlmostEqual(raw["equity_large"], 0.1686, places=4)
-        self.assertAlmostEqual(raw["equity_small"], 0.1264, places=4)
-        self.assertAlmostEqual(raw["bond"], 0.2668, places=4)
-        self.assertAlmostEqual(raw["gold"], 0.1541, places=4)
-        self.assertAlmostEqual(raw["cash"], 0.2841, places=4)
+        self.assertAlmostEqual(raw["equity_large"], 0.1275, places=4)
+        self.assertAlmostEqual(raw["equity_small"], 0.0956, places=4)
+        self.assertAlmostEqual(raw["equity_overseas"], 0.0589, places=4)
+        self.assertAlmostEqual(raw["bond"], 0.2718, places=4)
+        self.assertAlmostEqual(raw["gold"], 0.1569, places=4)
+        self.assertAlmostEqual(raw["cash"], 0.2893, places=4)
         self.assertAlmostEqual(sum(raw.values()), 1.0, places=6)
 
     def test_caps_limit_cash_and_non_cash_then_redistribute(self) -> None:
         cash_heavy = {
             "equity_large": 0.10,
             "equity_small": 0.10,
+            "equity_overseas": 0.10,
             "bond": 0.10,
             "gold": 0.10,
-            "cash": 0.60,
+            "cash": 0.50,
         }
         constrained = etl_service._apply_target_weight_caps(cash_heavy)
 
@@ -100,7 +104,8 @@ class StageJTargetWeightTests(unittest.TestCase):
         bond_heavy = {
             "equity_large": 0.10,
             "equity_small": 0.10,
-            "bond": 0.60,
+            "equity_overseas": 0.10,
+            "bond": 0.50,
             "gold": 0.10,
             "cash": 0.10,
         }
@@ -113,7 +118,9 @@ class StageJTargetWeightTests(unittest.TestCase):
         rebalance_date = date(2024, 7, 22)
         budget = pd.DataFrame(
             [
-                self._budget_row(rebalance_date, role, 0.2, "complete")
+                self._budget_row(
+                    rebalance_date, role, self._base_budget(role), "complete"
+                )
                 for role in ETF_AW_SLEEVE_ROLE_ORDER
             ]
         )
@@ -121,13 +128,19 @@ class StageJTargetWeightTests(unittest.TestCase):
 
         frame = self.service._make_etf_aw_target_weight_frame(budget, panel)
 
-        self.assertEqual(len(frame), 5)
+        self.assertEqual(len(frame), 6)
         by_role = frame.set_index("sleeve_role")
         self.assertEqual(by_role.loc["cash", "target_weight_status"], "partial")
         self.assertEqual(
             set(
                 by_role.loc[
-                    ["equity_large", "equity_small", "bond", "gold"],
+                    [
+                        "equity_large",
+                        "equity_small",
+                        "equity_overseas",
+                        "bond",
+                        "gold",
+                    ],
                     "target_weight_status",
                 ]
             ),
@@ -140,7 +153,9 @@ class StageJTargetWeightTests(unittest.TestCase):
         rebalance_date = date(2024, 7, 22)
         budget = pd.DataFrame(
             [
-                self._budget_row(rebalance_date, role, 0.2, "complete")
+                self._budget_row(
+                    rebalance_date, role, self._base_budget(role), "complete"
+                )
                 for role in ETF_AW_SLEEVE_ROLE_ORDER
             ]
         )
@@ -154,7 +169,9 @@ class StageJTargetWeightTests(unittest.TestCase):
         rebalance_date = date(2024, 7, 22)
         budget = pd.DataFrame(
             [
-                self._budget_row(rebalance_date, role, 0.2, "complete")
+                self._budget_row(
+                    rebalance_date, role, self._base_budget(role), "complete"
+                )
                 for role in ETF_AW_SLEEVE_ROLE_ORDER
             ]
         )
@@ -168,30 +185,32 @@ class StageJTargetWeightTests(unittest.TestCase):
 
     def test_no_trade_band_keeps_small_diffs_but_not_large_diffs(self) -> None:
         constrained = {
-            "equity_large": 0.201,
-            "equity_small": 0.199,
-            "bond": 0.20,
+            "equity_large": 0.151,
+            "equity_small": 0.149,
+            "equity_overseas": 0.15,
+            "bond": 0.15,
             "gold": 0.20,
             "cash": 0.20,
         }
         previous = {
-            ETF_AW_SLEEVE_CODE_BY_ROLE["equity_large"]: 0.20,
-            ETF_AW_SLEEVE_CODE_BY_ROLE["equity_small"]: 0.20,
-            ETF_AW_SLEEVE_CODE_BY_ROLE["bond"]: 0.20,
+            ETF_AW_SLEEVE_CODE_BY_ROLE["equity_large"]: 0.15,
+            ETF_AW_SLEEVE_CODE_BY_ROLE["equity_small"]: 0.15,
+            ETF_AW_SLEEVE_CODE_BY_ROLE["equity_overseas"]: 0.15,
+            ETF_AW_SLEEVE_CODE_BY_ROLE["bond"]: 0.15,
             ETF_AW_SLEEVE_CODE_BY_ROLE["gold"]: 0.20,
             ETF_AW_SLEEVE_CODE_BY_ROLE["cash"]: 0.20,
         }
 
         target, drift = etl_service._apply_no_trade_band(constrained, previous)
-        self.assertEqual(target[ETF_AW_SLEEVE_CODE_BY_ROLE["equity_large"]], 0.20)
+        self.assertEqual(target[ETF_AW_SLEEVE_CODE_BY_ROLE["equity_large"]], 0.15)
         self.assertAlmostEqual(drift, 0.0)
 
-        constrained["equity_large"] = 0.21
+        constrained["equity_large"] = 0.16
         constrained["cash"] = 0.191
         target, drift = etl_service._apply_no_trade_band(constrained, previous)
         self.assertNotAlmostEqual(
             target[ETF_AW_SLEEVE_CODE_BY_ROLE["equity_large"]],
-            0.20,
+            0.15,
             places=6,
         )
         self.assertAlmostEqual(sum(target.values()), 1.0, places=6)
@@ -201,15 +220,17 @@ class StageJTargetWeightTests(unittest.TestCase):
         constrained = {
             "equity_large": 0.148,
             "equity_small": 0.10,
+            "equity_overseas": 0.10,
             "bond": 0.202,
-            "gold": 0.45,
+            "gold": 0.35,
             "cash": 0.10,
         }
         previous = {
             ETF_AW_SLEEVE_CODE_BY_ROLE["equity_large"]: 0.148,
             ETF_AW_SLEEVE_CODE_BY_ROLE["equity_small"]: 0.10,
+            ETF_AW_SLEEVE_CODE_BY_ROLE["equity_overseas"]: 0.10,
             ETF_AW_SLEEVE_CODE_BY_ROLE["bond"]: 0.20,
-            ETF_AW_SLEEVE_CODE_BY_ROLE["gold"]: 0.45,
+            ETF_AW_SLEEVE_CODE_BY_ROLE["gold"]: 0.352,
             ETF_AW_SLEEVE_CODE_BY_ROLE["cash"]: 0.10,
         }
 
@@ -226,7 +247,9 @@ class StageJTargetWeightTests(unittest.TestCase):
         self.service._write_etf_aw_risk_budget(
             pd.DataFrame(
                 [
-                    self._budget_row(rebalance_date, role, 0.2, "complete")
+                    self._budget_row(
+                        rebalance_date, role, self._base_budget(role), "complete"
+                    )
                     for role in ETF_AW_SLEEVE_ROLE_ORDER
                 ]
             )
@@ -251,7 +274,7 @@ class StageJTargetWeightTests(unittest.TestCase):
         self.assertIsNotNone(latest)
         assert latest is not None
         self.assertEqual(latest["schema_version"], "etf_aw_target_weight_v1")
-        self.assertEqual(len(latest["weights"]), 5)
+        self.assertEqual(len(latest["weights"]), 6)
         self.assertAlmostEqual(latest["target_weight_sum"], 1.0, places=6)
 
     def test_read_model_filters_strategy_and_handles_mixed_status(self) -> None:
@@ -260,7 +283,8 @@ class StageJTargetWeightTests(unittest.TestCase):
             rebalance_date,
             {
                 "equity_large": 0.19,
-                "equity_small": 0.21,
+                "equity_small": 0.19,
+                "equity_overseas": 0.02,
                 "bond": 0.20,
                 "gold": 0.20,
                 "cash": 0.20,
@@ -270,7 +294,8 @@ class StageJTargetWeightTests(unittest.TestCase):
             rebalance_date,
             {
                 "equity_large": 0.20,
-                "equity_small": 0.20,
+                "equity_small": 0.18,
+                "equity_overseas": 0.02,
                 "bond": 0.20,
                 "gold": 0.20,
                 "cash": 0.20,
@@ -286,8 +311,8 @@ class StageJTargetWeightTests(unittest.TestCase):
 
         latest = get_latest_etf_aw_target_weight(
             as_of_date=rebalance_date,
-            strategy_name="etf_aw_v1",
-            strategy_version="target_weight_inverse_vol_v1",
+            strategy_name="etf_aw_v2",
+            strategy_version="target_weight_inverse_vol_v2",
             lakehouse_root=self.lakehouse_root,
         )
         listed = list_etf_aw_target_weights(
@@ -299,7 +324,7 @@ class StageJTargetWeightTests(unittest.TestCase):
 
         self.assertIsNotNone(latest)
         assert latest is not None
-        self.assertEqual(latest["strategy_version"], "target_weight_inverse_vol_v1")
+        self.assertEqual(latest["strategy_version"], "target_weight_inverse_vol_v2")
         self.assertEqual(latest["target_weight_status"], "partial")
         self.assertIn("cash", latest["quality_notes"]["sleeves"])
         self.assertEqual(len(listed), 1)
@@ -315,7 +340,7 @@ class StageJTargetWeightTests(unittest.TestCase):
             rebalance_date,
             self._equal_role_weights(),
         )
-        other_frame["calendar_name"] = "etf_aw_v2_monthly_post_20"
+        other_frame["calendar_name"] = "alternate_calendar"
         self.service._write_etf_aw_target_weight(
             pd.concat([default_frame, other_frame], ignore_index=True)
         )
@@ -326,14 +351,14 @@ class StageJTargetWeightTests(unittest.TestCase):
         )
         selected = get_latest_etf_aw_target_weight(
             as_of_date=rebalance_date,
-            calendar_name="etf_aw_v1_monthly_post_20",
+            calendar_name="etf_aw_v2_monthly_post_20",
             lakehouse_root=self.lakehouse_root,
         )
 
         self.assertIsNone(ambiguous)
         self.assertIsNotNone(selected)
         assert selected is not None
-        self.assertEqual(selected["calendar_name"], "etf_aw_v1_monthly_post_20")
+        self.assertEqual(selected["calendar_name"], "etf_aw_v2_monthly_post_20")
 
     def test_read_model_rejects_target_weight_missing_contract_columns(self) -> None:
         frame = self._target_weight_frame(date(2024, 7, 22), self._equal_role_weights())
@@ -372,7 +397,9 @@ class StageJTargetWeightTests(unittest.TestCase):
         self.service._write_etf_aw_risk_budget(
             pd.DataFrame(
                 [
-                    self._budget_row(rebalance_date, role, 0.2, "complete")
+                    self._budget_row(
+                        rebalance_date, role, self._base_budget(role), "complete"
+                    )
                     for role in ETF_AW_SLEEVE_ROLE_ORDER
                 ]
             )
@@ -397,7 +424,8 @@ class StageJTargetWeightTests(unittest.TestCase):
         rebalance_date = date(2024, 7, 22)
         previous_weights = {
             "equity_large": 0.19,
-            "equity_small": 0.21,
+            "equity_small": 0.19,
+            "equity_overseas": 0.02,
             "bond": 0.20,
             "gold": 0.20,
             "cash": 0.20,
@@ -408,7 +436,9 @@ class StageJTargetWeightTests(unittest.TestCase):
         self.service._write_etf_aw_risk_budget(
             pd.DataFrame(
                 [
-                    self._budget_row(rebalance_date, role, 0.2, "complete")
+                    self._budget_row(
+                        rebalance_date, role, self._base_budget(role), "complete"
+                    )
                     for role in ETF_AW_SLEEVE_ROLE_ORDER
                 ]
             )
@@ -434,7 +464,9 @@ class StageJTargetWeightTests(unittest.TestCase):
         rebalance_date = date(2024, 7, 22)
         budget = pd.DataFrame(
             [
-                self._budget_row(rebalance_date, role, 0.2, "complete")
+                self._budget_row(
+                    rebalance_date, role, self._base_budget(role), "complete"
+                )
                 for role in ETF_AW_SLEEVE_ROLE_ORDER
             ]
         )
@@ -455,7 +487,9 @@ class StageJTargetWeightTests(unittest.TestCase):
         )
         budget = pd.DataFrame(
             [
-                self._budget_row(rebalance_date, role, 0.2, "complete")
+                self._budget_row(
+                    rebalance_date, role, self._base_budget(role), "complete"
+                )
                 for role in ETF_AW_SLEEVE_ROLE_ORDER
             ]
         )
@@ -467,7 +501,7 @@ class StageJTargetWeightTests(unittest.TestCase):
             previous_target_weight=previous,
         )
 
-        self.assertEqual(len(frame), 5)
+        self.assertEqual(len(frame), 6)
         self.assertTrue(frame["turnover_estimate"].isna().all())
         notes = json.loads(frame.iloc[0]["quality_notes_json"])
         self.assertIn("first_period_turnover_not_observable", notes["reasons"])
@@ -477,7 +511,9 @@ class StageJTargetWeightTests(unittest.TestCase):
         self.service._write_etf_aw_risk_budget(
             pd.DataFrame(
                 [
-                    self._budget_row(rebalance_date, role, 0.2, "complete")
+                    self._budget_row(
+                        rebalance_date, role, self._base_budget(role), "complete"
+                    )
                     for role in ETF_AW_SLEEVE_ROLE_ORDER
                 ]
             )
@@ -507,10 +543,10 @@ class StageJTargetWeightTests(unittest.TestCase):
             / "07"
             / "part-00000.parquet"
         )
-        self.assertEqual(set(frame["strategy_name"]), {"etf_aw_v1"})
+        self.assertEqual(set(frame["strategy_name"]), {"etf_aw_v2"})
         self.assertEqual(
             set(frame["strategy_version"]),
-            {"target_weight_inverse_vol_v1"},
+            {"target_weight_inverse_vol_v2"},
         )
         self.assertEqual(set(frame["weight_source_type"]), {"target_weight"})
         self.assertEqual(
@@ -611,10 +647,10 @@ class StageJTargetWeightTests(unittest.TestCase):
         return {
             "schema_version": "etf_aw_risk_budget_v1",
             "contract_version": "etf_aw_risk_budget_contract_v1",
-            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
             "rebalance_date": rebalance_date,
-            "strategy_name": "etf_aw_v1",
-            "strategy_version": "risk_budget_v1",
+            "strategy_name": "etf_aw_v2",
+            "strategy_version": "risk_budget_v2",
             "confidence_score": 0.5,
             "effective_confidence_score": 0.5,
             "market_regime_label": "mixed",
@@ -670,7 +706,7 @@ class StageJTargetWeightTests(unittest.TestCase):
         rebalance_date: date,
         weights_by_role: dict[str, float],
         *,
-        strategy_version: str = "target_weight_inverse_vol_v1",
+        strategy_version: str = "target_weight_inverse_vol_v2",
     ) -> pd.DataFrame:
         rows = []
         for role in ETF_AW_SLEEVE_ROLE_ORDER:
@@ -678,10 +714,10 @@ class StageJTargetWeightTests(unittest.TestCase):
                 {
                     "schema_version": "etf_aw_target_weight_v1",
                     "contract_version": "etf_aw_target_weight_contract_v1",
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": rebalance_date,
                     "effective_date": rebalance_date,
-                    "strategy_name": "etf_aw_v1",
+                    "strategy_name": "etf_aw_v2",
                     "strategy_version": strategy_version,
                     "sleeve_code": ETF_AW_SLEEVE_CODE_BY_ROLE[role],
                     "sleeve_role": role,
@@ -704,7 +740,20 @@ class StageJTargetWeightTests(unittest.TestCase):
         return pd.DataFrame(rows)
 
     def _equal_role_weights(self) -> dict[str, float]:
-        return {role: 0.2 for role in ETF_AW_SLEEVE_ROLE_ORDER}
+        return {
+            role: 1.0 / len(ETF_AW_SLEEVE_ROLE_ORDER)
+            for role in ETF_AW_SLEEVE_ROLE_ORDER
+        }
+
+    def _base_budget(self, role: str) -> float:
+        return {
+            "equity_large": 0.15,
+            "equity_small": 0.15,
+            "equity_overseas": 0.10,
+            "bond": 0.20,
+            "gold": 0.20,
+            "cash": 0.20,
+        }[role]
 
     def _read_target_weight_file(self, year: int, month: int) -> pd.DataFrame:
         return pd.read_parquet(
@@ -724,7 +773,7 @@ class StageJTargetWeightTests(unittest.TestCase):
             ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             [
-                "etf_aw_v1_monthly_post_20",
+                "etf_aw_v2_monthly_post_20",
                 f"{rebalance_date.year:04d}-{rebalance_date.month:02d}",
                 rebalance_date,
                 rebalance_date,
