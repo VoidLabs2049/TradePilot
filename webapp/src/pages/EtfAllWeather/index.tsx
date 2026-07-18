@@ -100,7 +100,7 @@ function statusColor(status?: string | null) {
 }
 
 function formatPercent(value?: number | null) {
-  return typeof value === "number" ? `${(value * 100).toFixed(2)}%` : "-";
+  return typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "-";
 }
 
 function formatSignedPercent(value?: number | null) {

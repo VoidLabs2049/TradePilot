@@ -320,7 +320,7 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
         self.assertEqual(instrument_count, 6)
 
     def test_frozen_etf_aw_sleeves_do_not_include_old_bond_candidate(self) -> None:
-        self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v1")
+        self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v2")
 
         count = self.conn.execute(
             """
@@ -344,7 +344,7 @@ class StageCRebalanceCalendarTests(unittest.TestCase):
             """
         )
 
-        result = self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v1")
+        result = self.service.run_bootstrap("reference.etf_aw_sleeves.frozen_v2")
 
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
         instrument = self.conn.execute(

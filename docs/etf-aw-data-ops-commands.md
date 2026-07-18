@@ -50,6 +50,8 @@ TUSHARE_TOKEN=your_tushare_token
 
 `data/tradepilot.duckdb` 和 `data/lakehouse/` 是本地生成数据，不随仓库共享。新 clone 或缺少 lakehouse parquet 时，`./scripts/etl/update-etf-aw.sh` 会自动从项目定义的历史起点回补：ETF 行情和交易日历从 `2016-01-01`，宏观/利率从 `2025-01-01`。
 
+从 V1 升级到 V2 后，看板出数前必须运行一次 `./scripts/etl/update-etf-aw.sh`，重建带有 `etf_aw_v2` identity 的全部 derived artifact。默认模拟账户也已从 `etf-aw-paper` 改为 `etf-aw-v2-paper`；依赖旧账户 ID 的外部工具或书签需要同步更新。
+
 ## 3. 自动更新定时任务
 
 定时任务应调用正常 pipeline 的包装模式：
