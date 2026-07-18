@@ -155,7 +155,7 @@ def build_reference_rebalance_calendar_dataset() -> DatasetDefinition:
 
 
 def build_reference_etf_aw_sleeves_dataset() -> DatasetDefinition:
-    """Return the frozen ETF all-weather v1 sleeve registry definition."""
+    """Return the frozen ETF all-weather sleeve registry definition."""
 
     return DatasetDefinition(
         dataset_name="reference.etf_aw_sleeves",
@@ -165,7 +165,7 @@ def build_reference_etf_aw_sleeves_dataset() -> DatasetDefinition:
         storage_zone=StorageZone.NORMALIZED,
         canonical_schema_name="canonical_sleeves",
         validation_rule_names=[
-            "sleeves.frozen_v1_exact_codes",
+            "sleeves.frozen_universe_exact_codes",
             "sleeves.role_supported",
             "sleeves.exposure_note_present",
         ],

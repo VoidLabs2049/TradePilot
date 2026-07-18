@@ -76,6 +76,7 @@ def _etf_aw_role_sort_key(series: pd.Series) -> pd.Series:
 def get_latest_etf_aw_snapshot(
     as_of_date: date | None = None,
     *,
+    calendar_name: str | None = None,
     lakehouse_root: Path | None = None,
 ) -> dict[str, Any] | None:
     """Return the latest ETF all-weather snapshot at or before a date."""
@@ -84,6 +85,10 @@ def get_latest_etf_aw_snapshot(
         as_of_date=as_of_date,
         lakehouse_root=lakehouse_root,
     )
+    if frame.empty:
+        return None
+    if calendar_name is not None:
+        frame = frame[frame["calendar_name"].astype(str).eq(calendar_name)].copy()
     if frame.empty:
         return None
     dates = frame["rebalance_date"].dropna().tolist()
@@ -127,6 +132,7 @@ def list_etf_aw_snapshots(
 def get_latest_etf_aw_regime_context(
     as_of_date: date | None = None,
     *,
+    calendar_name: str | None = None,
     lakehouse_root: Path | None = None,
 ) -> dict[str, Any] | None:
     """Return the latest ETF all-weather regime context at or before a date."""
@@ -136,6 +142,8 @@ def get_latest_etf_aw_regime_context(
         return None
     frame["rebalance_date"] = _normalize_date_series(frame["rebalance_date"])
     frame = frame.dropna(subset=["rebalance_date"])
+    if calendar_name is not None:
+        frame = frame[frame["calendar_name"].astype(str).eq(calendar_name)].copy()
     if as_of_date is not None:
         frame = frame[frame["rebalance_date"] <= as_of_date].copy()
     if frame.empty:
@@ -173,6 +181,9 @@ def list_etf_aw_regime_contexts(
 def get_latest_etf_aw_strategy_context(
     as_of_date: date | None = None,
     *,
+    calendar_name: str | None = None,
+    strategy_name: str | None = None,
+    strategy_version: str | None = None,
     lakehouse_root: Path | None = None,
 ) -> dict[str, Any] | None:
     """Return the latest ETF all-weather strategy context at or before a date."""
@@ -181,6 +192,14 @@ def get_latest_etf_aw_strategy_context(
     if frame.empty:
         return None
     frame = _normalize_strategy_context_frame(frame)
+    filters = {
+        "calendar_name": calendar_name,
+        "strategy_name": strategy_name,
+        "strategy_version": strategy_version,
+    }
+    for column, value in filters.items():
+        if value is not None:
+            frame = frame[frame[column].astype(str).eq(value)].copy()
     if as_of_date is not None and not frame.empty:
         frame = frame[frame["rebalance_date"] <= as_of_date].copy()
     if frame.empty:
@@ -221,6 +240,9 @@ def list_etf_aw_strategy_contexts(
 def get_latest_etf_aw_risk_budget(
     as_of_date: date | None = None,
     *,
+    calendar_name: str | None = None,
+    strategy_name: str | None = None,
+    strategy_version: str | None = None,
     lakehouse_root: Path | None = None,
 ) -> dict[str, Any] | None:
     """Return the latest ETF all-weather risk budget at or before a date."""
@@ -229,6 +251,14 @@ def get_latest_etf_aw_risk_budget(
     if frame.empty:
         return None
     frame = _normalize_risk_budget_frame(frame)
+    filters = {
+        "calendar_name": calendar_name,
+        "strategy_name": strategy_name,
+        "strategy_version": strategy_version,
+    }
+    for column, value in filters.items():
+        if value is not None:
+            frame = frame[frame[column].astype(str).eq(value)].copy()
     if as_of_date is not None and not frame.empty:
         frame = frame[frame["rebalance_date"] <= as_of_date].copy()
     if frame.empty:

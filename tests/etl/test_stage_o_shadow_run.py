@@ -65,6 +65,12 @@ class StageOShadowRunTests(unittest.TestCase):
                         "market_value": 2000.0,
                     },
                     {
+                        "symbol": "513100.SH",
+                        "quantity": 0,
+                        "available_quantity": 0,
+                        "market_value": 0.0,
+                    },
+                    {
                         "symbol": "511010.SH",
                         "quantity": 1000,
                         "available_quantity": 1000,
@@ -125,6 +131,11 @@ class StageOShadowRunTests(unittest.TestCase):
                         "price_trade_date": "2024-07-23",
                     },
                     {
+                        "symbol": "513100.SH",
+                        "close_price": 1.8,
+                        "price_trade_date": "2024-07-23",
+                    },
+                    {
                         "symbol": "511010.SH",
                         "close_price": 3.0,
                         "price_trade_date": "2024-07-23",
@@ -147,7 +158,7 @@ class StageOShadowRunTests(unittest.TestCase):
             {
                 "observation_date": "2024-07-23",
                 "strategy_name": "static_inverse_vol",
-                "strategy_version": "static_inverse_vol_v1",
+                "strategy_version": "static_inverse_vol_v2",
                 "baseline_daily_return": 0.005,
                 "source_artifact": "derived.etf_aw_backtest_kernel",
             },
@@ -188,7 +199,7 @@ class StageOShadowRunTests(unittest.TestCase):
             / "07"
             / "part-00000.parquet"
         )
-        self.assertEqual(len(observation), 5)
+        self.assertEqual(len(observation), 6)
         self.assertAlmostEqual(float(observation.iloc[0]["cash"]), 900.0)
         self.assertAlmostEqual(float(observation.iloc[0]["total_asset"]), 11110.0)
         self.assertAlmostEqual(
@@ -355,7 +366,7 @@ class StageOShadowRunTests(unittest.TestCase):
             / "local-paper"
             / "part-00000.parquet"
         )
-        self.assertEqual(len(seed), 5)
+        self.assertEqual(len(seed), 6)
         self.assertEqual(set(seed["account_id"]), {"local-paper"})
         self.assertEqual(
             set(seed["source_plan_id"]), {"local-target-weight:2024-07-22"}
@@ -370,7 +381,7 @@ class StageOShadowRunTests(unittest.TestCase):
             / "07"
             / "part-00000.parquet"
         )
-        self.assertEqual(len(observation), 10)
+        self.assertEqual(len(observation), 12)
         self.assertEqual(
             sorted(pd.to_datetime(observation["observation_date"]).dt.date.unique()),
             [date(2024, 7, 23), date(2024, 7, 24)],
@@ -404,7 +415,37 @@ class StageOShadowRunTests(unittest.TestCase):
             / "07"
             / "part-00000.parquet"
         )
-        self.assertEqual(len(observation), 10)
+        self.assertEqual(len(observation), 12)
+
+    def test_update_local_shadow_accepts_baseline_weights(self) -> None:
+        self._write_local_shadow_inputs()
+
+        self._run_ok(
+            [
+                "update-local-shadow",
+                "--account-id",
+                "baseline-paper",
+                "--weight-source",
+                "baseline",
+                "--initial-asset",
+                "100000",
+                "--seed-date",
+                "2024-07-22",
+                "--end-date",
+                "2024-07-24",
+            ]
+        )
+
+        seed = pd.read_parquet(
+            self.lakehouse_root
+            / "derived"
+            / "derived.etf_aw_shadow_account_seed"
+            / "baseline-paper"
+            / "part-00000.parquet"
+        )
+        self.assertEqual(len(seed), 6)
+        self.assertEqual(set(seed["account_id"]), {"baseline-paper"})
+        self.assertEqual(set(seed["source_plan_id"]), {"local-baseline:2024-07-22"})
 
     def test_observation_uses_price_as_of_for_active_plan(self) -> None:
         future_plan = self._plan_frame().copy()
@@ -525,6 +566,7 @@ class StageOShadowRunTests(unittest.TestCase):
                     for symbol, value in [
                         ("510300.SH", 1000.0),
                         ("159845.SZ", 2000.0),
+                        ("513100.SH", 0.0),
                         ("511010.SH", 3000.0),
                         ("518850.SH", 2500.0),
                         ("159001.SZ", 1500.0),
@@ -538,6 +580,7 @@ class StageOShadowRunTests(unittest.TestCase):
         for symbol, role, quantity, market_value in [
             ("510300.SH", "equity_large", 1000, 1000.0),
             ("159845.SZ", "equity_small", 1000, 2000.0),
+            ("513100.SH", "equity_overseas", 0, 0.0),
             ("511010.SH", "bond", 1000, 3000.0),
             ("518850.SH", "gold", 1000, 2500.0),
             ("159001.SZ", "cash", 1000, 1500.0),
@@ -563,6 +606,7 @@ class StageOShadowRunTests(unittest.TestCase):
             prices=[
                 ClosePriceItem(symbol="510300.SH", close_price=1.0),
                 ClosePriceItem(symbol="159845.SZ", close_price=2.0),
+                ClosePriceItem(symbol="513100.SH", close_price=1.8),
                 ClosePriceItem(symbol="511010.SH", close_price=3.0),
                 ClosePriceItem(symbol="518850.SH", close_price=2.5),
                 ClosePriceItem(symbol="159001.SZ", close_price=1.5),
@@ -576,7 +620,7 @@ class StageOShadowRunTests(unittest.TestCase):
         rows["observation_date"] = date(2024, 7, 23)
         rows["generated_at"] = pd.Timestamp(generated_at)
         rows["review_metadata_json"] = json.dumps({"price_as_of": price_as_of})
-        rows["close_price"] = [1.0, 2.0, 3.0, 2.5, 1.5]
+        rows["close_price"] = [1.0, 2.0, 1.8, 3.0, 2.5, 1.5]
         rows["actual_weight"] = rows["market_value"] / 11000.0
         return rows
 
@@ -585,6 +629,7 @@ class StageOShadowRunTests(unittest.TestCase):
         sleeves = [
             ("510300.SH", "equity_large", 1.0),
             ("159845.SZ", "equity_small", 2.0),
+            ("513100.SH", "equity_overseas", 1.8),
             ("511010.SH", "bond", 3.0),
             ("518850.SH", "gold", 2.5),
             ("159001.SZ", "cash", 1.5),
@@ -594,14 +639,14 @@ class StageOShadowRunTests(unittest.TestCase):
                 {
                     "schema_version": "etf_aw_target_weight_v1",
                     "contract_version": "etf_aw_target_weight_contract_v1",
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": date(2024, 7, 22),
                     "effective_date": date(2024, 7, 22),
-                    "strategy_name": "etf_aw_v1",
-                    "strategy_version": "target_weight_inverse_vol_v1",
+                    "strategy_name": "etf_aw_v2",
+                    "strategy_version": "target_weight_inverse_vol_v2",
                     "sleeve_code": symbol,
                     "sleeve_role": role,
-                    "target_weight": 0.2,
+                    "target_weight": 0.0 if role == "equity_overseas" else 0.2,
                     "target_weight_status": "complete",
                     "ingested_at": pd.Timestamp("2024-07-22 15:00:00"),
                 }
@@ -609,6 +654,31 @@ class StageOShadowRunTests(unittest.TestCase):
         write_dataset_parquet(
             pd.DataFrame(target_rows),
             "derived.etf_aw_target_weight",
+            StorageZone.DERIVED,
+            [("year", 2024), ("month", "07")],
+            lakehouse_root=self.lakehouse_root,
+        )
+
+        baseline_weight_rows = []
+        for symbol, role, _ in sleeves:
+            baseline_weight_rows.append(
+                {
+                    "schema_version": "etf_aw_baseline_weight_v1",
+                    "contract_version": "etf_aw_baseline_weight_contract_v1",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
+                    "rebalance_date": date(2024, 7, 22),
+                    "effective_date": date(2024, 7, 22),
+                    "baseline_name": "static_inverse_vol",
+                    "baseline_version": "static_inverse_vol_v2",
+                    "sleeve_code": symbol,
+                    "sleeve_role": role,
+                    "target_weight": 1.0 / len(sleeves),
+                    "ingested_at": pd.Timestamp("2024-07-22 15:00:00"),
+                }
+            )
+        write_dataset_parquet(
+            pd.DataFrame(baseline_weight_rows),
+            "derived.etf_aw_baseline_weight",
             StorageZone.DERIVED,
             [("year", 2024), ("month", "07")],
             lakehouse_root=self.lakehouse_root,
@@ -658,9 +728,9 @@ class StageOShadowRunTests(unittest.TestCase):
             baseline_rows.append(
                 {
                     "schema_version": "etf_aw_backtest_kernel_v1",
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "strategy_name": "static_inverse_vol",
-                    "strategy_version": "static_inverse_vol_v1",
+                    "strategy_version": "static_inverse_vol_v2",
                     "observation_type": "daily_nav",
                     "observation_date": trade_date,
                     "metric_name": "net_value",
@@ -686,6 +756,7 @@ class StageOShadowRunTests(unittest.TestCase):
         sleeves = [
             ("510300.SH", "equity_large", "BUY", 200, 1.0),
             ("159845.SZ", "equity_small", "HOLD", 0, 2.0),
+            ("513100.SH", "equity_overseas", "HOLD", 0, 1.8),
             ("511010.SH", "bond", "HOLD", 0, 3.0),
             ("518850.SH", "gold", "HOLD", 0, 2.5),
             ("159001.SZ", "cash", "SELL", 100, 1.5),
@@ -702,11 +773,11 @@ class StageOShadowRunTests(unittest.TestCase):
                     "account_snapshot_at": "2024-07-22T15:00:00+00:00",
                     "price_as_of": "2024-07-22T15:00:00+00:00",
                     "target_weight_rebalance_date": date(2024, 7, 22),
-                    "strategy_name": "etf_aw_v1",
-                    "strategy_version": "target_weight_inverse_vol_v1",
+                    "strategy_name": "etf_aw_v2",
+                    "strategy_version": "target_weight_inverse_vol_v2",
                     "sleeve_role": role,
                     "symbol": symbol,
-                    "target_weight": 0.2,
+                    "target_weight": 0.0 if role == "equity_overseas" else 0.2,
                     "current_quantity": 1000,
                     "available_quantity": 1000,
                     "current_market_value": 1000.0,
