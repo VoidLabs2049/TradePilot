@@ -87,11 +87,19 @@ export interface WorkflowContextPayload {
 // ETF all-weather sleeve metrics are adjustment-aware and measured at the
 // monthly rebalance snapshot boundary. Return, volatility, and drawdown values
 // are decimal ratios, e.g. 0.05 means 5%.
+export type EtfAwSleeveRole =
+  | "equity_large"
+  | "equity_small"
+  | "equity_overseas"
+  | "bond"
+  | "gold"
+  | "cash";
+
 export interface EtfAwSleeveSnapshot {
-  // Frozen v1 sleeve instrument code, such as 510300.SH or 511010.SH.
+  // Frozen v2 sleeve instrument code, such as 510300.SH or 513100.SH.
   sleeve_code: string;
-  // Canonical role in the all-weather sleeve set: equity_large, bond, gold, etc.
-  sleeve_role: string;
+  // Canonical role in the six-sleeve all-weather universe.
+  sleeve_role: EtfAwSleeveRole;
   // Raw close is kept for inspection; adjusted close is the canonical return base.
   close?: number | null;
   adj_factor?: number | null;
@@ -126,7 +134,7 @@ export interface EtfAwSnapshotContext {
 }
 
 export interface EtfAwRiskBudgetSleeve {
-  sleeve_role: string;
+  sleeve_role: EtfAwSleeveRole;
   base_budget?: number | null;
   delta_budget?: number | null;
   tilted_budget?: number | null;
@@ -205,7 +213,7 @@ export interface EtfAwShadowStatus {
   missing_observation_dates: string[];
   latest_prices: Array<{
     sleeve_code: string;
-    sleeve_role: string;
+    sleeve_role: EtfAwSleeveRole;
     close: number;
     trade_date: string;
   }>;
@@ -227,6 +235,169 @@ export interface EtfAwLocalPerformance {
     daily_return: number;
   }>;
   metrics: Array<{ strategy: string; metric: string; value: number }>;
+}
+
+export interface EtfAwTargetWeightRow {
+  sleeve_code: string;
+  sleeve_role: EtfAwSleeveRole;
+  target_weight: number | null;
+  target_weight_status: string;
+  turnover_estimate?: number | null;
+}
+
+export interface EtfAwPlanOrderRow {
+  sleeve_code: string;
+  sleeve_role: EtfAwSleeveRole;
+  target_weight: number | null;
+  latest_price: number | null;
+  order_side: string;
+  order_quantity: number;
+  estimated_notional: number | null;
+  target_notional: number | null;
+}
+
+export interface EtfAwRobustnessScenario {
+  cost_scenario: string;
+  gross_total_return?: number | null;
+  gross_sharpe_ratio?: number | null;
+  gross_max_drawdown?: number | null;
+  net_total_return?: number | null;
+  net_annualized_return?: number | null;
+  net_annualized_volatility?: number | null;
+  net_sharpe_ratio?: number | null;
+  net_max_drawdown?: number | null;
+  average_turnover?: number | null;
+  estimated_cost_fraction_sum?: number | null;
+}
+
+export interface EtfAwRobustnessComparison {
+  cost_scenario: string;
+  gross_total_return_diff?: number | null;
+  net_total_return_diff?: number | null;
+  net_sharpe_ratio_diff?: number | null;
+  net_max_drawdown_diff?: number | null;
+}
+
+export interface EtfAwResearchSummary {
+  target_weight: {
+    rebalance_date: string | null;
+    status_counts: Record<string, number>;
+    rows: EtfAwTargetWeightRow[];
+  };
+  latest_plan: {
+    plan_id: string;
+    plan_date: string;
+    plan_status: string;
+    account_id: string;
+    estimated_buy_notional: number | null;
+    estimated_sell_notional: number | null;
+    rows: EtfAwPlanOrderRow[];
+  } | null;
+  robustness: {
+    verdict: "pass" | "fail" | "blocked";
+    decision_rule: string;
+    report_status: string;
+    comparable_range: { start_date: string | null; end_date: string | null };
+    coverage: Record<string, any>;
+    strategies: Array<{
+      label: string;
+      strategy_name: string;
+      strategy_version: string;
+      scenarios: EtfAwRobustnessScenario[];
+    }>;
+    comparisons: EtfAwRobustnessComparison[];
+    diagnostics: Record<string, any>;
+  } | null;
+  fixed_weight_backtest: {
+    weight_rebalance_date: string | null;
+    weight_basis: string;
+    baseline: string;
+    summary: {
+      segment_count: number;
+      profitable_segments: number;
+      beat_equal_weight_segments: number;
+      profitable_ratio: number | null;
+      beat_equal_weight_ratio: number | null;
+      average_total_return_diff?: number | null;
+      worst_max_drawdown?: number | null;
+    };
+    segments: Array<{
+      segment_name: string;
+      segment_type: string;
+      start_date: string;
+      end_date: string;
+      observation_count: number;
+      strategy: {
+        total_return: number | null;
+        annualized_return: number | null;
+        annualized_volatility: number | null;
+        sharpe_ratio: number | null;
+        max_drawdown: number | null;
+      };
+      equal_weight_baseline: {
+        total_return: number | null;
+        annualized_return: number | null;
+        annualized_volatility: number | null;
+        sharpe_ratio: number | null;
+        max_drawdown: number | null;
+      };
+      comparison: {
+        total_return_diff: number | null;
+        annualized_return_diff: number | null;
+        sharpe_ratio_diff: number | null;
+        max_drawdown_diff: number | null;
+      };
+      profitable: boolean;
+      beats_equal_weight: boolean;
+    }>;
+    optimization: {
+      method: string;
+      objective: string;
+      best_candidate_name: string;
+      candidates: Array<{
+        candidate_name: string;
+        shrinkage_to_equal_weight?: number;
+        search_method?: string;
+        weights: Record<string, number>;
+        score: number;
+        summary: {
+          segment_count: number;
+          profitable_segments: number;
+          beat_equal_weight_segments: number;
+          profitable_ratio: number | null;
+          beat_equal_weight_ratio: number | null;
+          average_total_return_diff: number | null;
+          worst_max_drawdown: number | null;
+        };
+      }>;
+      recent_return_frontier: {
+        objective: string;
+        search_method: string;
+        solutions: Array<{
+          max_drawdown_limit: number;
+          feasible_candidate_count: number;
+          solution: {
+            candidate_name: string;
+            weights: Record<string, number>;
+            recent_6m: {
+              total_return: number | null;
+              annualized_return: number | null;
+              annualized_volatility: number | null;
+              sharpe_ratio: number | null;
+              max_drawdown: number | null;
+            };
+            validation: Record<string, {
+              total_return: number | null;
+              annualized_return: number | null;
+              annualized_volatility: number | null;
+              sharpe_ratio: number | null;
+              max_drawdown: number | null;
+            }>;
+          } | null;
+        }>;
+      };
+    };
+  } | null;
 }
 
 export interface InsightMetric {
@@ -321,10 +492,10 @@ export const getLatestEtfAwRiskBudget = (asOfDate?: string) =>
   fetchJson<EtfAwRiskBudget | null>(`/workflow/etf-aw/risk-budget/latest${asOfDate ? `?as_of_date=${encodeURIComponent(asOfDate)}` : ""}`);
 export const getEtfAwShadowReport = (accountId?: string) =>
   fetchJson<EtfAwShadowReportResponse>(`/workflow/etf-aw/shadow-report${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ""}`);
-export const getEtfAwShadowStatus = (accountId = "etf-aw-paper") =>
+export const getEtfAwShadowStatus = (accountId = "etf-aw-v2-paper") =>
   fetchJson<EtfAwShadowStatus>(`/workflow/etf-aw/shadow/status?account_id=${encodeURIComponent(accountId)}`);
-export const updateEtfAwLocalShadow = (accountId = "etf-aw-paper") =>
-  fetch(`${API_BASE}/workflow/etf-aw/shadow/update-local?account_id=${encodeURIComponent(accountId)}`, { method: "POST" }).then((res) => {
+export const updateEtfAwLocalShadow = (accountId = "etf-aw-v2-paper", weightSource = "target-weight") =>
+  fetch(`${API_BASE}/workflow/etf-aw/shadow/update-local?account_id=${encodeURIComponent(accountId)}&weight_source=${encodeURIComponent(weightSource)}`, { method: "POST" }).then((res) => {
     if (!res.ok) {
       throw new Error(`${res.status} ${res.statusText}`);
     }
@@ -332,6 +503,8 @@ export const updateEtfAwLocalShadow = (accountId = "etf-aw-paper") =>
   });
 export const getEtfAwLocalPerformance = () =>
   fetchJson<EtfAwLocalPerformance | null>("/workflow/etf-aw/performance");
+export const getEtfAwResearchSummary = () =>
+  fetchJson<EtfAwResearchSummary>("/workflow/etf-aw/research-summary");
 export const getLatestWorkflowInsight = (phase: WorkflowPhase, producer = "the_one") =>
   fetchJson<WorkflowInsightResponse>(`/workflow/insight/latest?phase=${phase}&producer=${encodeURIComponent(producer)}`);
 export const upsertWorkflowInsight = (data: WorkflowInsightUpsertRequest) =>

@@ -71,9 +71,13 @@ _TRADING_CALENDAR_FULL_HISTORY_PROFILE = "reference.trading_calendar.full_histor
 _TRADING_CALENDAR_HISTORY_START = date(2016, 1, 1)
 _TRADING_CALENDAR_BOOTSTRAP_EXCHANGES = ["SH", "SZ"]
 _REBALANCE_CALENDAR_MONTHLY_PROFILE = "reference.rebalance_calendar.monthly_post_20"
-_REBALANCE_CALENDAR_NAME = "etf_aw_v1_monthly_post_20"
+_REBALANCE_CALENDAR_NAME = "etf_aw_v2_monthly_post_20"
 _REBALANCE_ANCHOR_DAY = 20
-_ETF_AW_SLEEVES_PROFILE = "reference.etf_aw_sleeves.frozen_v1"
+_ETF_AW_SLEEVES_PROFILE = "reference.etf_aw_sleeves.frozen_v2"
+_ETF_AW_SLEEVES_PROFILE_ALIASES = {
+    _ETF_AW_SLEEVES_PROFILE,
+    "reference.etf_aw_sleeves.frozen_v1",
+}
 _ETF_AW_SLEEVE_DAILY_PROFILE = "derived.etf_aw_sleeve_daily.build"
 _ETF_AW_REBALANCE_SNAPSHOT_PROFILE = "derived.etf_aw_rebalance_snapshot.build"
 _ETF_AW_REBALANCE_SNAPSHOT_DATASET = "derived.etf_aw_rebalance_snapshot"
@@ -93,12 +97,12 @@ _ETF_AW_RISK_BUDGET_PROFILE = "derived.etf_aw_risk_budget.build"
 _ETF_AW_RISK_BUDGET_DATASET = "derived.etf_aw_risk_budget"
 _ETF_AW_RISK_BUDGET_SCHEMA_VERSION = "etf_aw_risk_budget_v1"
 _ETF_AW_RISK_BUDGET_CONTRACT_VERSION = "etf_aw_risk_budget_contract_v1"
-_ETF_AW_RISK_BUDGET_STRATEGY_VERSION = "risk_budget_v1"
+_ETF_AW_RISK_BUDGET_STRATEGY_VERSION = "risk_budget_v2"
 _ETF_AW_TARGET_WEIGHT_PROFILE = "derived.etf_aw_target_weight.build"
 _ETF_AW_TARGET_WEIGHT_DATASET = "derived.etf_aw_target_weight"
 _ETF_AW_TARGET_WEIGHT_SCHEMA_VERSION = "etf_aw_target_weight_v1"
 _ETF_AW_TARGET_WEIGHT_CONTRACT_VERSION = "etf_aw_target_weight_contract_v1"
-_ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION = "target_weight_inverse_vol_v1"
+_ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION = "target_weight_inverse_vol_v2"
 _ETF_AW_TARGET_WEIGHT_STATUSES = {
     "complete",
     "partial",
@@ -114,6 +118,7 @@ _ETF_AW_TARGET_WEIGHT_NO_TRADE_BAND = 0.0025
 _ETF_AW_TARGET_WEIGHT_CAPS = {
     "equity_large": 0.45,
     "equity_small": 0.45,
+    "equity_overseas": 0.45,
     "bond": 0.45,
     "gold": 0.45,
     "cash": 0.35,
@@ -151,7 +156,7 @@ _ETF_AW_BASELINE_WEIGHT_DATASET = "derived.etf_aw_baseline_weight"
 _ETF_AW_BASELINE_WEIGHT_SCHEMA_VERSION = "etf_aw_baseline_weight_v1"
 _ETF_AW_BASELINE_WEIGHT_CONTRACT_VERSION = "etf_aw_baseline_weight_contract_v1"
 _ETF_AW_BASELINE_NAME = "static_inverse_vol"
-_ETF_AW_BASELINE_VERSION = "static_inverse_vol_v1"
+_ETF_AW_BASELINE_VERSION = "static_inverse_vol_v2"
 _ETF_AW_BASELINE_VOL_WINDOW = 63
 _ETF_AW_BASELINE_MIN_OBSERVATIONS = 42
 _ETF_AW_BASELINE_PANEL_LOOKBACK_DAYS = _ETF_AW_BASELINE_VOL_WINDOW * 3
@@ -167,8 +172,8 @@ _ETF_AW_BACKTEST_WEIGHT_SOURCES = {
 _ETF_AW_MONTHLY_EXPLAINABILITY_PROFILE = "derived.etf_aw_monthly_explainability.build"
 _ETF_AW_MONTHLY_EXPLAINABILITY_DATASET = "derived.etf_aw_monthly_explainability"
 _ETF_AW_MONTHLY_EXPLAINABILITY_SCHEMA_VERSION = "etf_aw_monthly_explainability_v1"
-_ETF_AW_STRATEGY_NAME = "etf_aw_v1"
-_ETF_AW_STRATEGY_VERSION = "stage_g_v1"
+_ETF_AW_STRATEGY_NAME = "etf_aw_v2"
+_ETF_AW_STRATEGY_VERSION = "stage_g_v2"
 _ETF_AW_SLEEVE_DAILY_RETURN_LOOKBACK_DAYS = 31
 _ETF_AW_SNAPSHOT_LOOKBACK_DAYS = 420
 _ETF_AW_SNAPSHOT_WINDOWS = {
@@ -243,37 +248,42 @@ _ETF_AW_RISK_BUDGET_STATUSES = {
     "unavailable",
 }
 _ETF_AW_RISK_BUDGET_BASE = {
-    "equity_large": 0.20,
-    "equity_small": 0.20,
+    "equity_large": 0.15,
+    "equity_small": 0.15,
+    "equity_overseas": 0.10,
     "bond": 0.20,
     "gold": 0.20,
     "cash": 0.20,
 }
 _ETF_AW_RISK_BUDGET_DELTAS = {
     "risk_on": {
-        "equity_large": 0.05,
-        "equity_small": 0.05,
+        "equity_large": 0.035,
+        "equity_small": 0.035,
+        "equity_overseas": 0.03,
         "bond": -0.02,
         "gold": -0.03,
         "cash": -0.05,
     },
     "hedge_bid": {
-        "equity_large": -0.04,
-        "equity_small": -0.05,
+        "equity_large": -0.03,
+        "equity_small": -0.03,
+        "equity_overseas": -0.03,
         "bond": 0.02,
         "gold": 0.05,
         "cash": 0.02,
     },
     "defensive": {
-        "equity_large": -0.05,
-        "equity_small": -0.05,
-        "bond": 0.05,
+        "equity_large": -0.03,
+        "equity_small": -0.03,
+        "equity_overseas": -0.03,
+        "bond": 0.04,
         "gold": 0.01,
         "cash": 0.04,
     },
     "mixed": {
         "equity_large": 0.0,
         "equity_small": 0.0,
+        "equity_overseas": 0.0,
         "bond": 0.0,
         "gold": 0.0,
         "cash": 0.0,
@@ -281,6 +291,7 @@ _ETF_AW_RISK_BUDGET_DELTAS = {
     "insufficient_data": {
         "equity_large": 0.0,
         "equity_small": 0.0,
+        "equity_overseas": 0.0,
         "bond": 0.0,
         "gold": 0.0,
         "cash": 0.0,
@@ -530,7 +541,7 @@ class ETLService:
                 start or _TRADING_CALENDAR_HISTORY_START,
                 end or date.today(),
             )
-        if profile_name == _ETF_AW_SLEEVES_PROFILE:
+        if profile_name in _ETF_AW_SLEEVES_PROFILE_ALIASES:
             return self._bootstrap_etf_aw_sleeves()
         if profile_name == _ETF_AW_SLEEVE_DAILY_PROFILE:
             return self._build_etf_aw_sleeve_daily(
@@ -851,31 +862,23 @@ class ETLService:
         frame = canonical.copy()
         frame["updated_at"] = _utc_now()
         self.conn.register("stage_b_calendar", frame)
-        existing = int(
-            self.conn.execute(
-                """
+        existing = int(self.conn.execute("""
                 SELECT COUNT(*) FROM canonical_trading_calendar
                 WHERE (exchange, trade_date) IN (
                     SELECT exchange, trade_date FROM stage_b_calendar
                 )
-                """
-            ).fetchone()[0]
-        )
-        self.conn.execute(
-            """
+                """).fetchone()[0])
+        self.conn.execute("""
             DELETE FROM canonical_trading_calendar
             WHERE (exchange, trade_date) IN (
                 SELECT exchange, trade_date FROM stage_b_calendar
             )
-            """
-        )
-        self.conn.execute(
-            """
+            """)
+        self.conn.execute("""
             INSERT INTO canonical_trading_calendar
             SELECT exchange, trade_date, is_open, pretrade_date, updated_at
             FROM stage_b_calendar
-            """
-        )
+            """)
         self.conn.unregister("stage_b_calendar")
         return CanonicalWriteResult(
             records_written=len(frame),
@@ -889,33 +892,25 @@ class ETLService:
         frame = canonical.copy()
         frame["updated_at"] = _utc_now()
         self.conn.register("stage_b_instruments", frame)
-        existing = int(
-            self.conn.execute(
-                """
+        existing = int(self.conn.execute("""
                 SELECT COUNT(*) FROM canonical_instruments
                 WHERE instrument_id IN (
                     SELECT instrument_id FROM stage_b_instruments
                 )
-                """
-            ).fetchone()[0]
-        )
-        self.conn.execute(
-            """
+                """).fetchone()[0])
+        self.conn.execute("""
             DELETE FROM canonical_instruments
             WHERE instrument_id IN (
                 SELECT instrument_id FROM stage_b_instruments
             )
-            """
-        )
-        self.conn.execute(
-            """
+            """)
+        self.conn.execute("""
             INSERT INTO canonical_instruments
             SELECT instrument_id, source_instrument_id, instrument_name,
                    instrument_type, exchange, list_date, delist_date,
                    is_active, source_name, updated_at
             FROM stage_b_instruments
-            """
-        )
+            """)
         self.conn.unregister("stage_b_instruments")
         return CanonicalWriteResult(
             records_written=len(frame),
@@ -1462,16 +1457,13 @@ class ETLService:
         frame["updated_at"] = now
         self.conn.register("stage_c_etf_aw_sleeves", frame)
         try:
-            self.conn.execute(
-                """
+            self.conn.execute("""
                 DELETE FROM canonical_sleeves
                 WHERE sleeve_code IN (
                     SELECT sleeve_code FROM stage_c_etf_aw_sleeves
                 )
-                """
-            )
-            self.conn.execute(
-                """
+                """)
+            self.conn.execute("""
                 INSERT INTO canonical_sleeves (
                     sleeve_code, sleeve_name, sleeve_type, is_active, updated_at,
                     sleeve_role, listing_exchange, benchmark_name, list_date,
@@ -1481,8 +1473,7 @@ class ETLService:
                        sleeve_role, listing_exchange, benchmark_name, list_date,
                        exposure_note, created_at
                 FROM stage_c_etf_aw_sleeves
-                """
-            )
+                """)
         finally:
             self.conn.unregister("stage_c_etf_aw_sleeves")
 
@@ -1498,15 +1489,14 @@ class ETLService:
                     "list_date": row["list_date"],
                     "delist_date": None,
                     "is_active": True,
-                    "source_name": "static_etf_aw_v1",
+                    "source_name": "static_etf_aw_v2",
                 }
                 for row in rows
             ]
         )
         self.conn.register("stage_c_etf_aw_instruments", frame)
         try:
-            self.conn.execute(
-                """
+            self.conn.execute("""
                 INSERT INTO canonical_instruments (
                     instrument_id, source_instrument_id, instrument_name,
                     instrument_type, exchange, list_date, delist_date, is_active,
@@ -1519,35 +1509,28 @@ class ETLService:
                 LEFT JOIN canonical_instruments c
                   ON s.instrument_id = c.instrument_id
                 WHERE c.instrument_id IS NULL
-                """
-            )
+                """)
         finally:
             self.conn.unregister("stage_c_etf_aw_instruments")
 
     def _validate_etf_aw_sleeves(self) -> dict[str, bool]:
         self.conn.register("stage_c_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            rows = self.conn.execute(
-                """
+            rows = self.conn.execute("""
                 SELECT s.sleeve_code, s.sleeve_role, s.listing_exchange,
                        s.exposure_note, s.is_active
                 FROM canonical_sleeves s
                 JOIN stage_c_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 ORDER BY s.sleeve_code
-                """
-            ).fetchall()
-            instrument_count = int(
-                self.conn.execute(
-                    """
+                """).fetchall()
+            instrument_count = int(self.conn.execute("""
                     SELECT COUNT(*)
                     FROM canonical_instruments i
                     JOIN stage_c_etf_aw_codes c
                       ON i.instrument_id = c.sleeve_code
                     WHERE i.instrument_type = 'etf'
-                    """
-                ).fetchone()[0]
-            )
+                    """).fetchone()[0])
         finally:
             self.conn.unregister("stage_c_etf_aw_codes")
         active_codes = [row[0] for row in rows if row[4] is True]
@@ -1676,15 +1659,13 @@ class ETLService:
     ) -> pd.DataFrame:
         self.conn.register("stage_c_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            sleeves = self.conn.execute(
-                """
+            sleeves = self.conn.execute("""
                 SELECT s.sleeve_code, s.sleeve_role
                 FROM canonical_sleeves s
                 JOIN stage_c_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 WHERE s.is_active = TRUE
-                """
-            ).fetchdf()
+                """).fetchdf()
         finally:
             self.conn.unregister("stage_c_etf_aw_codes")
         daily = daily.copy()
@@ -1837,8 +1818,7 @@ class ETLService:
         return frame
 
     def _latest_market_watermarks(self) -> dict[str, date | None]:
-        rows = self.conn.execute(
-            """
+        rows = self.conn.execute("""
             SELECT dataset_name, latest_fetched_date
             FROM etl_source_watermarks
             WHERE dataset_name IN (
@@ -1846,8 +1826,7 @@ class ETLService:
                 'market.etf_adj_factor',
                 'reference.trading_calendar'
             )
-            """
-        ).fetchall()
+            """).fetchall()
         return {str(row[0]): row[1] for row in rows}
 
     def _make_etf_aw_rebalance_snapshot_frame(
@@ -1891,15 +1870,13 @@ class ETLService:
     def _active_etf_aw_sleeves_frame(self) -> pd.DataFrame:
         self.conn.register("stage_d_etf_aw_codes", _etf_aw_sleeve_codes_frame())
         try:
-            frame = self.conn.execute(
-                """
+            frame = self.conn.execute("""
                 SELECT s.sleeve_code, s.sleeve_role
                 FROM canonical_sleeves s
                 JOIN stage_d_etf_aw_codes c
                   ON s.sleeve_code = c.sleeve_code
                 WHERE s.is_active = TRUE
-                """
-            ).fetchdf()
+                """).fetchdf()
         finally:
             self.conn.unregister("stage_d_etf_aw_codes")
         if frame.empty:
@@ -2739,11 +2716,23 @@ class ETLService:
             StorageZone.DERIVED,
         )
         if (
+            weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET
+            and not weights.empty
+        ):
+            weights = weights[
+                weights["calendar_name"].astype(str).eq(_REBALANCE_CALENDAR_NAME)
+                & weights["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+                & weights["strategy_version"]
+                .astype(str)
+                .eq(_ETF_AW_TARGET_WEIGHT_STRATEGY_VERSION)
+            ].copy()
+        if (
             weight_source_type == _ETF_AW_BACKTEST_WEIGHT_SOURCE_BASELINE
             and not weights.empty
         ):
             weights = weights[
-                weights["baseline_name"].astype(str).eq(baseline_name)
+                weights["calendar_name"].astype(str).eq(_REBALANCE_CALENDAR_NAME)
+                & weights["baseline_name"].astype(str).eq(baseline_name)
                 & weights["baseline_version"].astype(str).eq(baseline_version)
             ].copy()
             weights["strategy_name"] = weights["baseline_name"].astype(str)
@@ -2812,6 +2801,7 @@ class ETLService:
             canonical["weight_source_type"] = "target_weight"
         if "source_weight_dataset" not in canonical.columns:
             canonical["source_weight_dataset"] = _ETF_AW_TARGET_WEIGHT_DATASET
+        self._remove_stale_backtest_diagnostics(canonical)
         return self._write_year_month_partition_upsert(
             dataset_name=_ETF_AW_BACKTEST_KERNEL_DATASET,
             zone=StorageZone.DERIVED,
@@ -2841,6 +2831,88 @@ class ETLService:
                 "source_weight_dataset": _ETF_AW_TARGET_WEIGHT_DATASET,
             },
         )
+
+    def _remove_stale_backtest_diagnostics(self, canonical: pd.DataFrame) -> None:
+        """Remove old diagnostic rows superseded by valid backtest observations."""
+
+        if canonical.empty or "observation_type" not in canonical.columns:
+            return
+        valid = canonical[
+            ~canonical["observation_type"].astype(str).eq("diagnostic")
+        ].copy()
+        if valid.empty:
+            return
+        valid["observation_date"] = pd.to_datetime(
+            valid["observation_date"], errors="coerce"
+        ).dt.date
+        identity_columns = [
+            "calendar_name",
+            "strategy_name",
+            "strategy_version",
+            "weight_source_type",
+            "source_weight_dataset",
+        ]
+        for (year, month), partition in valid.groupby(
+            [
+                pd.to_datetime(valid["observation_date"]).dt.year,
+                pd.to_datetime(valid["observation_date"]).dt.month,
+            ],
+            dropna=True,
+        ):
+            final_path = build_dataset_file_path(
+                _ETF_AW_BACKTEST_KERNEL_DATASET,
+                StorageZone.DERIVED,
+                [("year", int(year)), ("month", f"{int(month):02d}")],
+                lakehouse_root=self.lakehouse_root,
+            )
+            if not final_path.exists():
+                continue
+            existing = pd.read_parquet(final_path)
+            if existing.empty or "observation_type" not in existing.columns:
+                continue
+            for column in identity_columns:
+                if column not in existing.columns:
+                    existing[column] = (
+                        _ETF_AW_TARGET_WEIGHT_DATASET
+                        if column == "source_weight_dataset"
+                        else (
+                            _ETF_AW_BACKTEST_WEIGHT_SOURCE_TARGET
+                            if column == "weight_source_type"
+                            else ""
+                        )
+                    )
+            existing["observation_date"] = pd.to_datetime(
+                existing["observation_date"], errors="coerce"
+            ).dt.date
+            diagnostic_mask = existing["observation_type"].astype(str).eq("diagnostic")
+            stale_mask = pd.Series(False, index=existing.index)
+            for _, row in partition[identity_columns + ["observation_date"]].iterrows():
+                stale_mask |= diagnostic_mask & (
+                    existing["calendar_name"].astype(str).eq(str(row["calendar_name"]))
+                    & existing["strategy_name"]
+                    .astype(str)
+                    .eq(str(row["strategy_name"]))
+                    & existing["strategy_version"]
+                    .astype(str)
+                    .eq(str(row["strategy_version"]))
+                    & existing["weight_source_type"]
+                    .astype(str)
+                    .eq(str(row["weight_source_type"]))
+                    & existing["source_weight_dataset"]
+                    .astype(str)
+                    .eq(str(row["source_weight_dataset"]))
+                    & existing["observation_date"].eq(row["observation_date"])
+                )
+            cleaned = existing[~stale_mask].copy()
+            if len(cleaned) == len(existing):
+                continue
+            write_dataset_parquet(
+                cleaned,
+                _ETF_AW_BACKTEST_KERNEL_DATASET,
+                StorageZone.DERIVED,
+                [("year", int(year)), ("month", f"{int(month):02d}")],
+                lakehouse_root=self.lakehouse_root,
+            )
 
     def _build_etf_aw_monthly_explainability(self, start: date, end: date) -> dict:
         start, end = _ordered_dates(start, end)
@@ -3113,8 +3185,7 @@ class ETLService:
                 """,
                 [_REBALANCE_CALENDAR_NAME],
             )
-            self.conn.execute(
-                """
+            self.conn.execute("""
                 INSERT INTO canonical_rebalance_calendar (
                     calendar_name, calendar_month, rebalance_date, effective_date,
                     notes, updated_at
@@ -3122,8 +3193,7 @@ class ETLService:
                 SELECT calendar_name, calendar_month, rebalance_date, effective_date,
                        notes, updated_at
                 FROM stage_c_rebalance_calendar
-                """
-            )
+                """)
         finally:
             self.conn.unregister("stage_c_rebalance_calendar")
 
@@ -3503,7 +3573,7 @@ def _validate_rebalance_snapshot_frame(
     if frame.empty:
         return {
             "non_empty": False,
-            "five_rows_per_rebalance_date": False,
+            "complete_universe_per_rebalance_date": False,
             "no_duplicate_business_keys": False,
             "rebalance_dates_from_calendar": False,
             "known_frozen_sleeves_only": False,
@@ -3535,7 +3605,9 @@ def _validate_rebalance_snapshot_frame(
     )
     return {
         "non_empty": True,
-        "five_rows_per_rebalance_date": bool((rows_per_date == 5).all()),
+        "complete_universe_per_rebalance_date": bool(
+            (rows_per_date == len(_ETF_AW_SLEEVE_CODES)).all()
+        ),
         "no_duplicate_business_keys": duplicate_count == 0,
         "rebalance_dates_from_calendar": set(
             frame["rebalance_date"].dropna().tolist()
@@ -3562,6 +3634,7 @@ def _regime_score_row(group: pd.DataFrame, ingested_at: datetime) -> dict[str, A
         [
             _average_scores(role_scores.get("equity_large", [])),
             _average_scores(role_scores.get("equity_small", [])),
+            _average_scores(role_scores.get("equity_overseas", [])),
         ]
     )
     bond_score = _average_scores(role_scores.get("bond", []))
@@ -3743,17 +3816,27 @@ def _agreement_score(label: str, signals: list[dict[str, Any]]) -> float:
     for signal in available:
         role = str(signal["sleeve_role"])
         score = float(signal["direction_score"])
-        if label == "risk_on" and role in {"equity_large", "equity_small"}:
+        if label == "risk_on" and role in {
+            "equity_large",
+            "equity_small",
+            "equity_overseas",
+        }:
             consistent += int(score > 0)
         elif label == "defensive":
             consistent += int(
-                (role in {"equity_large", "equity_small"} and score < 0)
+                (
+                    role in {"equity_large", "equity_small", "equity_overseas"}
+                    and score < 0
+                )
                 or (role in {"bond", "cash"} and score >= 0)
             )
         elif label == "hedge_bid":
             consistent += int(
                 (role == "gold" and score > 0)
-                or (role in {"equity_large", "equity_small"} and score <= 0)
+                or (
+                    role in {"equity_large", "equity_small", "equity_overseas"}
+                    and score <= 0
+                )
             )
     return consistent / len(available)
 
@@ -3786,9 +3869,15 @@ def _volatility_penalty(signals: list[dict[str, Any]]) -> float:
             continue
         role = str(signal["sleeve_role"])
         volatility = float(signal["volatility_3m"])
-        if role in {"equity_large", "equity_small"} and volatility >= 0.28:
+        if (
+            role in {"equity_large", "equity_small", "equity_overseas"}
+            and volatility >= 0.28
+        ):
             return 0.10
-        if role not in {"equity_large", "equity_small"} and volatility >= 0.18:
+        if (
+            role not in {"equity_large", "equity_small", "equity_overseas"}
+            and volatility >= 0.18
+        ):
             return 0.10
     return 0.0
 
@@ -4072,7 +4161,10 @@ def _group_market_feature_rows(
     for signal in signals:
         role_signals.setdefault(str(signal["sleeve_role"]), []).append(signal)
     group_specs = {
-        "equity_score": ("equity", ["equity_large", "equity_small"]),
+        "equity_score": (
+            "equity",
+            ["equity_large", "equity_small", "equity_overseas"],
+        ),
         "bond_score": ("bond", ["bond"]),
         "gold_score": ("gold", ["gold"]),
         "cash_score": ("cash", ["cash"]),
@@ -4790,6 +4882,11 @@ def _make_etf_aw_risk_budget_frame(
         return pd.DataFrame()
     context = _normalize_rebalance_date_frame(strategy_context)
     context = context.dropna(subset=["calendar_name", "rebalance_date"])
+    context = context[
+        context["calendar_name"].astype(str).eq(_REBALANCE_CALENDAR_NAME)
+        & context["strategy_name"].astype(str).eq(_ETF_AW_STRATEGY_NAME)
+        & context["strategy_version"].astype(str).eq(_ETF_AW_STRATEGY_VERSION)
+    ].copy()
     if context.empty:
         return pd.DataFrame()
     context = context.sort_values(["rebalance_date", "ingested_at"])
@@ -6417,17 +6514,22 @@ def _backtest_metric_values(
         }
     series = pd.Series(daily_returns, dtype=float)
     nav = (1.0 + series).cumprod()
-    annualized_return = final_nav ** (252.0 / len(series)) - 1.0
+    valid_final_nav = math.isfinite(final_nav) and final_nav > 0
+    annualized_return = (
+        final_nav ** (252.0 / len(series)) - 1.0 if valid_final_nav else None
+    )
     annualized_volatility = float(series.std(ddof=1) * math.sqrt(252))
     sharpe_ratio = (
         float(annualized_return / annualized_volatility)
-        if annualized_volatility > 0
+        if annualized_return is not None and annualized_volatility > 0
         else None
     )
     drawdown = nav / nav.cummax() - 1.0
     return {
-        "total_return": float(final_nav - 1.0),
-        "annualized_return": float(annualized_return),
+        "total_return": float(final_nav - 1.0) if valid_final_nav else None,
+        "annualized_return": (
+            float(annualized_return) if annualized_return is not None else None
+        ),
         "annualized_volatility": annualized_volatility,
         "sharpe_ratio": sharpe_ratio,
         "max_drawdown": float(drawdown.min()),

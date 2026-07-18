@@ -193,6 +193,7 @@ research_report/*
 # local lakehouse data
 data/lakehouse/
 data/source-review/
+data/etf_aw_lab/
 
 # local agent state
 .codex

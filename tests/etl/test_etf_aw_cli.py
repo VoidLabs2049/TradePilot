@@ -71,7 +71,7 @@ class EtfAwCliTests(unittest.TestCase):
             / "07"
             / "part-00000.parquet"
         )
-        self.assertEqual(len(budget), 5)
+        self.assertEqual(len(budget), 6)
 
     def test_health_check_target_weight_fails_invalid_weight_sum(self) -> None:
         frame = self._target_weight_frame(date(2024, 7, 22))
@@ -207,7 +207,7 @@ class EtfAwCliTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         payload = json.loads(result.output)
-        self.assertEqual(payload["strategy_name"], "etf_aw_v1")
+        self.assertEqual(payload["strategy_name"], "etf_aw_v2")
         self.assertEqual(payload["daily_nav_rows"], 1)
         self.assertEqual(payload["metrics"]["total_return"], 0.01)
         self.assertEqual(len(payload["strategies"]), 2)
@@ -443,13 +443,13 @@ class EtfAwCliTests(unittest.TestCase):
             [
                 "backtest-robustness-report",
                 "--strategy-name",
-                "etf_aw_v1",
+                "etf_aw_v2",
                 "--strategy-version",
-                "target_weight_inverse_vol_v1",
+                "target_weight_inverse_vol_v2",
                 "--baseline-name",
                 "static_inverse_vol",
                 "--baseline-version",
-                "static_inverse_vol_v1",
+                "static_inverse_vol_v2",
                 "--start-date",
                 "2024-07-01",
                 "--end-date",
@@ -518,13 +518,13 @@ class EtfAwCliTests(unittest.TestCase):
             [
                 "backtest-robustness-report",
                 "--strategy-name",
-                "etf_aw_v1",
+                "etf_aw_v2",
                 "--strategy-version",
-                "target_weight_inverse_vol_v1",
+                "target_weight_inverse_vol_v2",
                 "--baseline-name",
                 "static_inverse_vol",
                 "--baseline-version",
-                "static_inverse_vol_v1",
+                "static_inverse_vol_v2",
                 "--start-date",
                 "2024-07-01",
                 "--end-date",
@@ -542,6 +542,100 @@ class EtfAwCliTests(unittest.TestCase):
         payload = json.loads(output.read_text())
         self.assertIn(
             "target weight is incomplete inside comparable range",
+            payload["coverage"]["blocking_reasons"],
+        )
+
+    def test_backtest_robustness_report_blocks_out_of_range_diagnostic(
+        self,
+    ) -> None:
+        frame = pd.DataFrame(
+            [
+                self._backtest_row(
+                    "diagnostic",
+                    date(2024, 7, 21),
+                    "input_quality",
+                    0.0,
+                    None,
+                    quality_notes={
+                        "blocking": True,
+                        "reasons": ["missing_sleeve_weight"],
+                    },
+                ),
+                self._backtest_row(
+                    "daily_nav", date(2024, 7, 22), "net_value", 1.01, 1.01
+                ),
+                self._backtest_row(
+                    "daily_nav", date(2024, 7, 23), "net_value", 1.0201, 1.0201
+                ),
+                self._backtest_row(
+                    "daily_nav",
+                    date(2024, 7, 22),
+                    "net_value",
+                    1.01,
+                    1.01,
+                    strategy_name="static_inverse_vol",
+                    strategy_version="static_inverse_vol_v1",
+                    weight_source_type="baseline",
+                    source_weight_dataset="derived.etf_aw_baseline_weight",
+                ),
+                self._backtest_row(
+                    "daily_nav",
+                    date(2024, 7, 23),
+                    "net_value",
+                    1.0201,
+                    1.0201,
+                    strategy_name="static_inverse_vol",
+                    strategy_version="static_inverse_vol_v1",
+                    weight_source_type="baseline",
+                    source_weight_dataset="derived.etf_aw_baseline_weight",
+                ),
+            ]
+        )
+        write_dataset_parquet(
+            frame,
+            "derived.etf_aw_backtest_kernel",
+            StorageZone.DERIVED,
+            [("year", 2024), ("month", "07")],
+            lakehouse_root=self.lakehouse_root,
+        )
+        self.service._write_etf_aw_target_weight(
+            self._target_weight_frame(date(2024, 7, 22))
+        )
+        self.service._write_etf_aw_baseline_weight(
+            self._baseline_weight_frame(date(2024, 7, 22))
+        )
+        output = self.root / "blocked-diagnostic.json"
+
+        result = self.runner.invoke(
+            main,
+            [
+                "backtest-robustness-report",
+                "--strategy-name",
+                "etf_aw_v2",
+                "--strategy-version",
+                "target_weight_inverse_vol_v2",
+                "--baseline-name",
+                "static_inverse_vol",
+                "--baseline-version",
+                "static_inverse_vol_v2",
+                "--start-date",
+                "2024-07-01",
+                "--end-date",
+                "2024-07-31",
+                "--format",
+                "json",
+                "--output",
+                str(output),
+                "--lakehouse-root",
+                str(self.lakehouse_root),
+            ],
+        )
+
+        self.assertNotEqual(result.exit_code, 0)
+        payload = json.loads(output.read_text())
+        self.assertEqual(payload["report_status"], "blocked")
+        self.assertIn(
+            "backtest kernel contains blocking diagnostic rows",
             payload["coverage"]["blocking_reasons"],
         )
 
@@ -602,13 +696,13 @@ class EtfAwCliTests(unittest.TestCase):
             [
                 "backtest-robustness-report",
                 "--strategy-name",
-                "etf_aw_v1",
+                "etf_aw_v2",
                 "--strategy-version",
-                "target_weight_inverse_vol_v1",
+                "target_weight_inverse_vol_v2",
                 "--baseline-name",
                 "static_inverse_vol",
                 "--baseline-version",
-                "static_inverse_vol_v1",
+                "static_inverse_vol_v2",
                 "--start-date",
                 "2024-07-01",
                 "--end-date",
@@ -664,12 +758,12 @@ class EtfAwCliTests(unittest.TestCase):
         return {
             "schema_version": "etf_aw_strategy_context_v1",
             "contract_version": "etf_aw_strategy_context_contract_v1",
-            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
             "calendar_month": rebalance_date.strftime("%Y-%m"),
             "rebalance_date": rebalance_date,
             "effective_date": rebalance_date,
-            "strategy_name": "etf_aw_v1",
-            "strategy_version": "stage_g_v1",
+            "strategy_name": "etf_aw_v2",
+            "strategy_version": "stage_g_v2",
             "context_status": "complete",
             "readiness_level": "research_ready",
             "context_basis": "market_plus_macro_rates",
@@ -695,7 +789,7 @@ class EtfAwCliTests(unittest.TestCase):
     def _regime_row(self, rebalance_date: date) -> dict:
         return {
             "schema_version": "etf_aw_regime_score_v1",
-            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
             "calendar_month": rebalance_date.strftime("%Y-%m"),
             "rebalance_date": rebalance_date,
             "scorer_name": "etf_aw_market_only_regime",
@@ -719,6 +813,7 @@ class EtfAwCliTests(unittest.TestCase):
         sleeves = [
             ("510300.SH", "equity_large"),
             ("159845.SZ", "equity_small"),
+            ("513100.SH", "equity_overseas"),
             ("511010.SH", "bond"),
             ("518850.SH", "gold"),
             ("159001.SZ", "cash"),
@@ -728,11 +823,11 @@ class EtfAwCliTests(unittest.TestCase):
                 {
                     "schema_version": "etf_aw_target_weight_v1",
                     "contract_version": "etf_aw_target_weight_contract_v1",
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": rebalance_date,
                     "effective_date": rebalance_date,
-                    "strategy_name": "etf_aw_v1",
-                    "strategy_version": "target_weight_inverse_vol_v1",
+                    "strategy_name": "etf_aw_v2",
+                    "strategy_version": "target_weight_inverse_vol_v2",
                     "sleeve_code": code,
                     "sleeve_role": role,
                     "risk_budget": 0.2,
@@ -740,7 +835,7 @@ class EtfAwCliTests(unittest.TestCase):
                     "volatility_floor": 0.005,
                     "raw_target_weight": 0.2,
                     "constrained_target_weight": 0.2,
-                    "target_weight": 0.2,
+                    "target_weight": 1.0 / len(sleeves),
                     "target_weight_status": "complete",
                     "optimizer_name": "budgeted_inverse_vol",
                     "optimizer_basis": "fixture",
@@ -758,6 +853,7 @@ class EtfAwCliTests(unittest.TestCase):
         sleeves = [
             ("510300.SH", "equity_large"),
             ("159845.SZ", "equity_small"),
+            ("513100.SH", "equity_overseas"),
             ("511010.SH", "bond"),
             ("518850.SH", "gold"),
             ("159001.SZ", "cash"),
@@ -767,14 +863,14 @@ class EtfAwCliTests(unittest.TestCase):
                 {
                     "schema_version": "etf_aw_baseline_weight_v1",
                     "contract_version": "etf_aw_baseline_weight_contract_v1",
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": rebalance_date,
                     "effective_date": rebalance_date,
                     "baseline_name": "static_inverse_vol",
-                    "baseline_version": "static_inverse_vol_v1",
+                    "baseline_version": "static_inverse_vol_v2",
                     "sleeve_code": code,
                     "sleeve_role": role,
-                    "target_weight": 0.2,
+                    "target_weight": 1.0 / len(sleeves),
                     "estimation_window_days": 63,
                     "min_observation_days": 42,
                     "volatility_estimate": 0.01,
@@ -795,14 +891,20 @@ class EtfAwCliTests(unittest.TestCase):
         metric_value: float,
         net_value: float | None,
         *,
-        strategy_name: str = "etf_aw_v1",
-        strategy_version: str = "target_weight_inverse_vol_v1",
+        strategy_name: str = "etf_aw_v2",
+        strategy_version: str = "target_weight_inverse_vol_v2",
         weight_source_type: str = "target_weight",
         source_weight_dataset: str = "derived.etf_aw_target_weight",
+        quality_notes: dict | None = None,
     ) -> dict:
+        if (
+            strategy_name == "static_inverse_vol"
+            and strategy_version == "static_inverse_vol_v1"
+        ):
+            strategy_version = "static_inverse_vol_v2"
         return {
             "schema_version": "etf_aw_backtest_kernel_v1",
-            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
             "strategy_name": strategy_name,
             "strategy_version": strategy_version,
             "weight_source_type": weight_source_type,
@@ -813,7 +915,7 @@ class EtfAwCliTests(unittest.TestCase):
             "metric_value": metric_value,
             "net_value": net_value,
             "portfolio_return": 0.01 if observation_type == "daily_nav" else None,
-            "quality_notes_json": "{}",
+            "quality_notes_json": json.dumps(quality_notes or {}),
             "ingested_at": pd.Timestamp("2024-07-22 15:00:00"),
         }
 

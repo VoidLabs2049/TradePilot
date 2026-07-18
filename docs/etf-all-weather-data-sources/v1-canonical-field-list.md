@@ -147,8 +147,8 @@ These explain the bond sleeve and broad domestic liquidity background.
 | `shibor_1w` | `primary` | Tushare -> AKShare fallback | latest published quote up to decision date |
 | `lpr_1y` | `primary` | Tushare -> AKShare fallback | source date or conservative 20th rule |
 | `lpr_5y` | `confirmatory` | Tushare -> AKShare fallback | same |
-| `cn_gov_10y_yield` | `primary` | Tushare yc_cb / curve extractor | end-of-day / next-day executable logic |
-| `cn_gov_1y_yield` | `confirmatory` | Tushare yc_cb / curve extractor | same |
+| `cn_gov_10y_yield` | `primary` | Tushare yc_cb -> AKShare bond_china_yield fallback / curve extractor | end-of-day / next-day executable logic |
+| `cn_gov_1y_yield` | `confirmatory` | Tushare yc_cb -> AKShare bond_china_yield fallback / curve extractor | same |
 | `cn_yield_curve_slope_10y_1y` | `confirmatory` | derived | only after both endpoints extracted cleanly |
 
 ### Rates Constraints

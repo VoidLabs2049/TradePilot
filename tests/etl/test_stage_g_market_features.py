@@ -67,10 +67,10 @@ class StageGMarketFeaturesTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
-        self.assertEqual(result["records_written"], 37)
+        self.assertEqual(result["records_written"], 43)
         self.assertTrue(all(result["validation"].values()))
         frame = self._read_features_file(2024, 7)
-        self.assertEqual(len(frame), 37)
+        self.assertEqual(len(frame), 43)
         self.assertFalse(
             frame.duplicated(
                 [
@@ -154,8 +154,8 @@ class StageGMarketFeaturesTests(unittest.TestCase):
         )
 
         frame = self._read_features_file(2024, 7)
-        self.assertEqual(result["records_updated"], 37)
-        self.assertEqual(len(frame), 37)
+        self.assertEqual(result["records_updated"], 43)
+        self.assertEqual(len(frame), 43)
         self.assertFalse(
             frame.duplicated(
                 [
@@ -178,7 +178,7 @@ class StageGMarketFeaturesTests(unittest.TestCase):
         data_status: str = "complete",
     ) -> dict:
         return {
-            "calendar_name": "etf_aw_v1_monthly_post_20",
+            "calendar_name": "etf_aw_v2_monthly_post_20",
             "calendar_month": "2024-07",
             "rebalance_date": date(2024, 7, 22),
             "effective_date": date(2024, 7, 22),
@@ -199,6 +199,14 @@ class StageGMarketFeaturesTests(unittest.TestCase):
         }
 
     def _write_snapshot(self, rows: list[dict]) -> None:
+        if not any(row["sleeve_role"] == "equity_overseas" for row in rows):
+            source = next(row for row in rows if row["sleeve_role"] == "equity_large")
+            overseas = dict(source)
+            overseas.update(
+                sleeve_code="513100.SH",
+                sleeve_role="equity_overseas",
+            )
+            rows = [*rows, overseas]
         self.service._write_etf_aw_rebalance_snapshot(pd.DataFrame(rows))
 
     def _read_features_file(self, year: int, month: int) -> pd.DataFrame:

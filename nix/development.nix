@@ -48,6 +48,7 @@ in {
           pendulum
           pudb
           rich
+          black
            akshare
            tushare
            apscheduler

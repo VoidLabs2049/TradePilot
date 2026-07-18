@@ -59,7 +59,8 @@ if [ "${1:-}" = "--scheduled" ]; then
   fi
 
   exec "$FLOCK_BIN" -n /tmp/tradepilot-etf-aw-update.lock \
-    "$NIX_BIN" develop --command bash -lc './scripts/etl/update-etf-aw.sh' \
+    "$NIX_BIN" develop --command bash -lc \
+    './scripts/etl/update-etf-aw.sh && python -m tradepilot.etf_aw.cli update-local-shadow' \
     >> logs/etf-aw-update.log 2>&1
 fi
 

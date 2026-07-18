@@ -20,10 +20,10 @@ sync-data ──► build-risk-budget ──► build-target-weight ─┐
 
 | 命令 | 产物数据集 | 作用 |
 | --- | --- | --- |
-| `sync-data` | `derived.etf_aw_sleeve_daily` | 5 个 sleeve 的日频调整收益面板 |
+| `sync-data` | `derived.etf_aw_sleeve_daily` | 6 个 sleeve 的日频调整收益面板 |
 | `build-risk-budget` | `derived.etf_aw_risk_budget` | regime → 各 sleeve 风险预算 |
 | `build-target-weight` | `derived.etf_aw_target_weight` | 当前策略月度权重 |
-| `build-baseline-weight` | `derived.etf_aw_baseline_weight` | `static_inverse_vol_v1` 基线权重 |
+| `build-baseline-weight` | `derived.etf_aw_baseline_weight` | `static_inverse_vol_v2` 基线权重 |
 | `backtest-kernel` | `derived.etf_aw_backtest_kernel` | 日频 NAV / turnover / metric / diagnostic 行 |
 | `backtest-report` | (stdout) | 从 kernel 聚合出多策略对比报告 |
 
@@ -53,7 +53,7 @@ sync-data ──► build-risk-budget ──► build-target-weight ─┐
 
 `_backtest_input_diagnostics`(`service.py:6190`)在跑净值前做 blocking 校验:缺 sleeve 收益、调仓日不落在交易日、权重列缺失、权重行重复、缺 sleeve 权重、权重和不为 1(容差 `1e-6`)。任一命中 → 只产出 diagnostic 行,不产净值。
 
-诊断只检查"每个交易日 5 个 sleeve 是否齐全",**不检查单个 sleeve 的日期是否连续**。
+诊断只检查"每个交易日 6 个 sleeve 是否齐全",**不检查单个 sleeve 的日期是否连续**。
 
 ### 4. 日频 NAV 主循环
 
@@ -100,5 +100,6 @@ sync-data ──► build-risk-budget ──► build-target-weight ─┐
 - **净值侧隐含日度再平衡,与月度 turnover 口径不自洽**:净值假设每日拉回目标权重,turnover 只在调仓日算一次;月中 drift 收益与 drift 后调仓换手都未建模。
 - **成交时点**:权重当日生效,无 T+1 成交延迟、无滑点;换仓日 gross 收益已按新权重结算。
 - **`risk_free_rate = 0`**:Sharpe 绝对值受影响,策略间 diff 影响较小。
-- **无外部对照基准**:只与 `static_inverse_vol_v1` 比,无买入持有 60/40 或单一宽基基准。
+- **无外部对照基准**:只与 `static_inverse_vol_v2` 比,无买入持有 60/40 或单一宽基基准。
+- **跨境 ETF 价格偏离**:`513100.SH` 的人民币场内价格可能受汇率、境内外交易日错位、QDII 额度、暂停申购和二级市场溢价影响，不能等同于无摩擦的 Nasdaq 100 指数收益。
 - **短样本**:当前正式报告仅覆盖 17 个调仓周期,regime 可能高度集中。

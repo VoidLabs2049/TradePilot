@@ -65,9 +65,9 @@ class StageLBaselineWeightTests(unittest.TestCase):
         self.assertEqual(result["status"], RunStatus.SUCCESS.value)
         self.assertTrue(all(result["validation"].values()))
         frame = self._read_baseline_file(2024, 7)
-        self.assertEqual(len(frame), 5)
+        self.assertEqual(len(frame), 6)
         self.assertEqual(set(frame["baseline_name"]), {"static_inverse_vol"})
-        self.assertEqual(set(frame["baseline_version"]), {"static_inverse_vol_v1"})
+        self.assertEqual(set(frame["baseline_version"]), {"static_inverse_vol_v2"})
         self.assertEqual(set(frame["estimation_window_days"]), {63})
         self.assertEqual(set(frame["min_observation_days"]), {42})
         self.assertAlmostEqual(float(frame["target_weight"].sum()), 1.0, places=6)
@@ -80,7 +80,7 @@ class StageLBaselineWeightTests(unittest.TestCase):
         rebalance = pd.DataFrame(
             [
                 {
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": rebalance_date,
                 }
             ]
@@ -98,7 +98,7 @@ class StageLBaselineWeightTests(unittest.TestCase):
         rebalance = pd.DataFrame(
             [
                 {
-                    "calendar_name": "etf_aw_v1_monthly_post_20",
+                    "calendar_name": "etf_aw_v2_monthly_post_20",
                     "rebalance_date": rebalance_date,
                 }
             ]
@@ -120,7 +120,7 @@ class StageLBaselineWeightTests(unittest.TestCase):
             ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             [
-                "etf_aw_v1_monthly_post_20",
+                "etf_aw_v2_monthly_post_20",
                 f"{rebalance_date.year:04d}-{rebalance_date.month:02d}",
                 rebalance_date,
                 rebalance_date,
@@ -135,6 +135,7 @@ class StageLBaselineWeightTests(unittest.TestCase):
         returns_by_role = {
             "equity_large": 0.010,
             "equity_small": 0.015,
+            "equity_overseas": 0.012,
             "bond": 0.004,
             "gold": 0.008,
             "cash": 0.002,
