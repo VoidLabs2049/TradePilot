@@ -233,15 +233,13 @@ class StageKMonthlyExplainabilityTests(unittest.TestCase):
 
     def test_update_plan_runs_explainability_after_backtest_kernel(self) -> None:
         conn = duckdb.connect(":memory:")
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE etl_source_watermarks (
                 dataset_name VARCHAR PRIMARY KEY,
                 latest_fetched_date DATE,
                 updated_at TIMESTAMP
             )
-        """
-        )
+        """)
 
         plan = update_module.build_update_plan(
             conn=conn,
