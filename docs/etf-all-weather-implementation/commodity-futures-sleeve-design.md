@@ -1,6 +1,6 @@
 # 全天候引入商品期货 Sleeve 设计方案
 
-本文件是设计与影响评估，不是实现。评审通过后再按分阶段计划编码。相关背景见
+本文件是设计与影响评估，不是实现。评审通过后再按分阶段计划编码。除数据接入外到真实落地的完整缺口盘点见[真实落地缺口清单](./commodity-futures-readiness-gap.md)。相关背景见
 [ETF 全天候策略优化阶段计划](./strategy-improvement-research-design.md)（其中第 2.2、6.3 节已列出大宗商品候选调研，但当时定位为**商品 ETF/基金**）与
 [数据源地图](../etf-all-weather-data-sources/data-source-map.md)（其中已注明 `continuous-contract logic may be needed later`，即真期货的连续合约逻辑被显式推迟）。
 
