@@ -409,6 +409,134 @@ class MarketDailyValidator(BaseValidator):
         return results
 
 
+class FuturesMappingValidator(BaseValidator):
+    """Validate point-in-time futures dominant-contract mappings."""
+
+    def validate(
+        self,
+        payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> list[ValidationResultRecord]:
+        """Validate futures mapping business keys and exchange suffixes."""
+
+        ctx = context or {}
+        results: list[ValidationResultRecord] = []
+        columns = ["root_code", "trade_date", "active_contract"]
+        _required_columns(payload, columns, ctx, results)
+        if results:
+            return results
+        duplicate_count = int(payload.duplicated(["root_code", "trade_date"]).sum())
+        results.append(
+            _record(
+                ctx,
+                "futures_mapping.duplicate_business_key",
+                "dataset",
+                ValidationStatus.FAIL if duplicate_count else ValidationStatus.PASS,
+                metric_value=duplicate_count,
+                threshold_value=0,
+            )
+        )
+        for column, rule in (
+            ("root_code", "futures_mapping.root_code_required"),
+            ("trade_date", "futures_mapping.trade_date_required"),
+            ("active_contract", "futures_mapping.active_contract_required"),
+        ):
+            missing = payload[
+                payload[column].isna()
+                | (payload[column].astype("string").str.strip() == "")
+            ]
+            _row_records(results, ctx, missing, rule, columns, f"{column} is required")
+        suffix_mismatch = payload[
+            payload["root_code"].notna()
+            & payload["active_contract"].notna()
+            & (
+                payload["root_code"].astype(str).str.rsplit(".", n=1).str[-1]
+                != payload["active_contract"].astype(str).str.rsplit(".", n=1).str[-1]
+            )
+        ]
+        _row_records(
+            results,
+            ctx,
+            suffix_mismatch,
+            "futures_mapping.exchange_suffix_match",
+            columns,
+            "root and active contract exchange suffixes must match",
+        )
+        return results
+
+
+class FuturesContractDailyValidator(BaseValidator):
+    """Validate unadjusted concrete futures contract daily bars."""
+
+    def validate(
+        self,
+        payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> list[ValidationResultRecord]:
+        """Validate futures daily keys, prices, volume, and open interest."""
+
+        ctx = context or {}
+        results: list[ValidationResultRecord] = []
+        required = ["contract_code", "trade_date", "settle", "close", "volume", "oi"]
+        _required_columns(payload, required, ctx, results)
+        if results:
+            return results
+        keys = ["contract_code", "trade_date"]
+        duplicate_count = int(payload.duplicated(keys).sum())
+        results.append(
+            _record(
+                ctx,
+                "futures_daily.duplicate_business_key",
+                "dataset",
+                ValidationStatus.FAIL if duplicate_count else ValidationStatus.PASS,
+                metric_value=duplicate_count,
+                threshold_value=0,
+            )
+        )
+        for column, rule in (
+            ("contract_code", "futures_daily.contract_code_required"),
+            ("trade_date", "futures_daily.trade_date_required"),
+        ):
+            missing = payload[payload[column].isna()]
+            _row_records(results, ctx, missing, rule, keys, f"{column} is required")
+        missing_settle = payload[payload["settle"].isna()]
+        results.append(
+            _record(
+                ctx,
+                "futures_daily.settle_availability",
+                "dataset",
+                (
+                    ValidationStatus.WARNING
+                    if not missing_settle.empty
+                    else ValidationStatus.PASS
+                ),
+                metric_value=len(missing_settle),
+                threshold_value=0,
+                details={"sample": _sample_keys(missing_settle, keys)},
+            )
+        )
+        negative_price = payload[
+            payload[["open", "high", "low", "close", "settle"]].lt(0).any(axis=1)
+        ]
+        _row_records(
+            results,
+            ctx,
+            negative_price,
+            "futures_daily.ohlc_non_negative",
+            keys,
+            "futures prices must be non-negative",
+        )
+        for column, rule in (
+            ("volume", "futures_daily.volume_non_negative"),
+            ("oi", "futures_daily.oi_non_negative"),
+        ):
+            negative = payload[pd.to_numeric(payload[column], errors="coerce") < 0]
+            _row_records(
+                results, ctx, negative, rule, keys, f"{column} must be non-negative"
+            )
+        return results
+
+
 class EtfAdjFactorValidator(BaseValidator):
     """Validate canonical ETF adjustment factor rows."""
 
@@ -720,6 +848,10 @@ def get_validator(dataset_name: str) -> BaseValidator:
         return InstrumentValidator()
     if dataset_name == "market.etf_adj_factor":
         return EtfAdjFactorValidator()
+    if dataset_name == "market.futures_mapping":
+        return FuturesMappingValidator()
+    if dataset_name == "market.futures_contract_daily":
+        return FuturesContractDailyValidator()
     if dataset_name in {"market.etf_daily", "market.index_daily"}:
         return MarketDailyValidator()
     if dataset_name == "macro.slow_fields":

@@ -27,6 +27,8 @@ class TushareSourceAdapter(BaseSourceAdapter):
         "reference.instruments",
         "market.etf_adj_factor",
         "market.etf_daily",
+        "market.futures_contract_daily",
+        "market.futures_mapping",
         "market.index_daily",
         "macro.slow_fields",
         "rates.daily_rates",
@@ -68,6 +70,12 @@ class TushareSourceAdapter(BaseSourceAdapter):
         elif dataset_name == "market.index_daily":
             payload = self._fetch_market_daily(request, instrument_type="index")
             endpoint = "index_daily"
+        elif dataset_name == "market.futures_mapping":
+            payload = self._fetch_futures_mapping(request)
+            endpoint = "fut_mapping"
+        elif dataset_name == "market.futures_contract_daily":
+            payload = self._fetch_futures_contract_daily(request)
+            endpoint = "fut_daily"
         elif dataset_name == "macro.slow_fields":
             payload = self._fetch_macro_slow_fields(request)
             endpoint = "macro_slow_fields"
@@ -171,6 +179,28 @@ class TushareSourceAdapter(BaseSourceAdapter):
             if not frame.empty:
                 frames.append(frame)
         return _concat_or_empty(frames, list(_empty_etf_adj_factor().columns))
+
+    def _fetch_futures_mapping(self, request: IngestionRequest) -> pd.DataFrame:
+        start_date, end_date = _date_window(request)
+        root_codes = _context_list(request, "root_codes")
+        frames = [
+            self._client.get_futures_mapping(
+                root_code, start_date.isoformat(), end_date.isoformat()
+            )
+            for root_code in _unique_list(root_codes)
+        ]
+        return _concat_or_empty(frames, list(_empty_futures_mapping().columns))
+
+    def _fetch_futures_contract_daily(self, request: IngestionRequest) -> pd.DataFrame:
+        start_date, end_date = _date_window(request)
+        contract_codes = _context_list(request, "contract_codes")
+        frames = [
+            self._client.get_futures_daily(
+                contract_code, start_date.isoformat(), end_date.isoformat()
+            )
+            for contract_code in _unique_list(contract_codes)
+        ]
+        return _concat_or_empty(frames, list(_empty_futures_daily().columns))
 
     def _fetch_daily_rates(self, request: IngestionRequest) -> pd.DataFrame:
         start_date, end_date = _date_window(request)
@@ -395,3 +425,41 @@ def _empty_etf_adj_factor() -> pd.DataFrame:
             "adj_factor": pd.Series(dtype="float64"),
         }
     )
+
+
+def _empty_futures_mapping() -> pd.DataFrame:
+    """Return an empty futures dominant-contract mapping frame."""
+
+    return pd.DataFrame(
+        {
+            "root_code": pd.Series(dtype="object"),
+            "trade_date": pd.Series(dtype="datetime64[ns]"),
+            "active_contract": pd.Series(dtype="object"),
+        }
+    )
+
+
+def _empty_futures_daily() -> pd.DataFrame:
+    """Return an empty concrete futures contract daily frame."""
+
+    columns = {
+        "contract_code": pd.Series(dtype="object"),
+        "trade_date": pd.Series(dtype="datetime64[ns]"),
+    }
+    for column in (
+        "pre_close",
+        "pre_settle",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settle",
+        "change1",
+        "change2",
+        "volume",
+        "amount",
+        "oi",
+        "oi_chg",
+    ):
+        columns[column] = pd.Series(dtype="float64")
+    return pd.DataFrame(columns)

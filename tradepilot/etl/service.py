@@ -846,6 +846,10 @@ class ETLService:
             return self._write_instruments(canonical)
         if definition.dataset_name == "market.etf_adj_factor":
             return self._write_etf_adj_factor(definition, canonical)
+        if definition.dataset_name == "market.futures_mapping":
+            return self._write_futures_mapping(definition, canonical)
+        if definition.dataset_name == "market.futures_contract_daily":
+            return self._write_futures_contract_daily(definition, canonical)
         if definition.dataset_name == "macro.slow_fields":
             return self._write_macro_slow_fields(definition, canonical)
         if definition.dataset_name == "rates.daily_rates":
@@ -938,6 +942,28 @@ class ETLService:
             canonical=canonical,
             key_columns=("instrument_id", "trade_date"),
             sort_columns=("instrument_id", "trade_date", "ingested_at"),
+        )
+
+    def _write_futures_mapping(
+        self, definition: DatasetDefinition, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=definition.dataset_name,
+            zone=StorageZone.NORMALIZED,
+            canonical=canonical,
+            key_columns=("root_code", "trade_date"),
+            sort_columns=("root_code", "trade_date", "ingested_at"),
+        )
+
+    def _write_futures_contract_daily(
+        self, definition: DatasetDefinition, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=definition.dataset_name,
+            zone=StorageZone.NORMALIZED,
+            canonical=canonical,
+            key_columns=("contract_code", "trade_date"),
+            sort_columns=("contract_code", "trade_date", "ingested_at"),
         )
 
     def _write_daily_rates(

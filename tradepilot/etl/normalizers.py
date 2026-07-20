@@ -252,6 +252,105 @@ class EtfAdjFactorNormalizer(BaseNormalizer):
         return _result(canonical, context=ctx)
 
 
+class FuturesMappingNormalizer(BaseNormalizer):
+    """Normalize point-in-time futures dominant-contract mappings."""
+
+    def normalize(
+        self,
+        raw_payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> NormalizationResult:
+        """Normalize futures mapping rows without changing provider codes."""
+
+        ctx = context or {}
+        frame = raw_payload.copy()
+        frame["root_code"] = (
+            frame.get("root_code", pd.Series(dtype="object"))
+            .astype("string")
+            .str.upper()
+        )
+        frame["active_contract"] = (
+            frame.get("active_contract", pd.Series(dtype="object"))
+            .astype("string")
+            .str.upper()
+        )
+        frame["trade_date"] = _to_date_series(frame.get("trade_date"))
+        frame["source_name"] = str(ctx.get("source_name", ""))
+        frame["raw_batch_id"] = ctx.get("raw_batch_id")
+        frame["ingested_at"] = pd.Timestamp.utcnow().tz_localize(None)
+        frame["quality_status"] = str(ctx.get("quality_status", "pass"))
+        canonical = frame.loc[
+            :,
+            [
+                "root_code",
+                "trade_date",
+                "active_contract",
+                "source_name",
+                "raw_batch_id",
+                "ingested_at",
+                "quality_status",
+            ],
+        ].copy()
+        return _result(canonical, context=ctx)
+
+
+class FuturesContractDailyNormalizer(BaseNormalizer):
+    """Normalize unadjusted concrete futures contract daily bars."""
+
+    _NUMERIC_COLUMNS = [
+        "pre_close",
+        "pre_settle",
+        "open",
+        "high",
+        "low",
+        "close",
+        "settle",
+        "change1",
+        "change2",
+        "volume",
+        "amount",
+        "oi",
+        "oi_chg",
+    ]
+
+    def normalize(
+        self,
+        raw_payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> NormalizationResult:
+        """Normalize futures daily rows while retaining settlement and OI fields."""
+
+        ctx = context or {}
+        frame = raw_payload.copy()
+        frame["contract_code"] = (
+            frame.get("contract_code", pd.Series(dtype="object"))
+            .astype("string")
+            .str.upper()
+        )
+        frame["trade_date"] = _to_date_series(frame.get("trade_date"))
+        for column in self._NUMERIC_COLUMNS:
+            if column not in frame.columns:
+                frame[column] = pd.NA
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        frame["source_name"] = str(ctx.get("source_name", ""))
+        frame["raw_batch_id"] = ctx.get("raw_batch_id")
+        frame["ingested_at"] = pd.Timestamp.utcnow().tz_localize(None)
+        frame["quality_status"] = str(ctx.get("quality_status", "pass"))
+        canonical = frame.loc[
+            :,
+            [
+                "contract_code",
+                "trade_date",
+                *self._NUMERIC_COLUMNS,
+                "source_name",
+                "raw_batch_id",
+                "ingested_at",
+                "quality_status",
+            ],
+        ].copy()
+        return _result(canonical, context=ctx)
+
+
 class MacroSlowFieldsNormalizer(BaseNormalizer):
     """Normalize slow macro observations into long canonical facts."""
 
@@ -581,6 +680,10 @@ def get_normalizer(dataset_name: str) -> BaseNormalizer:
         return InstrumentNormalizer()
     if dataset_name == "market.etf_adj_factor":
         return EtfAdjFactorNormalizer()
+    if dataset_name == "market.futures_mapping":
+        return FuturesMappingNormalizer()
+    if dataset_name == "market.futures_contract_daily":
+        return FuturesContractDailyNormalizer()
     if dataset_name in {"market.etf_daily", "market.index_daily"}:
         return MarketDailyNormalizer()
     if dataset_name == "macro.slow_fields":
