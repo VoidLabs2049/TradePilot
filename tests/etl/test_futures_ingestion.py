@@ -112,8 +112,12 @@ class FuturesIngestionTests(unittest.TestCase):
 
     def test_client_normalizes_futures_endpoints(self) -> None:
         basic = self.client.get_futures_basic("dce")
-        mapping = self.client.get_futures_mapping("m.dce", "2026-04-08", "2026-04-09")
-        daily = self.client.get_futures_daily("m2609.dce", "2026-04-09", "2026-04-09")
+        mapping = self.client.get_futures_mapping(
+            "m.dce", "2026-04-08", "2026-04-09"
+        )
+        daily = self.client.get_futures_daily(
+            "m2609.dce", "2026-04-09", "2026-04-09"
+        )
 
         self.assertEqual(basic.iloc[0]["contract_code"], "M2609.DCE")
         self.assertEqual(basic.iloc[0]["multiplier"], 10)
@@ -167,7 +171,9 @@ class FuturesIngestionTests(unittest.TestCase):
         mapping = pd.read_parquet(mapping_path)
         daily = pd.read_parquet(daily_path)
         self.assertEqual(mapping.iloc[-1]["active_contract"], "M2609.DCE")
-        self.assertEqual(set(daily["contract_code"]), {"M2605.DCE", "M2609.DCE"})
+        self.assertEqual(
+            set(daily["contract_code"]), {"M2605.DCE", "M2609.DCE"}
+        )
         self.assertIn("settle", daily.columns)
         self.assertIn("oi", daily.columns)
 
@@ -188,7 +194,9 @@ class FuturesIngestionTests(unittest.TestCase):
         )
 
     def test_missing_historical_settle_is_a_non_blocking_warning(self) -> None:
-        payload = self.client.get_futures_daily("M2609.DCE", "2026-04-09", "2026-04-09")
+        payload = self.client.get_futures_daily(
+            "M2609.DCE", "2026-04-09", "2026-04-09"
+        )
         payload["settle"] = float("nan")
 
         results = FuturesContractDailyValidator().validate(payload)
