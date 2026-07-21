@@ -261,6 +261,27 @@ def build_market_futures_mapping_dataset() -> DatasetDefinition:
     )
 
 
+def build_reference_futures_instruments_dataset() -> DatasetDefinition:
+    """Return the futures contract metadata definition."""
+
+    return DatasetDefinition(
+        dataset_name="reference.futures_instruments",
+        category=DatasetCategory.REFERENCE,
+        grain="futures_contract",
+        primary_source="tushare",
+        storage_zone=StorageZone.NORMALIZED,
+        partition_strategy="year_month",
+        canonical_schema_name="futures_instruments_v1",
+        validation_rule_names=[
+            "futures_instruments.duplicate_contract_code",
+            "futures_instruments.contract_code_required",
+            "futures_instruments.multiplier_positive",
+            "futures_instruments.multiplier_available",
+            "futures_instruments.list_delist_order",
+        ],
+    )
+
+
 def build_market_futures_contract_daily_dataset() -> DatasetDefinition:
     """Return the unadjusted concrete futures contract daily definition."""
 
@@ -276,6 +297,7 @@ def build_market_futures_contract_daily_dataset() -> DatasetDefinition:
             "futures_daily.duplicate_business_key",
             "futures_daily.contract_code_required",
             "futures_daily.trade_date_required",
+            "futures_daily.trade_date_open",
             "futures_daily.settle_availability",
             "futures_daily.ohlc_non_negative",
             "futures_daily.volume_non_negative",
@@ -283,8 +305,13 @@ def build_market_futures_contract_daily_dataset() -> DatasetDefinition:
         ],
         supports_incremental=True,
         watermark_key="trade_date",
-        dependencies=["market.futures_mapping"],
-        dependency_types={"market.futures_mapping": DependencyType.WINDOW},
+        # Current preflight treats this as lineage metadata; the CLI discovers
+        # concrete contracts from persisted mappings before running daily bars.
+        dependencies=["market.futures_mapping", "reference.trading_calendar"],
+        dependency_types={
+            "market.futures_mapping": DependencyType.WINDOW,
+            "reference.trading_calendar": DependencyType.WINDOW,
+        },
     )
 
 
@@ -813,6 +840,7 @@ def build_stage_b_datasets() -> list[DatasetDefinition]:
         build_market_etf_adj_factor_dataset(),
         build_market_etf_daily_dataset(),
         build_market_index_daily_dataset(),
+        build_reference_futures_instruments_dataset(),
         build_market_futures_mapping_dataset(),
         build_market_futures_contract_daily_dataset(),
         build_derived_etf_aw_sleeve_daily_dataset(),

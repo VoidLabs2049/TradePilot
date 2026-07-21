@@ -15,6 +15,8 @@ from tradepilot.etl.models import (
 )
 from tradepilot.etl.sources.base import BaseSourceAdapter, SourceRole
 
+_FUTURES_EXCHANGES = ("SHFE", "DCE", "CZCE", "INE", "CFFEX")
+
 
 class TushareSourceAdapter(BaseSourceAdapter):
     """Dataset-aware Tushare adapter returning typed DataFrame payloads."""
@@ -25,6 +27,7 @@ class TushareSourceAdapter(BaseSourceAdapter):
     _SUPPORTED = {
         "reference.trading_calendar",
         "reference.instruments",
+        "reference.futures_instruments",
         "market.etf_adj_factor",
         "market.etf_daily",
         "market.futures_contract_daily",
@@ -61,6 +64,9 @@ class TushareSourceAdapter(BaseSourceAdapter):
         elif dataset_name == "reference.instruments":
             payload = self._fetch_instruments(request)
             endpoint = _instrument_endpoint(request)
+        elif dataset_name == "reference.futures_instruments":
+            payload = self._fetch_futures_instruments(request)
+            endpoint = "fut_basic"
         elif dataset_name == "market.etf_adj_factor":
             payload = self._fetch_etf_adj_factor(request)
             endpoint = "fund_adj"
@@ -142,6 +148,14 @@ class TushareSourceAdapter(BaseSourceAdapter):
             frames,
             ["code", "name", "list_date", "delist_date", "instrument_type"],
         )
+
+    def _fetch_futures_instruments(self, request: IngestionRequest) -> pd.DataFrame:
+        exchanges = _context_list(request, "exchanges") or list(_FUTURES_EXCHANGES)
+        frames = [
+            self._client.get_futures_basic(exchange)
+            for exchange in _unique_list(exchanges)
+        ]
+        return _concat_or_empty(frames, list(_empty_futures_instruments().columns))
 
     def _fetch_market_daily(
         self, request: IngestionRequest, instrument_type: str
@@ -435,6 +449,26 @@ def _empty_futures_mapping() -> pd.DataFrame:
             "root_code": pd.Series(dtype="object"),
             "trade_date": pd.Series(dtype="datetime64[ns]"),
             "active_contract": pd.Series(dtype="object"),
+        }
+    )
+
+
+def _empty_futures_instruments() -> pd.DataFrame:
+    """Return an empty futures instrument metadata frame."""
+
+    return pd.DataFrame(
+        {
+            "contract_code": pd.Series(dtype="object"),
+            "symbol": pd.Series(dtype="object"),
+            "exchange": pd.Series(dtype="object"),
+            "name": pd.Series(dtype="object"),
+            "futures_code": pd.Series(dtype="object"),
+            "multiplier": pd.Series(dtype="float64"),
+            "trade_unit": pd.Series(dtype="object"),
+            "per_unit": pd.Series(dtype="float64"),
+            "quote_unit": pd.Series(dtype="object"),
+            "list_date": pd.Series(dtype="datetime64[ns]"),
+            "delist_date": pd.Series(dtype="datetime64[ns]"),
         }
     )
 

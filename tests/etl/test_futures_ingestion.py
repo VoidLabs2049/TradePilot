@@ -12,11 +12,14 @@ import pandas as pd
 
 from tradepilot import db
 from tradepilot.data.tushare_client import TushareClient
-from tradepilot.etl.models import IngestionRequest, RunStatus
+from tradepilot.etl.models import IngestionRequest, RunStatus, ValidationStatus
+from tradepilot.etl.normalizers import FuturesInstrumentsNormalizer
 from tradepilot.etl.service import ETLService
 from tradepilot.etl.sources.tushare import TushareSourceAdapter
 from tradepilot.etl.validators import (
+    FuturesInstrumentsValidator,
     FuturesContractDailyValidator,
+    TradingCalendarValidator,
     has_blocking_failures,
 )
 
@@ -42,6 +45,18 @@ class FakeTusharePro:
                 "quote_unit": ["元（人民币）/吨"],
                 "list_date": ["20250915"],
                 "delist_date": ["20260914"],
+            }
+        )
+
+    def trade_cal(self, **kwargs: str) -> pd.DataFrame:
+        self.calls.append(("trade_cal", kwargs))
+        exchange = kwargs["exchange"]
+        return pd.DataFrame(
+            {
+                "exchange": [exchange, exchange],
+                "cal_date": ["20260408", "20260409"],
+                "is_open": [1, 1],
+                "pretrade_date": ["20260407", "20260408"],
             }
         )
 
@@ -112,12 +127,8 @@ class FuturesIngestionTests(unittest.TestCase):
 
     def test_client_normalizes_futures_endpoints(self) -> None:
         basic = self.client.get_futures_basic("dce")
-        mapping = self.client.get_futures_mapping(
-            "m.dce", "2026-04-08", "2026-04-09"
-        )
-        daily = self.client.get_futures_daily(
-            "m2609.dce", "2026-04-09", "2026-04-09"
-        )
+        mapping = self.client.get_futures_mapping("m.dce", "2026-04-08", "2026-04-09")
+        daily = self.client.get_futures_daily("m2609.dce", "2026-04-09", "2026-04-09")
 
         self.assertEqual(basic.iloc[0]["contract_code"], "M2609.DCE")
         self.assertEqual(basic.iloc[0]["multiplier"], 10)
@@ -130,6 +141,18 @@ class FuturesIngestionTests(unittest.TestCase):
         self.assertEqual(self.pro.calls[2][1]["ts_code"], "M2609.DCE")
 
     def test_m_dce_mapping_and_contract_daily_are_written(self) -> None:
+        calendar_result = self.service.run_dataset_sync(
+            "reference.trading_calendar",
+            IngestionRequest(
+                request_start=date(2026, 4, 8),
+                request_end=date(2026, 4, 9),
+                context={"exchanges": ["DCE"]},
+            ),
+        )
+        instruments_result = self.service.run_dataset_sync(
+            "reference.futures_instruments",
+            IngestionRequest(context={"exchanges": ["DCE"]}),
+        )
         window = IngestionRequest(
             request_start=date(2026, 4, 8),
             request_end=date(2026, 4, 9),
@@ -145,6 +168,10 @@ class FuturesIngestionTests(unittest.TestCase):
             ),
         )
 
+        self.assertEqual(calendar_result.status, RunStatus.SUCCESS)
+        self.assertEqual(calendar_result.records_written, 2)
+        self.assertEqual(instruments_result.status, RunStatus.SUCCESS)
+        self.assertEqual(instruments_result.records_written, 1)
         self.assertEqual(mapping_result.status, RunStatus.SUCCESS)
         self.assertEqual(mapping_result.records_written, 2)
         self.assertEqual(daily_result.status, RunStatus.SUCCESS)
@@ -158,6 +185,14 @@ class FuturesIngestionTests(unittest.TestCase):
             / "04"
             / "part-00000.parquet"
         )
+        instruments_path = (
+            self.lakehouse_root
+            / "normalized"
+            / "reference.futures_instruments"
+            / "2025"
+            / "09"
+            / "part-00000.parquet"
+        )
         daily_path = (
             self.lakehouse_root
             / "normalized"
@@ -166,37 +201,44 @@ class FuturesIngestionTests(unittest.TestCase):
             / "04"
             / "part-00000.parquet"
         )
+        self.assertTrue(instruments_path.exists())
         self.assertTrue(mapping_path.exists())
         self.assertTrue(daily_path.exists())
+        instruments = pd.read_parquet(instruments_path)
         mapping = pd.read_parquet(mapping_path)
         daily = pd.read_parquet(daily_path)
+        self.assertEqual(instruments.iloc[0]["contract_code"], "M2609.DCE")
+        self.assertEqual(instruments.iloc[0]["multiplier"], 10)
         self.assertEqual(mapping.iloc[-1]["active_contract"], "M2609.DCE")
-        self.assertEqual(
-            set(daily["contract_code"]), {"M2605.DCE", "M2609.DCE"}
-        )
+        self.assertEqual(set(daily["contract_code"]), {"M2605.DCE", "M2609.DCE"})
         self.assertIn("settle", daily.columns)
         self.assertIn("oi", daily.columns)
+        calendar_count = self.conn.execute("""
+            SELECT COUNT(*) FROM canonical_trading_calendar
+            WHERE exchange = 'DCE'
+            """).fetchone()[0]
+        self.assertEqual(calendar_count, 2)
 
-        runs = self.conn.execute(
-            """
+        runs = self.conn.execute("""
             SELECT dataset_name, status
             FROM etl_ingestion_runs
             WHERE dataset_name LIKE 'market.futures%'
+               OR dataset_name = 'reference.futures_instruments'
+               OR dataset_name = 'reference.trading_calendar'
             ORDER BY run_id
-            """
-        ).fetchall()
+            """).fetchall()
         self.assertEqual(
             runs,
             [
+                ("reference.trading_calendar", "success"),
+                ("reference.futures_instruments", "success"),
                 ("market.futures_mapping", "success"),
                 ("market.futures_contract_daily", "success"),
             ],
         )
 
     def test_missing_historical_settle_is_a_non_blocking_warning(self) -> None:
-        payload = self.client.get_futures_daily(
-            "M2609.DCE", "2026-04-09", "2026-04-09"
-        )
+        payload = self.client.get_futures_daily("M2609.DCE", "2026-04-09", "2026-04-09")
         payload["settle"] = float("nan")
 
         results = FuturesContractDailyValidator().validate(payload)
@@ -208,6 +250,90 @@ class FuturesIngestionTests(unittest.TestCase):
         )
         self.assertEqual(settle_result.status.value, "warning")
         self.assertFalse(has_blocking_failures(results))
+
+    def test_missing_futures_multiplier_is_a_non_blocking_warning(self) -> None:
+        payload = self.client.get_futures_basic("DCE")
+        payload["multiplier"] = pd.NA
+        payload["per_unit"] = pd.NA
+
+        results = FuturesInstrumentsValidator().validate(payload)
+
+        multiplier_result = next(
+            result
+            for result in results
+            if result.check_name == "futures_instruments.multiplier_available"
+        )
+        self.assertEqual(multiplier_result.status, ValidationStatus.WARNING)
+        self.assertFalse(has_blocking_failures(results))
+
+    def test_futures_instruments_multiplier_falls_back_to_per_unit(self) -> None:
+        payload = self.client.get_futures_basic("DCE")
+        payload["multiplier"] = pd.NA
+        payload["per_unit"] = 10
+
+        normalized = FuturesInstrumentsNormalizer().normalize(payload)
+
+        self.assertEqual(normalized.canonical_payload.iloc[0]["multiplier"], 10)
+
+    def test_non_positive_futures_multiplier_is_blocking(self) -> None:
+        payload = self.client.get_futures_basic("DCE")
+        payload["multiplier"] = 0
+
+        results = FuturesInstrumentsValidator().validate(payload)
+
+        self.assertTrue(
+            any(
+                result.check_name == "futures_instruments.multiplier_positive"
+                and result.status == ValidationStatus.FAIL
+                for result in results
+            )
+        )
+        self.assertTrue(has_blocking_failures(results))
+
+    def test_calendar_natural_day_gap_is_a_non_blocking_warning(self) -> None:
+        payload = pd.DataFrame(
+            {
+                "exchange": ["DCE", "DCE"],
+                "trade_date": [date(2022, 12, 30), date(2023, 1, 1)],
+                "is_open": [False, False],
+                "pretrade_date": [date(2022, 12, 29), date(2022, 12, 29)],
+            }
+        )
+
+        results = TradingCalendarValidator().validate(payload)
+
+        continuity_result = next(
+            result
+            for result in results
+            if result.check_name == "calendar.date_continuity"
+        )
+        self.assertEqual(continuity_result.status, ValidationStatus.WARNING)
+        self.assertFalse(has_blocking_failures(results))
+
+    def test_futures_daily_validator_rejects_non_open_trade_date(self) -> None:
+        payload = self.client.get_futures_daily("M2609.DCE", "2026-04-09", "2026-04-09")
+
+        results = FuturesContractDailyValidator().validate(
+            payload,
+            {
+                "dataset_name": "market.futures_contract_daily",
+                "run_id": 1,
+                "canonical_trading_calendar": pd.DataFrame(
+                    {
+                        "exchange": ["DCE"],
+                        "trade_date": [date(2026, 4, 8)],
+                    }
+                ),
+            },
+        )
+
+        self.assertTrue(
+            any(
+                result.check_name == "futures_daily.trade_date_open"
+                and result.status == ValidationStatus.FAIL
+                for result in results
+            )
+        )
 
 
 if __name__ == "__main__":

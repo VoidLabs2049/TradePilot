@@ -294,6 +294,71 @@ class FuturesMappingNormalizer(BaseNormalizer):
         return _result(canonical, context=ctx)
 
 
+class FuturesInstrumentsNormalizer(BaseNormalizer):
+    """Normalize futures contract metadata."""
+
+    _NUMERIC_COLUMNS = ["multiplier", "per_unit"]
+
+    def normalize(
+        self,
+        raw_payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> NormalizationResult:
+        """Normalize futures instrument rows with contract sizing fields."""
+
+        ctx = context or {}
+        frame = raw_payload.copy()
+        for column in (
+            "contract_code",
+            "symbol",
+            "exchange",
+            "futures_code",
+        ):
+            frame[column] = (
+                frame.get(column, pd.Series(dtype="object"))
+                .astype("string")
+                .str.upper()
+            )
+        for column in (
+            "name",
+            "trade_unit",
+            "quote_unit",
+        ):
+            frame[column] = frame.get(column, pd.Series(dtype="object")).astype(
+                "string"
+            )
+        for column in self._NUMERIC_COLUMNS:
+            frame[column] = pd.to_numeric(frame.get(column), errors="coerce")
+        frame["multiplier"] = frame["multiplier"].fillna(frame["per_unit"])
+        frame["list_date"] = _to_date_series(frame.get("list_date"))
+        frame["delist_date"] = _to_date_series(frame.get("delist_date"))
+        frame["source_name"] = str(ctx.get("source_name", ""))
+        frame["raw_batch_id"] = ctx.get("raw_batch_id")
+        frame["ingested_at"] = pd.Timestamp.utcnow().tz_localize(None)
+        frame["quality_status"] = str(ctx.get("quality_status", "pass"))
+        canonical = frame.loc[
+            :,
+            [
+                "contract_code",
+                "symbol",
+                "exchange",
+                "name",
+                "futures_code",
+                "multiplier",
+                "trade_unit",
+                "per_unit",
+                "quote_unit",
+                "list_date",
+                "delist_date",
+                "source_name",
+                "raw_batch_id",
+                "ingested_at",
+                "quality_status",
+            ],
+        ].copy()
+        return _result(canonical, context=ctx)
+
+
 class FuturesContractDailyNormalizer(BaseNormalizer):
     """Normalize unadjusted concrete futures contract daily bars."""
 
@@ -678,6 +743,8 @@ def get_normalizer(dataset_name: str) -> BaseNormalizer:
         return TradingCalendarNormalizer()
     if dataset_name == "reference.instruments":
         return InstrumentNormalizer()
+    if dataset_name == "reference.futures_instruments":
+        return FuturesInstrumentsNormalizer()
     if dataset_name == "market.etf_adj_factor":
         return EtfAdjFactorNormalizer()
     if dataset_name == "market.futures_mapping":
