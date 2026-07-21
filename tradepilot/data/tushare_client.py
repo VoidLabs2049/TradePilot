@@ -31,6 +31,37 @@ _MACRO_SLOW_FIELDS_COLUMNS = ("period_label", "official_pmi")
 _SHIBOR_COLUMNS = ("date", "on", "1w", "2w", "1m", "3m", "6m", "9m", "1y")
 _LPR_COLUMNS = ("date", "1y", "5y")
 _GOV_CURVE_POINTS_COLUMNS = ("curve_date", "curve_code", "1y", "10y")
+_FUTURES_BASIC_COLUMNS = (
+    "contract_code",
+    "symbol",
+    "exchange",
+    "name",
+    "futures_code",
+    "multiplier",
+    "trade_unit",
+    "per_unit",
+    "quote_unit",
+    "list_date",
+    "delist_date",
+)
+_FUTURES_MAPPING_COLUMNS = ("root_code", "trade_date", "active_contract")
+_FUTURES_DAILY_COLUMNS = (
+    "contract_code",
+    "trade_date",
+    "pre_close",
+    "pre_settle",
+    "open",
+    "high",
+    "low",
+    "close",
+    "settle",
+    "change1",
+    "change2",
+    "volume",
+    "amount",
+    "oi",
+    "oi_chg",
+)
 
 
 def _empty_frame(columns: tuple[str, ...]) -> pd.DataFrame:
@@ -495,6 +526,105 @@ class TushareClient:
             pd.DataFrame,
             normalized.loc[:, list(_ETF_ADJ_FACTOR_COLUMNS)]
             .sort_values("date")
+            .reset_index(drop=True),
+        )
+
+    def get_futures_basic(self, exchange: str) -> pd.DataFrame:
+        """Return futures contract metadata for one Tushare exchange."""
+
+        pro = self._pro
+        if pro is None:
+            return _empty_frame(_FUTURES_BASIC_COLUMNS)
+        frame = pro.fut_basic(
+            exchange=exchange.strip().upper(),
+            fut_type="1",
+            fields=(
+                "ts_code,symbol,exchange,name,fut_code,multiplier,trade_unit,"
+                "per_unit,quote_unit,list_date,delist_date"
+            ),
+        )
+        if frame.empty:
+            return _empty_frame(_FUTURES_BASIC_COLUMNS)
+        normalized = frame.rename(
+            columns={"ts_code": "contract_code", "fut_code": "futures_code"}
+        ).copy()
+        for column in ("multiplier", "per_unit"):
+            normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+        for column in ("list_date", "delist_date"):
+            normalized[column] = pd.to_datetime(
+                normalized[column], format="%Y%m%d", errors="coerce"
+            )
+        return cast(
+            pd.DataFrame,
+            normalized.loc[:, list(_FUTURES_BASIC_COLUMNS)]
+            .sort_values("contract_code")
+            .reset_index(drop=True),
+        )
+
+    def get_futures_mapping(
+        self, root_code: str, start_date: str, end_date: str
+    ) -> pd.DataFrame:
+        """Return point-in-time dominant-contract mappings for one futures root."""
+
+        pro = self._pro
+        if pro is None:
+            return _empty_frame(_FUTURES_MAPPING_COLUMNS)
+        normalized_root = root_code.strip().upper()
+        frame = pro.fut_mapping(
+            ts_code=normalized_root,
+            start_date=_to_tushare_date(start_date),
+            end_date=_to_tushare_date(end_date),
+            fields="ts_code,trade_date,mapping_ts_code",
+        )
+        if frame.empty:
+            return _empty_frame(_FUTURES_MAPPING_COLUMNS)
+        normalized = frame.rename(
+            columns={"ts_code": "root_code", "mapping_ts_code": "active_contract"}
+        ).copy()
+        normalized["root_code"] = normalized_root
+        normalized["trade_date"] = pd.to_datetime(
+            normalized["trade_date"], format="%Y%m%d", errors="coerce"
+        )
+        return cast(
+            pd.DataFrame,
+            normalized.loc[:, list(_FUTURES_MAPPING_COLUMNS)]
+            .sort_values("trade_date")
+            .reset_index(drop=True),
+        )
+
+    def get_futures_daily(
+        self, contract_code: str, start_date: str, end_date: str
+    ) -> pd.DataFrame:
+        """Return unadjusted daily bars for one concrete futures contract."""
+
+        pro = self._pro
+        if pro is None:
+            return _empty_frame(_FUTURES_DAILY_COLUMNS)
+        normalized_code = contract_code.strip().upper()
+        frame = pro.fut_daily(
+            ts_code=normalized_code,
+            start_date=_to_tushare_date(start_date),
+            end_date=_to_tushare_date(end_date),
+            fields=(
+                "ts_code,trade_date,pre_close,pre_settle,open,high,low,close,"
+                "settle,change1,change2,vol,amount,oi,oi_chg"
+            ),
+        )
+        if frame.empty:
+            return _empty_frame(_FUTURES_DAILY_COLUMNS)
+        normalized = frame.rename(
+            columns={"ts_code": "contract_code", "vol": "volume"}
+        ).copy()
+        normalized["contract_code"] = normalized_code
+        normalized["trade_date"] = pd.to_datetime(
+            normalized["trade_date"], format="%Y%m%d", errors="coerce"
+        )
+        for column in _FUTURES_DAILY_COLUMNS[2:]:
+            normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+        return cast(
+            pd.DataFrame,
+            normalized.loc[:, list(_FUTURES_DAILY_COLUMNS)]
+            .sort_values("trade_date")
             .reset_index(drop=True),
         )
 

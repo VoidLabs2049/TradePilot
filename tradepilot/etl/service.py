@@ -757,6 +757,8 @@ class ETLService:
     def _required_calendar_exchanges(
         self, definition: DatasetDefinition, request: IngestionRequest
     ) -> list[str]:
+        if definition.dataset_name == "market.futures_contract_daily":
+            return _futures_calendar_exchanges(request.context.get("contract_codes"))
         instrument_type = _instrument_type_for_dataset(definition.dataset_name)
         if instrument_type is None:
             return ["SH", "SZ"]
@@ -805,6 +807,15 @@ class ETLService:
                 trigger_mode=TriggerMode.MANUAL,
                 context=context,
             )
+        if dependency == "reference.trading_calendar":
+            return IngestionRequest(
+                request_start=request.request_start,
+                request_end=request.request_end,
+                trigger_mode=TriggerMode.MANUAL,
+                context={
+                    "exchanges": self._required_calendar_exchanges(definition, request)
+                },
+            )
         return IngestionRequest(
             request_start=request.request_start,
             request_end=request.request_end,
@@ -819,6 +830,8 @@ class ETLService:
         if request.context.get("instrument_ids"):
             return request
         instrument_type = _instrument_type_for_dataset(definition.dataset_name)
+        if instrument_type is None:
+            return request
         frame = self.conn.execute(
             """
             SELECT instrument_id FROM canonical_instruments
@@ -844,8 +857,14 @@ class ETLService:
             return self._write_trading_calendar(canonical)
         if definition.dataset_name == "reference.instruments":
             return self._write_instruments(canonical)
+        if definition.dataset_name == "reference.futures_instruments":
+            return self._write_futures_instruments(definition, canonical)
         if definition.dataset_name == "market.etf_adj_factor":
             return self._write_etf_adj_factor(definition, canonical)
+        if definition.dataset_name == "market.futures_mapping":
+            return self._write_futures_mapping(definition, canonical)
+        if definition.dataset_name == "market.futures_contract_daily":
+            return self._write_futures_contract_daily(definition, canonical)
         if definition.dataset_name == "macro.slow_fields":
             return self._write_macro_slow_fields(definition, canonical)
         if definition.dataset_name == "rates.daily_rates":
@@ -938,6 +957,40 @@ class ETLService:
             canonical=canonical,
             key_columns=("instrument_id", "trade_date"),
             sort_columns=("instrument_id", "trade_date", "ingested_at"),
+        )
+
+    def _write_futures_instruments(
+        self, definition: DatasetDefinition, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=definition.dataset_name,
+            zone=StorageZone.NORMALIZED,
+            canonical=canonical,
+            key_columns=("contract_code",),
+            sort_columns=("contract_code", "ingested_at"),
+            partition_date_column="list_date",
+        )
+
+    def _write_futures_mapping(
+        self, definition: DatasetDefinition, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=definition.dataset_name,
+            zone=StorageZone.NORMALIZED,
+            canonical=canonical,
+            key_columns=("root_code", "trade_date"),
+            sort_columns=("root_code", "trade_date", "ingested_at"),
+        )
+
+    def _write_futures_contract_daily(
+        self, definition: DatasetDefinition, canonical: pd.DataFrame
+    ) -> CanonicalWriteResult:
+        return self._write_year_month_partition_upsert(
+            dataset_name=definition.dataset_name,
+            zone=StorageZone.NORMALIZED,
+            canonical=canonical,
+            key_columns=("contract_code", "trade_date"),
+            sort_columns=("contract_code", "trade_date", "ingested_at"),
         )
 
     def _write_daily_rates(
@@ -3404,6 +3457,30 @@ def _unique_strings(values: Iterable[object]) -> list[str]:
         seen.add(text)
         result.append(text)
     return result
+
+
+def _futures_calendar_exchanges(values: object) -> list[str]:
+    """Return futures calendar exchanges inferred from Tushare contract suffixes."""
+
+    suffix_map = {
+        "SHF": "SHFE",
+        "DCE": "DCE",
+        "ZCE": "CZCE",
+        "INE": "INE",
+        "CFX": "CFFEX",
+        "CFFEX": "CFFEX",
+    }
+    if values is None:
+        return []
+    items = values if isinstance(values, list) else [values]
+    exchanges: list[str] = []
+    for value in items:
+        text = str(value).strip().upper()
+        suffix = text.rsplit(".", maxsplit=1)[-1] if "." in text else ""
+        exchange = suffix_map.get(suffix)
+        if exchange:
+            exchanges.append(exchange)
+    return _unique_strings(exchanges)
 
 
 def _ordered_dates(start: date, end: date) -> tuple[date, date]:

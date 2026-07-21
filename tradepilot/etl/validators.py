@@ -14,6 +14,10 @@ from pydantic import BaseModel
 
 from tradepilot.etl.models import ValidationResultRecord, ValidationStatus
 
+_STOCK_CALENDAR_EXCHANGES = {"SH", "SZ"}
+_FUTURES_CALENDAR_EXCHANGES = {"SHFE", "DCE", "CZCE", "INE", "CFFEX"}
+_SUPPORTED_CALENDAR_EXCHANGES = _STOCK_CALENDAR_EXCHANGES | _FUTURES_CALENDAR_EXCHANGES
+
 
 class ValidationRuleDefinition(BaseModel):
     """Lightweight metadata for one validation rule."""
@@ -81,14 +85,14 @@ class TradingCalendarValidator(BaseValidator):
             ["exchange", "trade_date"],
             "trade_date is required",
         )
-        unsupported = payload[~payload["exchange"].isin(["SH", "SZ"])]
+        unsupported = payload[~payload["exchange"].isin(_SUPPORTED_CALENDAR_EXCHANGES)]
         _row_records(
             results,
             ctx,
             unsupported,
             "calendar.exchange_supported",
             ["exchange", "trade_date"],
-            "exchange must be SH or SZ",
+            "exchange must be a supported stock or futures exchange",
         )
         bad_bool = payload[
             payload["is_open"].map(lambda value: not isinstance(value, bool))
@@ -409,6 +413,234 @@ class MarketDailyValidator(BaseValidator):
         return results
 
 
+class FuturesMappingValidator(BaseValidator):
+    """Validate point-in-time futures dominant-contract mappings."""
+
+    def validate(
+        self,
+        payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> list[ValidationResultRecord]:
+        """Validate futures mapping business keys and exchange suffixes."""
+
+        ctx = context or {}
+        results: list[ValidationResultRecord] = []
+        columns = ["root_code", "trade_date", "active_contract"]
+        _required_columns(payload, columns, ctx, results)
+        if results:
+            return results
+        duplicate_count = int(payload.duplicated(["root_code", "trade_date"]).sum())
+        results.append(
+            _record(
+                ctx,
+                "futures_mapping.duplicate_business_key",
+                "dataset",
+                ValidationStatus.FAIL if duplicate_count else ValidationStatus.PASS,
+                metric_value=duplicate_count,
+                threshold_value=0,
+            )
+        )
+        for column, rule in (
+            ("root_code", "futures_mapping.root_code_required"),
+            ("trade_date", "futures_mapping.trade_date_required"),
+            ("active_contract", "futures_mapping.active_contract_required"),
+        ):
+            missing = payload[
+                payload[column].isna()
+                | (payload[column].astype("string").str.strip() == "")
+            ]
+            _row_records(results, ctx, missing, rule, columns, f"{column} is required")
+        suffix_mismatch = payload[
+            payload["root_code"].notna()
+            & payload["active_contract"].notna()
+            & (
+                payload["root_code"].astype(str).str.rsplit(".", n=1).str[-1]
+                != payload["active_contract"].astype(str).str.rsplit(".", n=1).str[-1]
+            )
+        ]
+        _row_records(
+            results,
+            ctx,
+            suffix_mismatch,
+            "futures_mapping.exchange_suffix_match",
+            columns,
+            "root and active contract exchange suffixes must match",
+        )
+        return results
+
+
+class FuturesInstrumentsValidator(BaseValidator):
+    """Validate futures contract metadata."""
+
+    def validate(
+        self,
+        payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> list[ValidationResultRecord]:
+        """Validate futures contract keys, sizing fields, and date order."""
+
+        ctx = context or {}
+        results: list[ValidationResultRecord] = []
+        required = ["contract_code", "multiplier", "list_date", "delist_date"]
+        _required_columns(payload, required, ctx, results)
+        if results:
+            return results
+        key = ["contract_code"]
+        duplicate_count = int(payload.duplicated(key).sum())
+        results.append(
+            _record(
+                ctx,
+                "futures_instruments.duplicate_contract_code",
+                "dataset",
+                ValidationStatus.FAIL if duplicate_count else ValidationStatus.PASS,
+                metric_value=duplicate_count,
+                threshold_value=0,
+            )
+        )
+        missing_code = payload[
+            payload["contract_code"].isna()
+            | (payload["contract_code"].astype("string").str.strip() == "")
+        ]
+        _row_records(
+            results,
+            ctx,
+            missing_code,
+            "futures_instruments.contract_code_required",
+            key,
+            "contract_code is required",
+        )
+        bad_multiplier = payload[
+            pd.to_numeric(payload["multiplier"], errors="coerce").isna()
+            | (pd.to_numeric(payload["multiplier"], errors="coerce") <= 0)
+        ]
+        _row_records(
+            results,
+            ctx,
+            bad_multiplier[bad_multiplier["multiplier"].notna()],
+            "futures_instruments.multiplier_positive",
+            key,
+            "multiplier must be positive",
+        )
+        _row_records(
+            results,
+            ctx,
+            bad_multiplier[bad_multiplier["multiplier"].isna()],
+            "futures_instruments.multiplier_available",
+            key,
+            "multiplier is missing",
+            status=ValidationStatus.WARNING,
+        )
+        bad_dates = payload[
+            payload["list_date"].notna()
+            & payload["delist_date"].notna()
+            & (payload["list_date"] > payload["delist_date"])
+        ]
+        _row_records(
+            results,
+            ctx,
+            bad_dates,
+            "futures_instruments.list_delist_order",
+            key,
+            "list_date must not be after delist_date",
+        )
+        return results
+
+
+class FuturesContractDailyValidator(BaseValidator):
+    """Validate unadjusted concrete futures contract daily bars."""
+
+    def validate(
+        self,
+        payload: pd.DataFrame,
+        context: dict[str, Any] | None = None,
+    ) -> list[ValidationResultRecord]:
+        """Validate futures daily keys, prices, volume, and open interest."""
+
+        ctx = context or {}
+        results: list[ValidationResultRecord] = []
+        required = ["contract_code", "trade_date", "settle", "close", "volume", "oi"]
+        _required_columns(payload, required, ctx, results)
+        if results:
+            return results
+        keys = ["contract_code", "trade_date"]
+        duplicate_count = int(payload.duplicated(keys).sum())
+        results.append(
+            _record(
+                ctx,
+                "futures_daily.duplicate_business_key",
+                "dataset",
+                ValidationStatus.FAIL if duplicate_count else ValidationStatus.PASS,
+                metric_value=duplicate_count,
+                threshold_value=0,
+            )
+        )
+        for column, rule in (
+            ("contract_code", "futures_daily.contract_code_required"),
+            ("trade_date", "futures_daily.trade_date_required"),
+        ):
+            missing = payload[payload[column].isna()]
+            _row_records(results, ctx, missing, rule, keys, f"{column} is required")
+        calendars = _open_day_lookup(ctx)
+        if calendars is not None and not payload.empty:
+            calendar_payload = payload.copy()
+            calendar_payload["trade_date"] = pd.to_datetime(
+                calendar_payload["trade_date"], errors="coerce"
+            ).dt.date
+            calendar_payload["exchange"] = calendar_payload["contract_code"].map(
+                _futures_calendar_exchange
+            )
+            joined = calendar_payload.merge(
+                calendars.assign(_is_open_day=True),
+                on=["exchange", "trade_date"],
+                how="left",
+            )
+            non_open = joined[joined["_is_open_day"].isna()]
+            _row_records(
+                results,
+                ctx,
+                non_open,
+                "futures_daily.trade_date_open",
+                keys,
+                "trade_date must be an open futures trading day",
+            )
+        missing_settle = payload[payload["settle"].isna()]
+        results.append(
+            _record(
+                ctx,
+                "futures_daily.settle_availability",
+                "dataset",
+                (
+                    ValidationStatus.WARNING
+                    if not missing_settle.empty
+                    else ValidationStatus.PASS
+                ),
+                metric_value=len(missing_settle),
+                threshold_value=0,
+                details={"sample": _sample_keys(missing_settle, keys)},
+            )
+        )
+        negative_price = payload[
+            payload[["open", "high", "low", "close", "settle"]].lt(0).any(axis=1)
+        ]
+        _row_records(
+            results,
+            ctx,
+            negative_price,
+            "futures_daily.ohlc_non_negative",
+            keys,
+            "futures prices must be non-negative",
+        )
+        for column, rule in (
+            ("volume", "futures_daily.volume_non_negative"),
+            ("oi", "futures_daily.oi_non_negative"),
+        ):
+            negative = payload[pd.to_numeric(payload[column], errors="coerce") < 0]
+            _row_records(
+                results, ctx, negative, rule, keys, f"{column} must be non-negative"
+            )
+        return results
+
+
 class EtfAdjFactorValidator(BaseValidator):
     """Validate canonical ETF adjustment factor rows."""
 
@@ -718,8 +950,14 @@ def get_validator(dataset_name: str) -> BaseValidator:
         return TradingCalendarValidator()
     if dataset_name == "reference.instruments":
         return InstrumentValidator()
+    if dataset_name == "reference.futures_instruments":
+        return FuturesInstrumentsValidator()
     if dataset_name == "market.etf_adj_factor":
         return EtfAdjFactorValidator()
+    if dataset_name == "market.futures_mapping":
+        return FuturesMappingValidator()
+    if dataset_name == "market.futures_contract_daily":
+        return FuturesContractDailyValidator()
     if dataset_name in {"market.etf_daily", "market.index_daily"}:
         return MarketDailyValidator()
     if dataset_name == "macro.slow_fields":
@@ -1168,6 +1406,21 @@ def _open_day_lookup(context: dict[str, Any]) -> pd.DataFrame | None:
     return frame
 
 
+def _futures_calendar_exchange(contract_code: object) -> str | None:
+    """Return the trading-calendar exchange for a futures contract code."""
+
+    text = str(contract_code).strip().upper()
+    suffix = text.rsplit(".", maxsplit=1)[-1] if "." in text else ""
+    return {
+        "SHF": "SHFE",
+        "DCE": "DCE",
+        "ZCE": "CZCE",
+        "INE": "INE",
+        "CFX": "CFFEX",
+        "CFFEX": "CFFEX",
+    }.get(suffix)
+
+
 def _open_day_pretrade_sequence(
     results: list[ValidationResultRecord],
     context: dict[str, Any],
@@ -1220,6 +1473,7 @@ def _calendar_date_continuity(
     frame = payload.dropna(subset=["exchange", "trade_date"]).copy()
     frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce").dt.date
     missing: list[str] = []
+    missing_exchanges: set[str] = set()
     for exchange, exchange_frame in frame.groupby("exchange"):
         dates = set(exchange_frame["trade_date"].dropna().tolist())
         if not dates:
@@ -1228,14 +1482,23 @@ def _calendar_date_continuity(
         end = max(dates)
         while current <= end:
             if current not in dates:
-                missing.append(f"{exchange}|{current.isoformat()}")
+                exchange_name = str(exchange)
+                missing.append(f"{exchange_name}|{current.isoformat()}")
+                missing_exchanges.add(exchange_name)
             current = current + timedelta(days=1)
+    status = ValidationStatus.PASS
+    if missing:
+        status = (
+            ValidationStatus.WARNING
+            if missing_exchanges.issubset(_FUTURES_CALENDAR_EXCHANGES)
+            else ValidationStatus.FAIL
+        )
     results.append(
         _record(
             context,
             "calendar.date_continuity",
             "dataset",
-            ValidationStatus.FAIL if missing else ValidationStatus.PASS,
+            status,
             metric_value=len(missing),
             threshold_value=0,
             details={"missing_dates": missing[:50]},
