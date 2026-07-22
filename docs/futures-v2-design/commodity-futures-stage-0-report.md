@@ -1,8 +1,8 @@
 # TradePilot 商品期货阶段 0 接入验收与数据冻结报告
 
-Generated at: `2026-07-22T08:25:23.360130+00:00`
-Code version: `10c02cb66a05d7f6180ba726bb0acd3cb9a88956`
-Snapshot id: `070eda833c8960f5`
+Generated at: `2026-07-22T08:34:54.167813+00:00`
+Code version: `5ed49bb32c94631e2441077b8b7e4061739528d3`
+Snapshot id: `b4d737274d432780`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 DB path: `/home/nixos/workspace/TradePilot/data/tradepilot.duckdb`
 
