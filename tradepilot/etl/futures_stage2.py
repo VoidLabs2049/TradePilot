@@ -100,8 +100,24 @@ def build_continuous_contract(
     """Build one ratio back-adjusted continuous contract for a root symbol."""
 
     root_code = root_code.strip().upper()
-    mapping = _load_normalized_dataset("market.futures_mapping", lakehouse_root)
-    daily = _load_normalized_dataset("market.futures_contract_daily", lakehouse_root)
+    mapping = _load_normalized_dataset(
+        "market.futures_mapping",
+        lakehouse_root,
+        required_columns=["root_code", "trade_date", "active_contract", "raw_batch_id"],
+    )
+    daily = _load_normalized_dataset(
+        "market.futures_contract_daily",
+        lakehouse_root,
+        required_columns=[
+            "contract_code",
+            "trade_date",
+            "close",
+            "settle",
+            "volume",
+            "oi",
+            "raw_batch_id",
+        ],
+    )
     root_mapping = (
         mapping[mapping["root_code"].eq(root_code)]
         .sort_values("trade_date")
@@ -111,6 +127,8 @@ def build_continuous_contract(
         raise ValueError(f"no mapping rows for {root_code}")
     if root_mapping.duplicated(["root_code", "trade_date"]).any():
         raise ValueError(f"duplicate mapping rows for {root_code}")
+    if daily.duplicated(["contract_code", "trade_date"]).any():
+        raise ValueError("duplicate futures daily rows by contract_code/trade_date")
 
     active = root_mapping.merge(
         daily,
@@ -123,6 +141,7 @@ def build_continuous_contract(
         raise ValueError(f"{root_code} mapping rows without matching daily bars")
     if active[list(_REQUIRED_DAILY_FIELDS)].isna().any(axis=None):
         raise ValueError(f"{root_code} active rows have missing close/settle/volume/oi")
+    _require_positive_columns(active, ["close", "settle"], f"{root_code} active rows")
 
     roll_rows = _build_roll_rows(root_mapping=root_mapping, daily=daily)
     frame = active[
@@ -254,13 +273,11 @@ def build_stage2_report(
         start_date=frame["trade_date"].min(),
         end_date=frame["trade_date"].max(),
         roll_count=len(roll_frame),
-        max_roll_close_gap_abs=float(roll_frame["roll_gap"].abs().max() or 0.0),
-        max_roll_settle_gap_abs=float(roll_frame["settle_roll_gap"].abs().max() or 0.0),
+        max_roll_close_gap_abs=_max_abs_or_zero(roll_frame, "roll_gap"),
+        max_roll_settle_gap_abs=_max_abs_or_zero(roll_frame, "settle_roll_gap"),
         min_adjusted_close=float(frame["adjusted_close"].min()),
         min_adjusted_settle=float(frame["adjusted_settle"].min()),
-        max_roll_return_abs=float(
-            roll_frame["continuous_return"].dropna().abs().max() or 0.0
-        ),
+        max_roll_return_abs=_max_abs_or_zero(roll_frame, "continuous_return"),
         first_roll_date=None if roll_frame.empty else roll_frame["trade_date"].min(),
         last_roll_date=None if roll_frame.empty else roll_frame["trade_date"].max(),
     )
@@ -402,17 +419,36 @@ def _build_roll_rows(
             )
         if rows[list(_REQUIRED_DAILY_FIELDS)].isna().any(axis=None):
             raise ValueError(f"roll {trade_date} has missing core daily fields")
-        old = rows[rows["contract_code"].eq(previous_contract)].iloc[0]
-        new = rows[rows["contract_code"].eq(current_contract)].iloc[0]
+        old_rows = rows[rows["contract_code"].eq(previous_contract)]
+        new_rows = rows[rows["contract_code"].eq(current_contract)]
+        if len(old_rows) != 1 or len(new_rows) != 1:
+            raise ValueError(
+                f"roll {trade_date} rows are not unique for "
+                f"{previous_contract}->{current_contract}"
+            )
+        old = old_rows.iloc[0]
+        new = new_rows.iloc[0]
+        old_close = _positive_float(
+            old["close"], f"{previous_contract} close on {trade_date}"
+        )
+        new_close = _positive_float(
+            new["close"], f"{current_contract} close on {trade_date}"
+        )
+        old_settle = _positive_float(
+            old["settle"], f"{previous_contract} settle on {trade_date}"
+        )
+        new_settle = _positive_float(
+            new["settle"], f"{current_contract} settle on {trade_date}"
+        )
         rolls.append(
             {
                 "trade_date": trade_date,
                 "roll_from": previous_contract,
                 "roll_to": current_contract,
-                "close_gap": float(new["close"]) - float(old["close"]),
-                "settle_gap": float(new["settle"]) - float(old["settle"]),
-                "close_ratio": float(new["close"]) / float(old["close"]),
-                "settle_ratio": float(new["settle"]) / float(old["settle"]),
+                "close_gap": new_close - old_close,
+                "settle_gap": new_settle - old_settle,
+                "close_ratio": new_close / old_close,
+                "settle_ratio": new_settle / old_settle,
             }
         )
     return rolls
@@ -430,7 +466,9 @@ def _future_ratio_product(
     return product
 
 
-def _load_normalized_dataset(dataset_name: str, lakehouse_root: Path) -> pd.DataFrame:
+def _load_normalized_dataset(
+    dataset_name: str, lakehouse_root: Path, *, required_columns: list[str]
+) -> pd.DataFrame:
     """Load one normalized parquet dataset from lakehouse partitions."""
 
     paths = sorted(
@@ -439,8 +477,16 @@ def _load_normalized_dataset(dataset_name: str, lakehouse_root: Path) -> pd.Data
         )
     )
     if not paths:
-        return pd.DataFrame()
+        raise ValueError(f"missing normalized dataset {dataset_name}")
     frame = pd.concat([pd.read_parquet(path) for path in paths], ignore_index=True)
+    if frame.empty:
+        raise ValueError(f"empty normalized dataset {dataset_name}")
+    missing_columns = [column for column in required_columns if column not in frame]
+    if missing_columns:
+        raise ValueError(
+            f"normalized dataset {dataset_name} missing columns: "
+            + ", ".join(missing_columns)
+        )
     for column in ("trade_date", "list_date", "delist_date"):
         if column in frame.columns:
             frame[column] = pd.to_datetime(frame[column], errors="coerce").dt.date
@@ -462,12 +508,8 @@ def _snapshot_id(
                 "*.parquet"
             )
         ):
-            stat = path.stat()
-            digest.update(
-                f"{path.relative_to(lakehouse_root).as_posix()}:{stat.st_size}:{stat.st_mtime_ns}".encode(
-                    "utf-8"
-                )
-            )
+            digest.update(path.relative_to(lakehouse_root).as_posix().encode("utf-8"))
+            digest.update(_sha256_file(path).encode("utf-8"))
     return digest.hexdigest()[:16]
 
 
@@ -493,8 +535,48 @@ def _number_text(value: float) -> str:
     return f"{value:.6g}"
 
 
+def _max_abs_or_zero(frame: pd.DataFrame, column: str) -> float:
+    """Return max absolute numeric value for a column, or zero for no data."""
+
+    if frame.empty:
+        return 0.0
+    value = frame[column].dropna().abs().max()
+    return 0.0 if pd.isna(value) else float(value)
+
+
+def _require_positive_columns(
+    frame: pd.DataFrame, columns: list[str], context: str
+) -> None:
+    """Require all values in selected columns to be positive."""
+
+    for column in columns:
+        if not frame[column].gt(0).all():
+            raise ValueError(f"{context} {column} must be positive")
+
+
+def _positive_float(value: object, field_name: str) -> float:
+    """Return value as a positive float or raise a diagnostic error."""
+
+    if pd.isna(value):
+        raise ValueError(f"{field_name} must be positive")
+    number = float(value)
+    if number <= 0:
+        raise ValueError(f"{field_name} must be positive")
+    return number
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the SHA-256 hash of one file."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _git_commit() -> str | None:
-    """Return the current git commit hash if the repository is available."""
+    """Return the current git commit hash and dirty marker if available."""
 
     try:
         completed = subprocess.run(
@@ -505,7 +587,18 @@ def _git_commit() -> str | None:
         )
     except (OSError, subprocess.CalledProcessError):
         return None
-    return completed.stdout.strip() or None
+    commit = completed.stdout.strip()
+    if not commit:
+        return None
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout.strip():
+        return f"{commit}-dirty"
+    return commit
 
 
 if __name__ == "__main__":

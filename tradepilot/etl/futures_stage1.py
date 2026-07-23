@@ -46,16 +46,23 @@ class RollGap:
     """Naive roll gap on the selected switch date."""
 
     trade_date: date
+    previous_trade_date: date
     roll_from: str
     roll_to: str
+    previous_old_close: float
+    previous_old_settle: float
     old_close: float
     new_close: float
     close_gap: float
     close_gap_pct: float
+    naive_series_close_gap: float
+    naive_series_close_gap_pct: float
     old_settle: float
     new_settle: float
     settle_gap: float
     settle_gap_pct: float
+    naive_series_settle_gap: float
+    naive_series_settle_gap_pct: float
 
 
 @dataclass(frozen=True)
@@ -147,10 +154,32 @@ def build_stage1_report(
     if window_days < 1:
         raise ValueError("window_days must be positive")
     root_code = root_code.strip().upper()
-    mapping = _load_normalized_dataset("market.futures_mapping", lakehouse_root)
-    daily = _load_normalized_dataset("market.futures_contract_daily", lakehouse_root)
+    mapping = _load_normalized_dataset(
+        "market.futures_mapping",
+        lakehouse_root,
+        required_columns=["root_code", "trade_date", "active_contract"],
+    )
+    daily = _load_normalized_dataset(
+        "market.futures_contract_daily",
+        lakehouse_root,
+        required_columns=[
+            "contract_code",
+            "trade_date",
+            "close",
+            "settle",
+            "volume",
+            "oi",
+        ],
+    )
     instruments = _load_normalized_dataset(
-        "reference.futures_instruments", lakehouse_root
+        "reference.futures_instruments",
+        lakehouse_root,
+        required_columns=[
+            "contract_code",
+            "multiplier",
+            "trade_unit",
+            "quote_unit",
+        ],
     )
     root_mapping = (
         mapping[mapping["root_code"].eq(root_code)]
@@ -163,6 +192,7 @@ def build_stage1_report(
     switch_index = _roll_switch_index(root_mapping, roll_date)
     roll_from = str(root_mapping.loc[switch_index - 1, "active_contract"])
     roll_to = str(root_mapping.loc[switch_index, "active_contract"])
+    previous_trade_date = root_mapping.loc[switch_index - 1, "trade_date"]
     window_mapping = root_mapping.iloc[
         switch_index - window_days : switch_index + window_days + 1
     ].copy()
@@ -181,6 +211,7 @@ def build_stage1_report(
     roll_gap = _build_roll_gap(
         daily=daily,
         roll_date=roll_date,
+        previous_trade_date=previous_trade_date,
         roll_from=roll_from,
         roll_to=roll_to,
     )
@@ -311,32 +342,38 @@ def render_stage1_report(report: Stage1Report) -> str:
         )
     )
     lines.append("")
-    lines.append("## Naive Roll Gap")
+    lines.append("## Roll Gap Audit")
     lines.append("")
     lines.extend(
         _markdown_table(
             headers=[
                 "Date",
+                "Previous date",
                 "Old close",
                 "New close",
-                "Close gap",
-                "Close gap %",
+                "Same-day spread",
+                "Same-day spread %",
+                "Naive series gap",
+                "Naive series gap %",
                 "Old settle",
                 "New settle",
-                "Settle gap",
-                "Settle gap %",
+                "Same-day settle spread",
+                "Naive settle series gap",
             ],
             rows=[
                 [
                     gap.trade_date.isoformat(),
+                    gap.previous_trade_date.isoformat(),
                     _number_text(gap.old_close),
                     _number_text(gap.new_close),
                     _number_text(gap.close_gap),
                     f"{gap.close_gap_pct:.4%}",
+                    _number_text(gap.naive_series_close_gap),
+                    f"{gap.naive_series_close_gap_pct:.4%}",
                     _number_text(gap.old_settle),
                     _number_text(gap.new_settle),
                     _number_text(gap.settle_gap),
-                    f"{gap.settle_gap_pct:.4%}",
+                    _number_text(gap.naive_series_settle_gap),
                 ]
             ],
         )
@@ -350,11 +387,25 @@ def render_stage1_report(report: Stage1Report) -> str:
     )
     lines.append("")
     lines.append(
-        f"天真拼接会在 {gap.trade_date.isoformat()} 从 `{gap.roll_from}` 的 close "
-        f"`{_number_text(gap.old_close)}` 跳到 `{gap.roll_to}` 的 close "
-        f"`{_number_text(gap.new_close)}`，形成 `{_number_text(gap.close_gap)}` "
-        f"点、`{gap.close_gap_pct:.4%}` 的假跳空；该跳空来自合约切换价差，"
+        f"同日换月价差为 `{gap.roll_to}` close `{_number_text(gap.new_close)}` "
+        f"减 `{gap.roll_from}` close `{_number_text(gap.old_close)}`，"
+        f"即 `{_number_text(gap.close_gap)}` 点、`{gap.close_gap_pct:.4%}`。"
+        f"真实天真主力序列跳空则是从 {gap.previous_trade_date.isoformat()} "
+        f"`{gap.roll_from}` close `{_number_text(gap.previous_old_close)}` 到 "
+        f"{gap.trade_date.isoformat()} `{gap.roll_to}` close "
+        f"`{_number_text(gap.new_close)}`，形成 "
+        f"`{_number_text(gap.naive_series_close_gap)}` 点、"
+        f"`{gap.naive_series_close_gap_pct:.4%}`；该跳空混合了市场单日变化和合约切换价差，"
         "不能解释为可交易的单日市场收益，也不是实际移仓成本。"
+    )
+    lines.append("")
+    lines.append(
+        "Stage 2 收益口径决策：连续合约同时保留 `close` 与 `settle` 两套复权序列；"
+        "默认绩效、波动、回撤和后续篮子研究冻结使用 `adjusted_close` 计算的 "
+        "`continuous_return`。`settle` 口径作为 `adjusted_settle` / "
+        "`settle_return_audit` 保留，用于审计、结算语义对照和敏感性说明，"
+        "不能在看到绩效后替换主口径。复权公式冻结为比值法后向复权，"
+        "绝对 `roll_gap` 仍保留用于解释换月价差。"
     )
     lines.append("")
     lines.append(
@@ -431,9 +482,14 @@ def _build_window_rows(
 
 
 def _build_roll_gap(
-    *, daily: pd.DataFrame, roll_date: date, roll_from: str, roll_to: str
+    *,
+    daily: pd.DataFrame,
+    roll_date: date,
+    previous_trade_date: date,
+    roll_from: str,
+    roll_to: str,
 ) -> RollGap:
-    """Calculate the naive same-day price gap between old and new contracts."""
+    """Calculate same-day spread and naive series gap for one roll."""
 
     rows = daily[
         daily["trade_date"].eq(roll_date)
@@ -443,24 +499,50 @@ def _build_roll_gap(
         raise ValueError("roll gap requires exactly two same-day contract rows")
     if rows[list(_REQUIRED_DAILY_FIELDS)].isna().any(axis=None):
         raise ValueError("roll gap rows have missing close/settle/volume/oi values")
-    old = rows[rows["contract_code"].eq(roll_from)].iloc[0]
-    new = rows[rows["contract_code"].eq(roll_to)].iloc[0]
-    old_close = float(old["close"])
-    new_close = float(new["close"])
-    old_settle = float(old["settle"])
-    new_settle = float(new["settle"])
+    old_rows = rows[rows["contract_code"].eq(roll_from)]
+    new_rows = rows[rows["contract_code"].eq(roll_to)]
+    if len(old_rows) != 1 or len(new_rows) != 1:
+        raise ValueError(f"roll gap rows are not unique for {roll_from}->{roll_to}")
+    previous_rows = daily[
+        daily["trade_date"].eq(previous_trade_date)
+        & daily["contract_code"].eq(roll_from)
+    ]
+    if len(previous_rows) != 1:
+        raise ValueError(
+            f"previous active row is not unique for {roll_from} {previous_trade_date}"
+        )
+    old = old_rows.iloc[0]
+    new = new_rows.iloc[0]
+    previous = previous_rows.iloc[0]
+    old_close = _positive_float(old["close"], f"{roll_from} close on {roll_date}")
+    new_close = _positive_float(new["close"], f"{roll_to} close on {roll_date}")
+    previous_old_close = _positive_float(
+        previous["close"], f"{roll_from} close on {previous_trade_date}"
+    )
+    old_settle = _positive_float(old["settle"], f"{roll_from} settle on {roll_date}")
+    new_settle = _positive_float(new["settle"], f"{roll_to} settle on {roll_date}")
+    previous_old_settle = _positive_float(
+        previous["settle"], f"{roll_from} settle on {previous_trade_date}"
+    )
     return RollGap(
         trade_date=roll_date,
+        previous_trade_date=previous_trade_date,
         roll_from=roll_from,
         roll_to=roll_to,
+        previous_old_close=previous_old_close,
+        previous_old_settle=previous_old_settle,
         old_close=old_close,
         new_close=new_close,
         close_gap=new_close - old_close,
         close_gap_pct=(new_close / old_close) - 1,
+        naive_series_close_gap=new_close - previous_old_close,
+        naive_series_close_gap_pct=(new_close / previous_old_close) - 1,
         old_settle=old_settle,
         new_settle=new_settle,
         settle_gap=new_settle - old_settle,
         settle_gap_pct=(new_settle / old_settle) - 1,
+        naive_series_settle_gap=new_settle - previous_old_settle,
+        naive_series_settle_gap_pct=(new_settle / previous_old_settle) - 1,
     )
 
 
@@ -470,10 +552,10 @@ def _build_contract_calculation(
     """Build the single-contract sizing calculation for the new active contract."""
 
     rows = instruments[instruments["contract_code"].eq(roll_to)]
-    if rows.empty:
-        raise ValueError(f"missing instrument metadata for {roll_to}")
+    if len(rows) != 1:
+        raise ValueError(f"instrument metadata for {roll_to} must be unique")
     row = rows.iloc[0]
-    multiplier = float(row["multiplier"])
+    multiplier = _positive_float(row["multiplier"], f"{roll_to} multiplier")
     one_lot_notional = close * multiplier
     return ContractCalculation(
         contract_code=roll_to,
@@ -487,7 +569,9 @@ def _build_contract_calculation(
     )
 
 
-def _load_normalized_dataset(dataset_name: str, lakehouse_root: Path) -> pd.DataFrame:
+def _load_normalized_dataset(
+    dataset_name: str, lakehouse_root: Path, *, required_columns: list[str]
+) -> pd.DataFrame:
     """Load one normalized parquet dataset from lakehouse partitions."""
 
     paths = sorted(
@@ -496,8 +580,16 @@ def _load_normalized_dataset(dataset_name: str, lakehouse_root: Path) -> pd.Data
         )
     )
     if not paths:
-        return pd.DataFrame()
+        raise ValueError(f"missing normalized dataset {dataset_name}")
     frame = pd.concat([pd.read_parquet(path) for path in paths], ignore_index=True)
+    if frame.empty:
+        raise ValueError(f"empty normalized dataset {dataset_name}")
+    missing_columns = [column for column in required_columns if column not in frame]
+    if missing_columns:
+        raise ValueError(
+            f"normalized dataset {dataset_name} missing columns: "
+            + ", ".join(missing_columns)
+        )
     for column in ("trade_date", "list_date", "delist_date"):
         if column in frame.columns:
             frame[column] = pd.to_datetime(frame[column], errors="coerce").dt.date
@@ -534,12 +626,8 @@ def _snapshot_id(
                 "*.parquet"
             )
         ):
-            stat = path.stat()
-            digest.update(
-                f"{path.relative_to(lakehouse_root).as_posix()}:{stat.st_size}:{stat.st_mtime_ns}".encode(
-                    "utf-8"
-                )
-            )
+            digest.update(path.relative_to(lakehouse_root).as_posix().encode("utf-8"))
+            digest.update(_sha256_file(path).encode("utf-8"))
     return digest.hexdigest()[:16]
 
 
@@ -565,8 +653,29 @@ def _number_text(value: float) -> str:
     return f"{value:.6g}"
 
 
+def _positive_float(value: object, field_name: str) -> float:
+    """Return value as a positive float or raise a diagnostic error."""
+
+    if pd.isna(value):
+        raise ValueError(f"{field_name} must be positive")
+    number = float(value)
+    if number <= 0:
+        raise ValueError(f"{field_name} must be positive")
+    return number
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the SHA-256 hash of one file."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _git_commit() -> str | None:
-    """Return the current git commit hash if the repository is available."""
+    """Return the current git commit hash and dirty marker if available."""
 
     try:
         completed = subprocess.run(
@@ -577,7 +686,18 @@ def _git_commit() -> str | None:
         )
     except (OSError, subprocess.CalledProcessError):
         return None
-    return completed.stdout.strip() or None
+    commit = completed.stdout.strip()
+    if not commit:
+        return None
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout.strip():
+        return f"{commit}-dirty"
+    return commit
 
 
 if __name__ == "__main__":

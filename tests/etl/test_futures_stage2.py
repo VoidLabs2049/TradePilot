@@ -163,6 +163,39 @@ class FuturesStage2Tests(unittest.TestCase):
             "derived/derived.futures_continuous_contract/M.DCE/part-00000.parquet",
         )
 
+    def test_rejects_duplicate_daily_business_key(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage2_fixture(lakehouse_root, duplicate_daily=True)
+
+            with self.assertRaisesRegex(ValueError, "duplicate futures daily rows"):
+                build_continuous_contract(lakehouse_root=lakehouse_root)
+
+    def test_rejects_non_positive_roll_price(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage2_fixture(lakehouse_root, zero_roll_price=True)
+
+            with self.assertRaisesRegex(ValueError, "must be positive"):
+                build_continuous_contract(lakehouse_root=lakehouse_root)
+
+    def test_rejects_missing_required_columns(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_parquet(
+                lakehouse_root,
+                "normalized/market.futures_mapping/2025/01/part-00000.parquet",
+                pd.DataFrame({"root_code": ["M.DCE"]}),
+            )
+            _write_parquet(
+                lakehouse_root,
+                "normalized/market.futures_contract_daily/2025/01/part-00000.parquet",
+                pd.DataFrame({"contract_code": ["M2501.DCE"]}),
+            )
+
+            with self.assertRaisesRegex(ValueError, "missing columns"):
+                build_continuous_contract(lakehouse_root=lakehouse_root)
+
 
 _DATES = [
     date(2025, 1, 1),
@@ -185,7 +218,12 @@ _EXPECTED_CONTRACTS = [
 _EXPECTED_ROLL_FLAGS = [False, False, True, False, False, True, False]
 
 
-def _write_stage2_fixture(lakehouse_root: Path) -> None:
+def _write_stage2_fixture(
+    lakehouse_root: Path,
+    *,
+    duplicate_daily: bool = False,
+    zero_roll_price: bool = False,
+) -> None:
     """Write a two-roll normalized parquet fixture."""
 
     mapping = pd.DataFrame(
@@ -199,7 +237,12 @@ def _write_stage2_fixture(lakehouse_root: Path) -> None:
     daily_rows = [
         _daily_row("M2501.DCE", date(2025, 1, 1), 1000.0, 101),
         _daily_row("M2501.DCE", date(2025, 1, 2), 1010.0, 101),
-        _daily_row("M2501.DCE", date(2025, 1, 3), 1000.0, 101),
+        _daily_row(
+            "M2501.DCE",
+            date(2025, 1, 3),
+            0.0 if zero_roll_price else 1000.0,
+            101,
+        ),
         _daily_row("M2505.DCE", date(2025, 1, 3), 1100.0, 102),
         _daily_row("M2505.DCE", date(2025, 1, 6), 1120.0, 102),
         _daily_row("M2505.DCE", date(2025, 1, 7), 1130.0, 102),
@@ -207,6 +250,8 @@ def _write_stage2_fixture(lakehouse_root: Path) -> None:
         _daily_row("M2509.DCE", date(2025, 1, 8), 1180.0, 103),
         _daily_row("M2509.DCE", date(2025, 1, 9), 1190.0, 103),
     ]
+    if duplicate_daily:
+        daily_rows.append(_daily_row("M2501.DCE", date(2025, 1, 1), 1000.0, 101))
     _write_parquet(
         lakehouse_root,
         "normalized/market.futures_mapping/2025/01/part-00000.parquet",

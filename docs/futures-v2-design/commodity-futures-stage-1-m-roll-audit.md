@@ -1,8 +1,8 @@
 # TradePilot 商品期货阶段 1：M 单合约与一次换月审计
 
-Generated at: `2026-07-23T06:36:44.122716+00:00`
-Code version: `281f649f36b45c0c97450cd199361dda4ad12304`
-Snapshot id: `43c9b83997546666`
+Generated at: `2026-07-23T09:47:37.685616+00:00`
+Code version: `3c473d984451768c151b2ef9e1e76c4644a11fff-dirty`
+Snapshot id: `a2c7f920e10a5ec1`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 
 ## Scope
@@ -48,17 +48,17 @@ Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 | 2025-04-14 | M2509.DCE | M2505.DCE | 2958 | 2947 | 527661 | 657057 | no |
 | 2025-04-14 | M2509.DCE | M2509.DCE | 3104 | 3097 | 2164045 | 2426884 | yes |
 
-## Naive Roll Gap
+## Roll Gap Audit
 
-| Date | Old close | New close | Close gap | Close gap % | Old settle | New settle | Settle gap | Settle gap % |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2025-04-07 | 2885 | 3056 | 171 | 5.9272% | 2903 | 3079 | 176 | 6.0627% |
+| Date | Previous date | Old close | New close | Same-day spread | Same-day spread % | Naive series gap | Naive series gap % | Old settle | New settle | Same-day settle spread | Naive settle series gap |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2025-04-07 | 2025-04-03 | 2885 | 3056 | 171 | 5.9272% | 191 | 6.6667% | 2903 | 3079 | 176 | 236 |
 
 ## Stage 1 Decision
 
 结论：`pass`。本窗口所有新旧合约审计行均包含 `close/settle/volume/oi`，单合约名义价值和 1% 价格变动盈亏可由原始 `close` 与 `multiplier` 复算。
 
-天真拼接会在 2025-04-07 从 `M2505.DCE` 的 close `2885` 跳到 `M2509.DCE` 的 close `3056`，形成 `171` 点、`5.9272%` 的假跳空；该跳空来自合约切换价差，不能解释为可交易的单日市场收益，也不是实际移仓成本。
+同日换月价差为 `M2509.DCE` close `3056` 减 `M2505.DCE` close `2885`，即 `171` 点、`5.9272%`。真实天真主力序列跳空则是从 2025-04-03 `M2505.DCE` close `2865` 到 2025-04-07 `M2509.DCE` close `3056`，形成 `191` 点、`6.6667%`；该跳空混合了市场单日变化和合约切换价差，不能解释为可交易的单日市场收益，也不是实际移仓成本。
 
 Stage 2 收益口径决策：连续合约同时保留 `close` 与 `settle` 两套复权序列；默认绩效、波动、回撤和后续篮子研究冻结使用 `adjusted_close` 计算的 `continuous_return`。`settle` 口径作为 `adjusted_settle` / `settle_return_audit` 保留，用于审计、结算语义对照和敏感性说明，不能在看到绩效后替换主口径。复权公式冻结为比值法后向复权，绝对 `roll_gap` 仍保留用于解释换月价差。
 

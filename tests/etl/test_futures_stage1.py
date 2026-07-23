@@ -33,6 +33,12 @@ class FuturesStage1Tests(unittest.TestCase):
         self.assertEqual(report.contract_calculation.pnl_for_one_percent_move, 305.6)
         self.assertEqual(report.roll_gap.close_gap, 171.0)
         self.assertAlmostEqual(report.roll_gap.close_gap_pct, 171.0 / 2885.0)
+        self.assertEqual(report.roll_gap.previous_trade_date, date(2025, 4, 3))
+        self.assertEqual(report.roll_gap.previous_old_close, 2804.0)
+        self.assertEqual(report.roll_gap.naive_series_close_gap, 252.0)
+        self.assertAlmostEqual(
+            report.roll_gap.naive_series_close_gap_pct, 3056.0 / 2804.0 - 1
+        )
         self.assertTrue(
             any(
                 row.trade_date == date(2025, 4, 7)
@@ -65,6 +71,7 @@ class FuturesStage1Tests(unittest.TestCase):
         self.assertIn("M2505.DCE", text)
         self.assertIn("M2509.DCE", text)
         self.assertIn("5.9272%", text)
+        self.assertIn("Naive series gap", text)
         self.assertIn("不构建连续合约", text)
 
     def test_rejects_missing_roll_window_core_field(self) -> None:
@@ -75,9 +82,38 @@ class FuturesStage1Tests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing close/settle/volume/oi"):
                 build_stage1_report(lakehouse_root=lakehouse_root)
 
+    def test_rejects_missing_normalized_dataset(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+
+            with self.assertRaisesRegex(
+                ValueError, "missing normalized dataset market.futures_mapping"
+            ):
+                build_stage1_report(lakehouse_root=lakehouse_root)
+
+    def test_rejects_non_positive_roll_price(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage1_fixture(lakehouse_root, zero_roll_price=True)
+
+            with self.assertRaisesRegex(ValueError, "must be positive"):
+                build_stage1_report(lakehouse_root=lakehouse_root)
+
+    def test_rejects_duplicate_instrument_metadata(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage1_fixture(lakehouse_root, duplicate_instrument=True)
+
+            with self.assertRaisesRegex(ValueError, "must be unique"):
+                build_stage1_report(lakehouse_root=lakehouse_root)
+
 
 def _write_stage1_fixture(
-    lakehouse_root: Path, *, missing_volume: bool = False
+    lakehouse_root: Path,
+    *,
+    missing_volume: bool = False,
+    zero_roll_price: bool = False,
+    duplicate_instrument: bool = False,
 ) -> None:
     """Write the minimal normalized parquet fixture for the stage 1 audit."""
 
@@ -118,6 +154,8 @@ def _write_stage1_fixture(
             "delist_date": [date(2025, 9, 14)],
         }
     )
+    if duplicate_instrument:
+        instruments = pd.concat([instruments, instruments], ignore_index=True)
     daily_rows: list[dict[str, object]] = []
     for index, trade_date in enumerate(mapping_dates):
         old_close = 2800.0 + index
@@ -129,17 +167,24 @@ def _write_stage1_fixture(
             ("M2505.DCE", old_close),
             ("M2509.DCE", new_close),
         ]:
+            row_close = (
+                0.0
+                if zero_roll_price
+                and trade_date == date(2025, 4, 7)
+                and contract_code == "M2505.DCE"
+                else close
+            )
             daily_rows.append(
                 {
                     "contract_code": contract_code,
                     "trade_date": trade_date,
-                    "pre_close": close - 3,
-                    "pre_settle": close - 2,
-                    "open": close - 1,
-                    "high": close + 8,
-                    "low": close - 8,
-                    "close": close,
-                    "settle": close + 1,
+                    "pre_close": row_close - 3,
+                    "pre_settle": row_close - 2,
+                    "open": row_close - 1,
+                    "high": row_close + 8,
+                    "low": row_close - 8,
+                    "close": row_close,
+                    "settle": row_close + 1,
                     "change1": 3.0,
                     "change2": 2.0,
                     "volume": (
