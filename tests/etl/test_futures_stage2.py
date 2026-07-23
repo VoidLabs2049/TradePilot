@@ -112,6 +112,23 @@ class FuturesStage2Tests(unittest.TestCase):
         )
         self.assertAlmostEqual(frame.loc[2, "settle_return_audit"], 1001.0 / 1011.0 - 1)
 
+    def test_roll_day_uses_only_later_roll_adjustments(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage2_fixture(lakehouse_root)
+
+            frame = build_continuous_contract(lakehouse_root=lakehouse_root)
+
+        first_roll_date = date(2025, 1, 3)
+        second_roll_ratio = 1180.0 / 1130.0
+        first_roll_row = frame[frame["trade_date"].eq(first_roll_date)].iloc[0]
+        self.assertAlmostEqual(
+            first_roll_row["cumulative_roll_adjustment"], second_roll_ratio
+        )
+        self.assertAlmostEqual(
+            first_roll_row["adjusted_close"], 1100.0 * second_roll_ratio
+        )
+
     def test_writes_derived_parquet_and_report(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

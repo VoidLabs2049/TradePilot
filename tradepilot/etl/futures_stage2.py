@@ -182,11 +182,11 @@ def build_continuous_contract(
         frame.loc[mask, "roll_ratio"] = row["close_ratio"]
         frame.loc[mask, "settle_roll_ratio"] = row["settle_ratio"]
 
-    frame["cumulative_roll_adjustment"] = frame["trade_date"].map(
-        lambda value: _future_ratio_product(value, roll_rows, "close_ratio")
+    frame["cumulative_roll_adjustment"] = _future_ratio_products(
+        frame["trade_date"], roll_rows, "close_ratio"
     )
-    frame["cumulative_settle_roll_adjustment"] = frame["trade_date"].map(
-        lambda value: _future_ratio_product(value, roll_rows, "settle_ratio")
+    frame["cumulative_settle_roll_adjustment"] = _future_ratio_products(
+        frame["trade_date"], roll_rows, "settle_ratio"
     )
     frame["adjusted_close"] = frame["raw_close"] * frame["cumulative_roll_adjustment"]
     frame["adjusted_settle"] = (
@@ -454,16 +454,26 @@ def _build_roll_rows(
     return rolls
 
 
-def _future_ratio_product(
-    trade_date: date, roll_rows: list[dict[str, Any]], key: str
-) -> float:
-    """Multiply roll ratios for roll dates after the requested trade date."""
+def _future_ratio_products(
+    trade_dates: pd.Series, roll_rows: list[dict[str, Any]], key: str
+) -> pd.Series:
+    """Return future roll-ratio products for each trade date."""
 
-    product = 1.0
-    for row in roll_rows:
-        if row["trade_date"] > trade_date:
-            product *= float(row[key])
-    return product
+    if not roll_rows:
+        return pd.Series([1.0] * len(trade_dates), index=trade_dates.index)
+
+    rolls = pd.DataFrame(roll_rows).sort_values("trade_date").reset_index(drop=True)
+    future_products = rolls[key].astype(float).iloc[::-1].cumprod().iloc[
+        ::-1
+    ].tolist() + [1.0]
+    roll_dates = pd.to_datetime(rolls["trade_date"]).to_numpy()
+    positions = roll_dates.searchsorted(
+        pd.to_datetime(trade_dates).to_numpy(), side="right"
+    )
+    return pd.Series(
+        [future_products[int(position)] for position in positions],
+        index=trade_dates.index,
+    )
 
 
 def _load_normalized_dataset(
