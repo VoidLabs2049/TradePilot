@@ -122,7 +122,9 @@
 | `raw_close` | 主力合约原始收盘价 |
 | `raw_settle` | 主力合约原始结算价 |
 | `adjusted_close` | 后向复权连续价格 |
-| `continuous_return` | 连续收益 |
+| `adjusted_settle` | 后向复权连续结算价，用于审计和结算语义对照 |
+| `continuous_return` | 连续收益；绩效主口径冻结为 `adjusted_close` 计算 |
+| `settle_return_audit` | 由 `adjusted_settle` 计算的对照收益，不作为默认绩效 |
 | `is_roll_day` | 是否换月 |
 | `roll_from` / `roll_to` | 新旧合约 |
 | `roll_gap` | 换月调整量 |
@@ -132,6 +134,8 @@
 ### 7.2 构建原则
 
 - `active_contract` 优先遵循冻结的 `fut_mapping`，`vol` 和 `oi` 只做交叉验证。
+- Stage 2 同时保留 `close` 与 `settle` 两套连续口径；默认绩效、波动、回撤和后续篮子研究冻结使用 `adjusted_close` / `continuous_return`。
+- `adjusted_settle` / `settle_return_audit` 仅用于审计、结算语义对照和敏感性说明，不能在看到绩效后替换主口径。
 - 复权使用预先冻结的公式，查看回测结果后不得切换算法。
 - 后向复权仅用于研究收益，不把复权后的绝对价格解释为可交易合约价格。
 - 保留天真拼接序列用于诊断，但禁止用于绩效计算。
