@@ -60,6 +60,6 @@ Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 
 天真拼接会在 2025-04-07 从 `M2505.DCE` 的 close `2885` 跳到 `M2509.DCE` 的 close `3056`，形成 `171` 点、`5.9272%` 的假跳空；该跳空来自合约切换价差，不能解释为可交易的单日市场收益，也不是实际移仓成本。
 
-Stage 2 收益口径决策：连续合约同时保留 `close` 与 `settle` 两套复权序列；默认绩效、波动、回撤和后续篮子研究冻结使用 `adjusted_close` 计算的 `continuous_return`。`settle` 口径作为 `adjusted_settle` / `settle_return_audit` 保留，用于审计、结算语义对照和敏感性说明，不能在看到绩效后替换主口径。
+Stage 2 收益口径决策：连续合约同时保留 `close` 与 `settle` 两套复权序列；默认绩效、波动、回撤和后续篮子研究冻结使用 `adjusted_close` 计算的 `continuous_return`。`settle` 口径作为 `adjusted_settle` / `settle_return_audit` 保留，用于审计、结算语义对照和敏感性说明，不能在看到绩效后替换主口径。复权公式冻结为比值法后向复权，绝对 `roll_gap` 仍保留用于解释换月价差。
 
 后续 Stage 2 若构建连续合约，应继续保留新旧合约价格、换月调整量和来源批次，并禁止用天真拼接序列计算绩效。

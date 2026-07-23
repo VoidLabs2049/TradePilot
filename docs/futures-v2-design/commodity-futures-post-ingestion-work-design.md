@@ -136,6 +136,7 @@
 - `active_contract` 优先遵循冻结的 `fut_mapping`，`vol` 和 `oi` 只做交叉验证。
 - Stage 2 同时保留 `close` 与 `settle` 两套连续口径；默认绩效、波动、回撤和后续篮子研究冻结使用 `adjusted_close` / `continuous_return`。
 - `adjusted_settle` / `settle_return_audit` 仅用于审计、结算语义对照和敏感性说明，不能在看到绩效后替换主口径。
+- Stage 2 复权公式冻结为比值法后向复权：`adjusted_close` 使用 `new_close / old_close`，`adjusted_settle` 使用 `new_settle / old_settle` 调整换月日之前的历史段；绝对 `roll_gap` 仍保留用于解释换月价差。
 - 复权使用预先冻结的公式，查看回测结果后不得切换算法。
 - 后向复权仅用于研究收益，不把复权后的绝对价格解释为可交易合约价格。
 - 保留天真拼接序列用于诊断，但禁止用于绩效计算。
