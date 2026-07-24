@@ -36,10 +36,17 @@ class FuturesStage23BatchTests(unittest.TestCase):
                 results=results,
             )
             stage2_report_exists = (
-                docs_dir / "commodity-futures-stage-2-m-continuous-contract-report.md"
+                docs_dir
+                / "reports"
+                / "stage-2"
+                / "commodity-futures-stage-2-m-continuous-contract-report.md"
             ).exists()
             blocked_card = (
-                docs_dir / "commodity-futures-stage-3-ta-zce-quality-card.md"
+                docs_dir
+                / "reports"
+                / "stage-3"
+                / "quality-cards"
+                / "commodity-futures-stage-3-ta-zce-quality-card.md"
             ).read_text(encoding="utf-8")
 
         self.assertEqual([result.root_code for result in results], ["M.DCE", "TA.ZCE"])

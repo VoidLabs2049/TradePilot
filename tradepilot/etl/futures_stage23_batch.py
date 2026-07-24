@@ -32,8 +32,12 @@ NON_GOLD_FUTURES_ROOT_CODES = (
     "TA.ZCE",
 )
 _DEFAULT_DOCS_DIR = Path("docs/futures-v2-design")
+_STAGE2_REPORT_DIR = Path("reports/stage-2")
+_QUALITY_CARD_DIR = Path("reports/stage-3/quality-cards")
 _DEFAULT_SUMMARY_OUTPUT = (
-    _DEFAULT_DOCS_DIR / "commodity-futures-stage-3-quality-summary.md"
+    _DEFAULT_DOCS_DIR
+    / _QUALITY_CARD_DIR
+    / "commodity-futures-stage-3-quality-summary.md"
 )
 _ROOT_START_DATE_OVERRIDES = {
     "TA.ZCE": date(2008, 9, 16),
@@ -326,18 +330,27 @@ def _summary_row(result: Stage23BatchResult) -> list[str]:
 def _stage2_report_path(*, docs_dir: Path, root_code: str) -> Path:
     """Return the Stage 2 report path for one root."""
 
+    stage2_report_dir = docs_dir / _STAGE2_REPORT_DIR
     if root_code == "M.DCE":
-        return docs_dir / "commodity-futures-stage-2-m-continuous-contract-report.md"
-    return docs_dir / f"commodity-futures-stage-2-{_root_slug(root_code)}-report.md"
+        return (
+            stage2_report_dir
+            / "commodity-futures-stage-2-m-continuous-contract-report.md"
+        )
+    return (
+        stage2_report_dir
+        / f"commodity-futures-stage-2-{_root_slug(root_code)}-report.md"
+    )
 
 
 def _stage3_report_path(*, docs_dir: Path, root_code: str) -> Path:
     """Return the Stage 3 quality-card path for one root."""
 
+    quality_card_dir = docs_dir / _QUALITY_CARD_DIR
     if root_code == "M.DCE":
-        return docs_dir / "commodity-futures-stage-3-m-quality-card.md"
+        return quality_card_dir / "commodity-futures-stage-3-m-quality-card.md"
     return (
-        docs_dir / f"commodity-futures-stage-3-{_root_slug(root_code)}-quality-card.md"
+        quality_card_dir
+        / f"commodity-futures-stage-3-{_root_slug(root_code)}-quality-card.md"
     )
 
 

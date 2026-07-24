@@ -2,7 +2,7 @@
 
 本文面向准备参与 TradePilot 商品期货研究、数据接入和回测的开发者。目标不是教授短线交易，而是建立一套足以正确理解数据、构造收益和评估 commodity sleeve 的基础知识。
 
-本文覆盖候选池 `AU / AL / CU / RB / I / M / P / SC / TA`。数据接入后的总体工作顺序和阶段门槛见[商品期货数据接入后续工作总设计](./commodity-futures-post-ingestion-work-design.md)。连续合约的工程规则、商品 Sleeve 设计和模拟盘前缺口均复用 V1 的既有 canonical 文档，进入对应阶段时直接对照这些文档执行。
+本文覆盖候选池 `AU / AL / CU / RB / I / M / P / SC / TA`。数据接入后的总体工作顺序和阶段门槛见[商品期货数据接入后续工作总设计](../designs/commodity-futures-post-ingestion-work-design.md)。连续合约的工程规则、商品 Sleeve 设计和模拟盘前缺口均复用 V1 的既有 canonical 文档，进入对应阶段时直接对照这些文档执行。
 
 > 本文中的交易单位和最小变动价位用于学习和估算，不应作为下单参数。交易所可以修订合约、保证金、涨跌停板、手续费和限仓规则；使用时必须以交易所最新合约文本、公告和 Tushare `fut_basic` 为准。
 

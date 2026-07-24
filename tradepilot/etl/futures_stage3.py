@@ -147,7 +147,10 @@ class FuturesQualityCard:
 @click.option(
     "--output",
     type=click.Path(path_type=Path, dir_okay=False),
-    default=Path("docs/futures-v2-design/commodity-futures-stage-3-m-quality-card.md"),
+    default=Path(
+        "docs/futures-v2-design/reports/stage-3/quality-cards/"
+        "commodity-futures-stage-3-m-quality-card.md"
+    ),
     show_default=True,
 )
 def main(

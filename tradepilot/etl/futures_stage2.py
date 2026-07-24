@@ -72,7 +72,8 @@ class Stage2Report:
     "--output",
     type=click.Path(path_type=Path, dir_okay=False),
     default=Path(
-        "docs/futures-v2-design/commodity-futures-stage-2-m-continuous-contract-report.md"
+        "docs/futures-v2-design/reports/stage-2/"
+        "commodity-futures-stage-2-m-continuous-contract-report.md"
     ),
     show_default=True,
 )
