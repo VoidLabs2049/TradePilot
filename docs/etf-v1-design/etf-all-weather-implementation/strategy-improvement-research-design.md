@@ -1,6 +1,6 @@
 # ETF 全天候策略优化阶段计划
 
-本阶段基线评估见 [ETF 全天候 V1 阶段研究报告](../etf-all-weather-reports/etf-all-weather-stage-research-report-v1.md)。版本化阶段报告统一归档在独立的 `docs/etf-all-weather-reports/` 目录，本文件保留执行计划和方法约束。
+本阶段基线评估见 [ETF 全天候 V1 阶段研究报告](../etf-all-weather-reports/etf-all-weather-stage-research-report-v1.md)。版本化阶段报告统一归档在独立的 `docs/etf-v1-design/etf-all-weather-reports/` 目录，本文件保留执行计划和方法约束。
 
 ## 1. 本阶段结论先行
 

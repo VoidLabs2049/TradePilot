@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "stage": 3,
+  "generated_at": "2026-07-24T09:49:03.494823+00:00",
+  "code_version": "5d0928ca0b5dbe6b6d336b5bdaff3cbc63c25aa8",
+  "snapshot_id": "8981175f06e1f095",
+  "lakehouse_root": "/home/nixos/workspace/TradePilot/data/lakehouse",
+  "root_code": "AU.SHF",
+  "continuous_contract_sha256": "6c62030127b899f17212451ab5530be9baf24c1492663f7ccd3451a335a1f684",
+  "decision": "accept",
+  "decision_reasons": [
+    "meets fixed Stage 3 quality-card thresholds"
+  ],
+  "caveats": [],
+  "row_count": 4501,
+  "start_date": "2008-01-09",
+  "end_date": "2026-07-20",
+  "return_count": 4500,
+  "return_missing_count": 1,
+  "roll_count": 54,
+  "abnormal_roll_count": 0,
+  "annualized_return": 0.0640155307113508,
+  "annualized_volatility": 0.1764856838008474,
+  "max_drawdown": -0.4749126694943151
+}

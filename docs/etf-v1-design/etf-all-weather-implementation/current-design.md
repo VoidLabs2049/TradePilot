@@ -95,7 +95,7 @@ strategy_context
 - normalized Parquet 分区重写与去重
 - dependency preflight、validation gating、watermark advancement
 
-关键结果记录在 `docs/stage-b-ingestion-real-data-test-report.md`。
+关键结果记录在 `docs/etf-v1-design/stage-b-ingestion-real-data-test-report.md`。
 
 ### Stage C：ETF 全天候 v2 数据基座
 
@@ -123,7 +123,7 @@ strategy_context
 
 `513100.SH` 是在上交所以人民币交易的 QDII ETF，pipeline 直接使用境内二级市场价格，不额外换算美元。该价格会同时反映标的指数、汇率、境内外交易日错位、QDII 额度与供需溢价；当前基金存在暂停申购和二级市场溢价风险，因此这些差异属于策略与执行 caveat，不能把场内价格简单解释为无摩擦的 Nasdaq 100 指数收益。
 
-关键结果记录在 `docs/stage-c-data-backfill-report.md`。
+关键结果记录在 `docs/etf-v1-design/stage-c-data-backfill-report.md`。
 
 ### Stage D：月度调仓快照
 
@@ -239,7 +239,7 @@ strategy_context
 
 已定位历史区间 `unavailable` 的主因：早期月份 market regime 已可用，但 `macro_rates_context_status = unavailable`，Stage G 旧规则把整个 strategy context 硬降为 `unavailable`，risk budget 随之降级。现已把 market-only 且市场上下文完整的场景调整为 `partial / degraded_research`，risk budget 对应输出 `partial`，并用较低 confidence cap 约束主动 tilt。
 
-本地已补回 `macro.slow_fields`、`rates.daily_rates`、`rates.lpr` 的 2025-01 到 2026-05 历史数据；`rates.gov_curve_points` 原因是 Tushare `yc_cb` 接口权限不足，当前 pipeline 已增加 AKShare `bond_china_yield` fallback，需重跑历史同步后补齐本地 lakehouse。当前 risk budget 状态为 75 行 `partial`、10 行 `complete`。人工检查记录见 `docs/etf-all-weather-implementation/risk-budget-manual-check-2026-07-06.md`。
+本地已补回 `macro.slow_fields`、`rates.daily_rates`、`rates.lpr` 的 2025-01 到 2026-05 历史数据；`rates.gov_curve_points` 原因是 Tushare `yc_cb` 接口权限不足，当前 pipeline 已增加 AKShare `bond_china_yield` fallback，需重跑历史同步后补齐本地 lakehouse。当前 risk budget 状态为 75 行 `partial`、10 行 `complete`。人工检查记录见 `docs/etf-v1-design/etf-all-weather-implementation/risk-budget-manual-check-2026-07-06.md`。
 
 ### Stage J：目标权重 artifact
 
@@ -251,7 +251,7 @@ strategy_context
 - 输出 raw target weight、constrained target weight、target weight、状态、来源日期和 explainability notes。
 - 已通过前置 backtest kernel 消费验证。
 
-人工检查记录见 `docs/etf-all-weather-implementation/target-weight-manual-check-2026-07-06.md`。当前 85 行目标权重中 10 行为 `complete`，75 行为 `partial`，0 行为 `unavailable`。其中 `partial` 主要来自上游 market-only risk budget 降级。
+人工检查记录见 `docs/etf-v1-design/etf-all-weather-implementation/target-weight-manual-check-2026-07-06.md`。当前 85 行目标权重中 10 行为 `complete`，75 行为 `partial`，0 行为 `unavailable`。其中 `partial` 主要来自上游 market-only risk budget 降级。
 
 `2025-03-20` 曾有 5 行 `unavailable`。复核后确认根因不是波动率窗口不足，也不是状态传递仍为 `unavailable`，而是 risk budget 的 5 个 `tilted_budget` 四舍五入后合计为 `1.0000010000000001`，略超 target weight 上游校验的 `1e-6` 容忍线，导致整组预算被拒绝。现已把 risk budget rounding drift 固定压到最后一个 sleeve，重建后该期 target weight 为 `partial`。
 
