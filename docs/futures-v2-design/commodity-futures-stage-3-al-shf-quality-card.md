@@ -1,8 +1,8 @@
-# TradePilot 商品期货阶段 3：M.DCE 单品种质量卡
+# TradePilot 商品期货阶段 3：AL.SHF 单品种质量卡
 
-Generated at: `2026-07-24T06:09:46.375750+00:00`
+Generated at: `2026-07-24T06:09:30.500199+00:00`
 Code version: `ea10455f0834aba1fb62a317d96d77f6306bcfcd-dirty`
-Snapshot id: `5ad7c1c6d3918820`
+Snapshot id: `e6c11addb2a1fd23`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 
 ## Scope
@@ -13,41 +13,42 @@ Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 
 | Root | Rows | Window | Return rows | Missing returns | Missing rate | Duplicate dates |
 | --- | --- | --- | --- | --- | --- | --- |
-| M.DCE | 5000 | 2005-12-20 .. 2026-07-20 | 4999 | 1 | 0.0200% | 0 |
+| AL.SHF | 5000 | 2005-12-20 .. 2026-07-20 | 4999 | 1 | 0.0200% | 0 |
 
 ## Roll And Liquidity
 
 | Rolls | Abnormal roll returns | Avg holding days | Median volume | Median OI | Zero volume days | Zero OI days |
 | --- | --- | --- | --- | --- | --- | --- |
-| 62 | 0 | 79.3651 | 969250 | 1386513 | 0 | 0 |
+| 244 | 1 | 20.4082 | 113527 | 138608 | 1 | 0 |
 
 ## Return And Drawdown
 
 | Ann return | Ann volatility | Max drawdown | Max daily gain | Max daily loss | Extreme days |
 | --- | --- | --- | --- | --- | --- |
-| 7.3066% | 19.9699% | -47.1680% | 7.6377% | -5.6959% | 13 |
+| 0.0331% | 17.1178% | -69.2236% | 5.5064% | -6.3065% | 17 |
 
 ## Integer-Lot Sizing Hint
 
 | Latest contract | Latest close | Multiplier | Trade unit | Quote unit | One-lot notional | Target notional | Nearest lots | Lot error | Lot error % |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| M2609.DCE | 3129 | 10 | 吨 | 人民币元/吨 | 31290 | 50000 | 2 | 12580 | 25.1600% |
+| AL2609.SHF | 23010 | 5 | 吨 | 人民币元/吨 | 115050 | 50000 | 1 | 65050 | 130.1000% |
 
 ## Peer Correlation
 
 | Peer | Correlation |
 | --- | --- |
-| AL.SHF | 0.2612 |
-| CU.SHF | 0.3165 |
-| I.DCE | 0.1566 |
-| P.DCE | 0.4612 |
-| RB.SHF | 0.1960 |
-| SC.INE | 0.1710 |
-| TA.ZCE | 0.2388 |
+| CU.SHF | 0.5809 |
+| I.DCE | 0.3148 |
+| M.DCE | 0.2612 |
+| P.DCE | 0.3397 |
+| RB.SHF | 0.3615 |
+| SC.INE | 0.2431 |
+| TA.ZCE | 0.3234 |
 
 ## Stage 3 Decision
 
-结论：`accept`。
-- meets fixed Stage 3 quality-card thresholds
+结论：`observe`。
+- abnormal roll return days: 1
+- zero volume days: 1
 
 该结论只说明单品种是否可进入后续候选池讨论；正式商品篮子仍需在所有候选逐一质量卡完成后冻结权重规则。

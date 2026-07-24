@@ -12,7 +12,9 @@ from click.testing import CliRunner
 
 from tradepilot.etl.futures_stage2 import (
     build_continuous_contract,
+    build_stage2_report,
     main,
+    render_stage2_report,
     write_continuous_contract,
 )
 
@@ -128,6 +130,29 @@ class FuturesStage2Tests(unittest.TestCase):
         self.assertAlmostEqual(
             first_roll_row["adjusted_close"], 1100.0 * second_roll_ratio
         )
+
+    def test_start_date_truncates_before_roll_audit(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage2_fixture(lakehouse_root)
+
+            frame = build_continuous_contract(
+                lakehouse_root=lakehouse_root,
+                start_date=date(2025, 1, 3),
+            )
+            report = build_stage2_report(
+                frame=frame,
+                lakehouse_root=lakehouse_root,
+                root_code="M.DCE",
+                output_path=lakehouse_root / "derived" / "part-00000.parquet",
+                start_date=date(2025, 1, 3),
+            )
+            text = render_stage2_report(report, frame)
+
+        self.assertEqual(frame["trade_date"].iloc[0], date(2025, 1, 3))
+        self.assertEqual(frame["active_contract"].iloc[0], "M2505.DCE")
+        self.assertEqual(int(frame["is_roll_day"].sum()), 1)
+        self.assertIn("样本截断", text)
 
     def test_writes_derived_parquet_and_report(self) -> None:
         with TemporaryDirectory() as temp_dir:

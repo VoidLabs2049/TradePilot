@@ -1,14 +1,14 @@
-# TradePilot 商品期货阶段 2：M 连续合约构建报告
+# TradePilot 商品期货阶段 2：M.DCE 连续合约构建报告
 
-Generated at: `2026-07-23T09:47:37.592786+00:00`
-Code version: `3c473d984451768c151b2ef9e1e76c4644a11fff-dirty`
-Snapshot id: `69bd122f96970e12`
+Generated at: `2026-07-24T06:09:45.499513+00:00`
+Code version: `ea10455f0834aba1fb62a317d96d77f6306bcfcd-dirty`
+Snapshot id: `9c2ac08c1a1ffed7`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 Output path: `/home/nixos/workspace/TradePilot/data/lakehouse/derived/derived.futures_continuous_contract/M.DCE/part-00000.parquet`
 
 ## Scope
 
-本报告只覆盖 Stage 2 的最小样本：豆粕 `M.DCE` 主力连续合约。不扩展其他品种，不构建商品篮子，不做 ETF 基线增量回测。
+本报告只覆盖 Stage 2 的单品种主力连续合约：`M.DCE`。不扩展其他品种，不构建商品篮子，不做 ETF 基线增量回测。
 
 ## Frozen Method
 

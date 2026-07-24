@@ -1,8 +1,8 @@
-# TradePilot 商品期货阶段 3：M.DCE 单品种质量卡
+# TradePilot 商品期货阶段 3：RB.SHF 单品种质量卡
 
-Generated at: `2026-07-24T06:09:46.375750+00:00`
+Generated at: `2026-07-24T06:09:40.659383+00:00`
 Code version: `ea10455f0834aba1fb62a317d96d77f6306bcfcd-dirty`
-Snapshot id: `5ad7c1c6d3918820`
+Snapshot id: `5e1611d154f96616`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 
 ## Scope
@@ -13,37 +13,37 @@ Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 
 | Root | Rows | Window | Return rows | Missing returns | Missing rate | Duplicate dates |
 | --- | --- | --- | --- | --- | --- | --- |
-| M.DCE | 5000 | 2005-12-20 .. 2026-07-20 | 4999 | 1 | 0.0200% | 0 |
+| RB.SHF | 4206 | 2009-03-27 .. 2026-07-20 | 4205 | 1 | 0.0238% | 0 |
 
 ## Roll And Liquidity
 
 | Rolls | Abnormal roll returns | Avg holding days | Median volume | Median OI | Zero volume days | Zero OI days |
 | --- | --- | --- | --- | --- | --- | --- |
-| 62 | 0 | 79.3651 | 969250 | 1386513 | 0 | 0 |
+| 55 | 0 | 75.1071 | 1.89161e+06 | 1.71359e+06 | 0 | 0 |
 
 ## Return And Drawdown
 
 | Ann return | Ann volatility | Max drawdown | Max daily gain | Max daily loss | Extreme days |
 | --- | --- | --- | --- | --- | --- |
-| 7.3066% | 19.9699% | -47.1680% | 7.6377% | -5.6959% | 13 |
+| -0.1368% | 22.0318% | -79.1771% | 6.8790% | -8.1032% | 37 |
 
 ## Integer-Lot Sizing Hint
 
 | Latest contract | Latest close | Multiplier | Trade unit | Quote unit | One-lot notional | Target notional | Nearest lots | Lot error | Lot error % |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| M2609.DCE | 3129 | 10 | 吨 | 人民币元/吨 | 31290 | 50000 | 2 | 12580 | 25.1600% |
+| RB2610.SHF | 3096 | 10 | 吨 | 人民币元/吨 | 30960 | 50000 | 2 | 11920 | 23.8400% |
 
 ## Peer Correlation
 
 | Peer | Correlation |
 | --- | --- |
-| AL.SHF | 0.2612 |
-| CU.SHF | 0.3165 |
-| I.DCE | 0.1566 |
-| P.DCE | 0.4612 |
-| RB.SHF | 0.1960 |
-| SC.INE | 0.1710 |
-| TA.ZCE | 0.2388 |
+| AL.SHF | 0.3615 |
+| CU.SHF | 0.4044 |
+| I.DCE | 0.7341 |
+| M.DCE | 0.1960 |
+| P.DCE | 0.2737 |
+| SC.INE | 0.1527 |
+| TA.ZCE | 0.3273 |
 
 ## Stage 3 Decision
 

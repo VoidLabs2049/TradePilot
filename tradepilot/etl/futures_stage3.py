@@ -268,7 +268,9 @@ def build_quality_card(
     )
 
 
-def render_quality_card(card: FuturesQualityCard) -> str:
+def render_quality_card(
+    card: FuturesQualityCard, *, caveats: list[str] | None = None
+) -> str:
     """Render one Stage 3 quality card as markdown."""
 
     lines: list[str] = []
@@ -285,6 +287,12 @@ def render_quality_card(card: FuturesQualityCard) -> str:
         "本报告只覆盖 Stage 3 的单品种质量与可研究性筛选；不构建商品篮子，"
         "不运行 ETF 基线增量回测。绩效口径沿用 Stage 2 冻结的 `continuous_return`。"
     )
+    if caveats:
+        lines.append("")
+        lines.append("## Input Caveats")
+        lines.append("")
+        for caveat in caveats:
+            lines.append(f"- {caveat}")
     lines.append("")
     lines.append("## History And Continuity")
     lines.append("")

@@ -50,6 +50,7 @@ class Stage2Report:
     max_roll_return_abs: float
     first_roll_date: date | None
     last_roll_date: date | None
+    start_date_override: date | None = None
 
 
 @click.command()
@@ -61,6 +62,13 @@ class Stage2Report:
 )
 @click.option("--root-code", default=_DEFAULT_ROOT_CODE, show_default=True)
 @click.option(
+    "--start-date",
+    "start_date_text",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Optional inclusive trade-date start for an explicitly truncated sample.",
+)
+@click.option(
     "--output",
     type=click.Path(path_type=Path, dir_okay=False),
     default=Path(
@@ -68,12 +76,19 @@ class Stage2Report:
     ),
     show_default=True,
 )
-def main(lakehouse_root: Path, root_code: str, output: Path) -> None:
+def main(
+    lakehouse_root: Path,
+    root_code: str,
+    start_date_text: datetime | None,
+    output: Path,
+) -> None:
     """Build the stage 2 M continuous contract and write its audit report."""
 
+    start_date = None if start_date_text is None else start_date_text.date()
     frame = build_continuous_contract(
         lakehouse_root=lakehouse_root,
         root_code=root_code,
+        start_date=start_date,
     )
     write_result = write_continuous_contract(
         frame=frame,
@@ -85,6 +100,7 @@ def main(lakehouse_root: Path, root_code: str, output: Path) -> None:
         lakehouse_root=lakehouse_root,
         root_code=root_code,
         output_path=write_result.path,
+        start_date=start_date,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_stage2_report(report, frame), encoding="utf-8")
@@ -95,7 +111,10 @@ def main(lakehouse_root: Path, root_code: str, output: Path) -> None:
 
 
 def build_continuous_contract(
-    *, lakehouse_root: Path, root_code: str = _DEFAULT_ROOT_CODE
+    *,
+    lakehouse_root: Path,
+    root_code: str = _DEFAULT_ROOT_CODE,
+    start_date: date | None = None,
 ) -> pd.DataFrame:
     """Build one ratio back-adjusted continuous contract for a root symbol."""
 
@@ -123,6 +142,9 @@ def build_continuous_contract(
         .sort_values("trade_date")
         .reset_index(drop=True)
     )
+    if start_date is not None:
+        root_mapping = root_mapping[root_mapping["trade_date"].ge(start_date)]
+        root_mapping = root_mapping.reset_index(drop=True)
     if root_mapping.empty:
         raise ValueError(f"no mapping rows for {root_code}")
     if root_mapping.duplicated(["root_code", "trade_date"]).any():
@@ -251,6 +273,7 @@ def build_stage2_report(
     lakehouse_root: Path,
     root_code: str,
     output_path: Path,
+    start_date: date | None = None,
 ) -> Stage2Report:
     """Build summary metrics for the continuous-contract artifact."""
 
@@ -280,6 +303,7 @@ def build_stage2_report(
         max_roll_return_abs=_max_abs_or_zero(roll_frame, "continuous_return"),
         first_roll_date=None if roll_frame.empty else roll_frame["trade_date"].min(),
         last_roll_date=None if roll_frame.empty else roll_frame["trade_date"].max(),
+        start_date_override=start_date,
     )
 
 
@@ -289,7 +313,7 @@ def render_stage2_report(report: Stage2Report, frame: pd.DataFrame) -> str:
     roll_rows = frame[frame["is_roll_day"].eq(True)].copy()
     sample_roll_rows = roll_rows.head(10)
     lines: list[str] = []
-    lines.append("# TradePilot 商品期货阶段 2：M 连续合约构建报告")
+    lines.append(f"# TradePilot 商品期货阶段 2：{report.root_code} 连续合约构建报告")
     lines.append("")
     lines.append(f"Generated at: `{report.generated_at.isoformat()}`")
     lines.append(f"Code version: `{report.code_version or 'unknown'}`")
@@ -300,7 +324,7 @@ def render_stage2_report(report: Stage2Report, frame: pd.DataFrame) -> str:
     lines.append("## Scope")
     lines.append("")
     lines.append(
-        "本报告只覆盖 Stage 2 的最小样本：豆粕 `M.DCE` 主力连续合约。"
+        f"本报告只覆盖 Stage 2 的单品种主力连续合约：`{report.root_code}`。"
         "不扩展其他品种，不构建商品篮子，不做 ETF 基线增量回测。"
     )
     lines.append("")
@@ -308,6 +332,11 @@ def render_stage2_report(report: Stage2Report, frame: pd.DataFrame) -> str:
     lines.append("")
     lines.append("- 主力选择：逐日遵循冻结的 `market.futures_mapping`。")
     lines.append("- 复权公式：比值法后向复权。")
+    if report.start_date_override is not None:
+        lines.append(
+            "- 样本截断：因截断日前存在无法同日定位新旧合约价格的换月，"
+            f"本报告只使用 `{report.start_date_override.isoformat()}` 起的映射行。"
+        )
     lines.append(
         "- `adjusted_close`：每个换月日用 `new_close / old_close` 调整所有更早历史段。"
     )
@@ -384,7 +413,7 @@ def render_stage2_report(report: Stage2Report, frame: pd.DataFrame) -> str:
     lines.append("## Stage 2 Decision")
     lines.append("")
     lines.append(
-        "结论：`pass`。`M.DCE` 连续序列已按冻结的比值法后向复权生成，"
+        f"结论：`pass`。`{report.root_code}` 连续序列已按冻结的比值法后向复权生成，"
         "换月日绩效收益使用 `adjusted_close` 复算，天真拼接收益只作为诊断列保留。"
     )
     lines.append("")
