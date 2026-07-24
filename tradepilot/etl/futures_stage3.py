@@ -419,13 +419,14 @@ def render_quality_card_json(
     """Render one Stage 3 quality card as structured JSON."""
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "stage": 3,
         "generated_at": card.generated_at.isoformat(),
         "code_version": card.code_version,
         "snapshot_id": card.snapshot_id,
         "lakehouse_root": str(card.lakehouse_root),
         "root_code": card.root_code,
+        "continuous_contract_sha256": _continuous_contract_sha256(card),
         "decision": card.decision.value,
         "decision_reasons": card.decision_reasons,
         "caveats": caveats or [],
@@ -436,11 +437,28 @@ def render_quality_card_json(
         "return_missing_count": card.return_missing_count,
         "roll_count": card.roll_count,
         "abnormal_roll_count": card.abnormal_roll_count,
-        "annualized_return": card.annualized_return,
-        "annualized_volatility": card.annualized_volatility,
-        "max_drawdown": card.max_drawdown,
+        "annualized_return": _json_number(card.annualized_return),
+        "annualized_volatility": _json_number(card.annualized_volatility),
+        "max_drawdown": _json_number(card.max_drawdown),
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=True) + "\n"
+    return json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+
+
+def _continuous_contract_sha256(card: FuturesQualityCard) -> str:
+    """Return the Stage 2 continuous-contract digest used by a quality card."""
+
+    path = (
+        build_zone_path(_CONTINUOUS_DATASET, StorageZone.DERIVED, card.lakehouse_root)
+        / card.root_code
+        / "part-00000.parquet"
+    )
+    return _sha256_file(path)
+
+
+def _json_number(value: float) -> float | None:
+    """Return a finite JSON number or null for an undefined metric."""
+
+    return value if math.isfinite(value) else None
 
 
 def _load_continuous_contract(*, lakehouse_root: Path, root_code: str) -> pd.DataFrame:
@@ -777,7 +795,7 @@ def _git_commit() -> str | None:
     if not commit:
         return None
     status = subprocess.run(
-        ["git", "status", "--porcelain"],
+        ["git", "status", "--porcelain", "--", "tradepilot"],
         check=False,
         capture_output=True,
         text=True,

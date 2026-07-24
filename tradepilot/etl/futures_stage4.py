@@ -174,7 +174,10 @@ def build_basket_frame(
         min_vol_observations=min_vol_observations,
         weight_cap=weight_cap,
     )
-    _validate_stage3_preconditions(root_codes=roots)
+    _validate_stage3_preconditions(
+        lakehouse_root=lakehouse_root,
+        root_codes=roots,
+    )
     returns = _load_return_matrix(lakehouse_root=lakehouse_root, root_codes=roots)
     returns = returns.dropna(how="any").sort_index()
     if len(returns) <= min_vol_observations:
@@ -286,7 +289,11 @@ def build_stage4_report(
         latest_weights=latest_weights,
         latest_risk_contributions=latest_risk,
         sector_risk_contributions=_sector_risk_contributions(latest_risk),
-        pair_correlations=_pair_correlations(returns),
+        pair_correlations=_pair_correlations(
+            returns,
+            window=volatility_window,
+            min_observations=min_vol_observations,
+        ),
         leave_one_out_metrics=_leave_one_out_metrics(returns),
         leave_sector_out_metrics=_leave_sector_out_metrics(returns),
         au_sensitivity_metrics=_au_sensitivity_metrics(
@@ -433,13 +440,19 @@ def render_stage4_report(report: Stage4BasketReport) -> str:
         )
     )
     lines.append("")
-    lines.append("## Required Pair Correlations")
+    lines.append("## Rolling Pair Correlations")
     lines.append("")
     lines.extend(
         _markdown_table(
-            headers=["Pair", "Correlation"],
+            headers=["Pair", "Window", "Latest", "Minimum", "Maximum"],
             rows=[
-                [str(row["pair"]), f"{float(row['correlation']):.4f}"]
+                [
+                    str(row["pair"]),
+                    str(row["window"]),
+                    f"{float(row['latest']):.4f}",
+                    f"{float(row['minimum']):.4f}",
+                    f"{float(row['maximum']):.4f}",
+                ]
                 for row in report.pair_correlations
             ],
         )
@@ -595,16 +608,23 @@ def _load_return_matrix(*, lakehouse_root: Path, root_codes: list[str]) -> pd.Da
     return pd.concat(series, axis=1)
 
 
-def _validate_stage3_preconditions(*, root_codes: list[str]) -> None:
+def _validate_stage3_preconditions(
+    *, lakehouse_root: Path, root_codes: list[str]
+) -> None:
     """Validate Stage 3 cards exist and do not reject any Stage 4 candidate."""
 
-    decisions = _load_quality_decisions(root_codes=root_codes)
+    decisions = _load_quality_decisions(
+        lakehouse_root=lakehouse_root,
+        root_codes=root_codes,
+    )
     rejected = [root for root, decision in decisions.items() if decision == "reject"]
     if rejected:
         raise ValueError("Stage 3 rejected candidates: " + ", ".join(rejected))
 
 
-def _load_quality_decisions(*, root_codes: list[str]) -> dict[str, str]:
+def _load_quality_decisions(
+    *, root_codes: list[str], lakehouse_root: Path | None = None
+) -> dict[str, str]:
     """Load Stage 3 decisions from structured quality-card JSON sidecars."""
 
     decisions: dict[str, str] = {}
@@ -613,9 +633,30 @@ def _load_quality_decisions(*, root_codes: list[str]) -> dict[str, str]:
         if not path.exists():
             raise ValueError(f"missing Stage 3 quality-card JSON for {root_code}")
         payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != 2 or payload.get("stage") != 3:
+            raise ValueError(f"invalid Stage 3 quality-card schema for {root_code}")
+        if payload.get("root_code") != root_code:
+            raise ValueError(f"Stage 3 quality-card root_code mismatch for {root_code}")
         decision = str(payload.get("decision", ""))
         if decision not in {"accept", "observe", "reject"}:
             raise ValueError(f"unknown Stage 3 decision for {root_code}: {decision}")
+        if lakehouse_root is not None and decision != "reject":
+            continuous_path = (
+                build_zone_path(
+                    _CONTINUOUS_DATASET,
+                    StorageZone.DERIVED,
+                    lakehouse_root,
+                )
+                / root_code
+                / "part-00000.parquet"
+            )
+            expected_digest = payload.get("continuous_contract_sha256")
+            if not continuous_path.exists() or expected_digest != _sha256_file(
+                continuous_path
+            ):
+                raise ValueError(
+                    f"Stage 3 quality card for {root_code} does not match current Stage 2"
+                )
         decisions[root_code] = decision
     return decisions
 
@@ -722,8 +763,10 @@ def _sector_risk_contributions(
     ]
 
 
-def _pair_correlations(returns: pd.DataFrame) -> list[dict[str, object]]:
-    """Return required pair correlations from the latest common sample."""
+def _pair_correlations(
+    returns: pd.DataFrame, *, window: int, min_observations: int
+) -> list[dict[str, object]]:
+    """Return rolling-correlation ranges for required commodity pairs."""
 
     rows: list[dict[str, object]] = []
     for left, right in [
@@ -732,10 +775,24 @@ def _pair_correlations(returns: pd.DataFrame) -> list[dict[str, object]]:
         ("SC.INE", "TA.ZCE"),
     ]:
         if left in returns and right in returns:
+            rolling = (
+                returns[left]
+                .rolling(
+                    window=window,
+                    min_periods=min_observations,
+                )
+                .corr(returns[right])
+            )
+            valid = rolling.dropna()
+            if valid.empty:
+                continue
             rows.append(
                 {
                     "pair": f"{left}/{right}",
-                    "correlation": float(returns[left].corr(returns[right])),
+                    "window": window,
+                    "latest": float(valid.iloc[-1]),
+                    "minimum": float(valid.min()),
+                    "maximum": float(valid.max()),
                 }
             )
     return rows
@@ -884,7 +941,7 @@ def _git_commit() -> str | None:
     if not commit:
         return None
     status = subprocess.run(
-        ["git", "status", "--porcelain"],
+        ["git", "status", "--porcelain", "--", "tradepilot"],
         check=False,
         capture_output=True,
         text=True,

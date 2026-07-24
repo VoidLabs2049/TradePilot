@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import hashlib
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -13,6 +15,7 @@ from click.testing import CliRunner
 from tradepilot.etl.futures_stage4 import (
     BasketRule,
     _cap_and_normalize,
+    _pair_correlations,
     _risk_contributions,
     build_basket_frame,
     build_stage4_report,
@@ -95,6 +98,8 @@ class FuturesStage4Tests(unittest.TestCase):
         self.assertIn("include AU.SHF", text)
         self.assertIn("Equal-risk initial equal-weight days", text)
         self.assertIn("不运行 ETF 基线增量回测", text)
+        self.assertIn("Rolling Pair Correlations", text)
+        self.assertIn("Latest", text)
 
     def test_rejects_missing_stage3_quality_card(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -130,6 +135,53 @@ class FuturesStage4Tests(unittest.TestCase):
 
             with _working_directory(docs_root):
                 with self.assertRaisesRegex(ValueError, "Stage 3 rejected"):
+                    build_basket_frame(
+                        lakehouse_root=lakehouse_root,
+                        root_codes=["M.DCE", "RB.SHF"],
+                        volatility_window=4,
+                        min_vol_observations=2,
+                        weight_cap=0.70,
+                    )
+
+    def test_rejects_quality_card_for_wrong_root(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lakehouse_root = root / "lakehouse"
+            docs_root = root / "docs-root"
+            _write_stage4_fixture(lakehouse_root=lakehouse_root, docs_root=docs_root)
+            quality_path = _quality_card_path(docs_root, "RB.SHF")
+            payload = json.loads(quality_path.read_text(encoding="utf-8"))
+            payload["root_code"] = "M.DCE"
+            quality_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with _working_directory(docs_root):
+                with self.assertRaisesRegex(ValueError, "root_code mismatch"):
+                    build_basket_frame(
+                        lakehouse_root=lakehouse_root,
+                        root_codes=["M.DCE", "RB.SHF"],
+                        volatility_window=4,
+                        min_vol_observations=2,
+                        weight_cap=0.70,
+                    )
+
+    def test_rejects_stale_quality_card_after_stage2_changes(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lakehouse_root = root / "lakehouse"
+            docs_root = root / "docs-root"
+            _write_stage4_fixture(lakehouse_root=lakehouse_root, docs_root=docs_root)
+            path = (
+                lakehouse_root
+                / "derived/derived.futures_continuous_contract/RB.SHF/part-00000.parquet"
+            )
+            frame = pd.read_parquet(path)
+            frame.loc[1, "continuous_return"] = 0.25
+            frame.to_parquet(path, index=False)
+
+            with _working_directory(docs_root):
+                with self.assertRaisesRegex(
+                    ValueError, "does not match current Stage 2"
+                ):
                     build_basket_frame(
                         lakehouse_root=lakehouse_root,
                         root_codes=["M.DCE", "RB.SHF"],
@@ -220,6 +272,23 @@ class FuturesStage4Tests(unittest.TestCase):
         )
 
         self.assertEqual({row["root_code"] for row in rows}, {"M.DCE", "RB.SHF"})
+
+    def test_pair_correlations_report_rolling_range(self) -> None:
+        dates = [date(2025, 1, 1) + timedelta(days=offset) for offset in range(6)]
+        returns = pd.DataFrame(
+            {
+                "AL.SHF": [0.01, 0.02, 0.03, 0.03, 0.02, 0.01],
+                "CU.SHF": [0.01, 0.02, 0.03, -0.03, -0.02, -0.01],
+            },
+            index=dates,
+        )
+
+        rows = _pair_correlations(returns, window=3, min_observations=3)
+
+        self.assertEqual(len(rows), 1)
+        self.assertAlmostEqual(float(rows[0]["maximum"]), 1.0)
+        self.assertAlmostEqual(float(rows[0]["minimum"]), -1.0)
+        self.assertEqual(rows[0]["window"], 3)
 
 
 class _working_directory:
@@ -350,8 +419,44 @@ def _write_quality_card(*, docs_root: Path, root_code: str, decision: str) -> No
             base
             / f"commodity-futures-stage-3-{root_code.lower().replace('.', '-')}-quality-card.json"
         )
+    continuous_path = (
+        docs_root.parent
+        / "lakehouse/derived/derived.futures_continuous_contract"
+        / root_code
+        / "part-00000.parquet"
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f'{{"decision": "{decision}"}}\n', encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "stage": 3,
+                "root_code": root_code,
+                "decision": decision,
+                "continuous_contract_sha256": _sha256_file(continuous_path),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _quality_card_path(docs_root: Path, root_code: str) -> Path:
+    """Return one fixture quality-card path."""
+
+    base = docs_root / "docs/futures-v2-design/reports/stage-3/quality-cards"
+    if root_code == "M.DCE":
+        return base / "commodity-futures-stage-3-m-quality-card.json"
+    return (
+        base
+        / f"commodity-futures-stage-3-{root_code.lower().replace('.', '-')}-quality-card.json"
+    )
+
+
+def _sha256_file(path: Path) -> str:
+    """Return a fixture file digest."""
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _write_parquet(

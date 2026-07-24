@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+import json
 import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -77,9 +78,34 @@ class FuturesStage3Tests(unittest.TestCase):
             )
             text = render_quality_card_json(card)
 
-        self.assertIn('"schema_version": 1', text)
+        self.assertIn('"schema_version": 2', text)
         self.assertIn('"decision": "accept"', text)
         self.assertIn('"root_code": "M.DCE"', text)
+        self.assertIn('"continuous_contract_sha256":', text)
+
+    def test_render_json_uses_null_for_non_finite_metrics(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage3_fixture(lakehouse_root)
+            card = build_quality_card(
+                lakehouse_root=lakehouse_root,
+                min_return_rows=4,
+            )
+
+            payload = json.loads(render_quality_card_json(card))
+            self.assertIsNone(
+                json.loads(
+                    render_quality_card_json(
+                        card.__class__(
+                            **{
+                                **card.__dict__,
+                                "annualized_return": math.nan,
+                            }
+                        )
+                    )
+                )["annualized_return"]
+            )
+            self.assertEqual(payload["schema_version"], 2)
 
     def test_cli_writes_quality_card_report(self) -> None:
         with TemporaryDirectory() as temp_dir:

@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from dataclasses import replace
 
 import pandas as pd
 
@@ -67,6 +68,28 @@ class FuturesStage23BatchTests(unittest.TestCase):
         self.assertTrue(stage2_report_exists)
         self.assertIn("Stage 2 failed", blocked_card)
         self.assertIn('"decision": "reject"', blocked_card_json)
+
+    def test_summary_is_not_ready_when_stage3_rejects(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lakehouse_root = root / "lakehouse"
+            docs_dir = root / "docs"
+            _write_batch_fixture(lakehouse_root)
+            result = run_stage23_batch(
+                lakehouse_root=lakehouse_root,
+                root_codes=["M.DCE"],
+                docs_dir=docs_dir,
+            )[0]
+            result = replace(result, stage2_status="pass", stage3_decision="reject")
+
+            summary = render_stage23_summary(
+                generated_at=pd.Timestamp("2026-07-24T00:00:00Z").to_pydatetime(),
+                lakehouse_root=lakehouse_root,
+                results=[result],
+            )
+
+        self.assertIn("not_ready_for_stage4", summary)
+        self.assertIn("Stage 3 reject", summary)
 
 
 def _write_batch_fixture(lakehouse_root: Path) -> None:

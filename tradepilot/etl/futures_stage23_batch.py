@@ -248,19 +248,26 @@ def render_stage23_summary(
     lines.append("")
     lines.append("## Stage 4 Readiness")
     lines.append("")
-    if all(result.stage2_status == "pass" for result in results):
+    failed_stage2 = [
+        result.root_code for result in results if result.stage2_status != "pass"
+    ]
+    rejected_stage3 = [
+        result.root_code for result in results if result.stage3_decision == "reject"
+    ]
+    if not failed_stage2 and not rejected_stage3:
         lines.append(
             "结论：`ready_for_stage4_rule_freeze`。所有非黄金候选均已有 Stage 2 "
             "连续合约产物和 Stage 3 质量卡。"
         )
     else:
-        failed = ", ".join(
-            result.root_code for result in results if result.stage2_status != "pass"
-        )
+        reasons: list[str] = []
+        if failed_stage2:
+            reasons.append("Stage 2 failed: " + ", ".join(failed_stage2))
+        if rejected_stage3:
+            reasons.append("Stage 3 reject: " + ", ".join(rejected_stage3))
         lines.append(
-            "结论：`not_ready_for_stage4`。以下候选未通过 Stage 2 连续合约构建："
-            f"`{failed}`。Stage 4 可先做剔除这些失败候选后的规则草案，但不能把"
-            "失败候选纳入正式篮子。"
+            "结论：`not_ready_for_stage4`。" + "；".join(reasons) + "。"
+            "Stage 4 可先做剔除失败候选后的规则草案，但不能把失败候选纳入正式篮子。"
         )
     lines.append("")
     return "\n".join(lines).rstrip() + "\n"
@@ -321,7 +328,7 @@ def _render_blocked_quality_card_json(*, root_code: str, reason: str) -> str:
     """Render a structured Stage 3 blocked card."""
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "stage": 3,
         "generated_at": datetime.now(tz=UTC).isoformat(),
         "root_code": root_code,
