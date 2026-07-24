@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
 import hashlib
+import json
 import math
 import subprocess
 from pathlib import Path
@@ -73,6 +74,8 @@ class Stage4BasketReport:
     min_vol_observations: int
     weight_cap: float
     missing_data_rule: str
+    equal_risk_initial_equal_weight_days: int
+    first_equal_risk_rebalance_date: date | None
     quality_decisions: dict[str, str]
     basket_metrics: list[dict[str, object]]
     latest_weights: list[dict[str, object]]
@@ -180,7 +183,7 @@ def build_basket_frame(
     equal_weight = pd.DataFrame(
         1.0 / len(roots), index=returns.index, columns=roots, dtype=float
     )
-    equal_risk = _equal_risk_weights(
+    equal_risk, equal_risk_weight_source = _equal_risk_weights(
         returns=returns,
         volatility_window=volatility_window,
         min_vol_observations=min_vol_observations,
@@ -200,6 +203,7 @@ def build_basket_frame(
             basket_rule=BasketRule.EQUAL_RISK,
             volatility_window=volatility_window,
             weight_cap=weight_cap,
+            weight_source=equal_risk_weight_source,
         ),
     ]
     return pd.concat(frames, ignore_index=True)
@@ -232,6 +236,7 @@ def build_stage4_report(
 ) -> Stage4BasketReport:
     """Build Stage 4 report metrics from basket and continuous-contract inputs."""
 
+    _validate_basket_report_frame(frame)
     returns = _load_return_matrix(lakehouse_root=lakehouse_root, root_codes=root_codes)
     returns = returns.dropna(how="any").sort_index()
     control_returns = _load_return_matrix(
@@ -268,6 +273,12 @@ def build_stage4_report(
         min_vol_observations=min_vol_observations,
         weight_cap=weight_cap,
         missing_data_rule="complete_case_across_stage4_roots",
+        equal_risk_initial_equal_weight_days=int(
+            equal_risk_rows.drop_duplicates("trade_date")["weight_source"]
+            .eq("initial_equal_weight_until_vol_ready")
+            .sum()
+        ),
+        first_equal_risk_rebalance_date=_first_rebalance_date(equal_risk_rows),
         quality_decisions=_load_quality_decisions(root_codes=root_codes),
         basket_metrics=[
             _series_metrics(rule, series) for rule, series in basket_returns.items()
@@ -319,6 +330,18 @@ def render_stage4_report(report: Stage4BasketReport) -> str:
                 ["Weight cap", _percent_text(report.weight_cap)],
                 ["Missing data rule", report.missing_data_rule],
                 ["Performance field", "continuous_return from Stage 2 adjusted_close"],
+                [
+                    "Equal-risk initial equal-weight days",
+                    str(report.equal_risk_initial_equal_weight_days),
+                ],
+                [
+                    "First equal-risk rebalance date",
+                    (
+                        "-"
+                        if report.first_equal_risk_rebalance_date is None
+                        else report.first_equal_risk_rebalance_date.isoformat()
+                    ),
+                ],
             ],
         )
     )
@@ -457,20 +480,40 @@ def _equal_risk_weights(
     volatility_window: int,
     min_vol_observations: int,
     weight_cap: float,
-) -> pd.DataFrame:
-    """Return trailing-vol inverse weights, rebalanced at month end."""
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Return trailing-vol inverse weights and source labels."""
 
     trailing_vol = returns.rolling(
         window=volatility_window, min_periods=min_vol_observations
     ).std()
     rebalance_dates = set(_month_end_dates(returns.index))
     weights = pd.DataFrame(index=returns.index, columns=returns.columns, dtype=float)
+    sources = pd.Series(
+        "initial_equal_weight_until_vol_ready", index=returns.index, dtype=object
+    )
     current = pd.Series(1.0 / len(returns.columns), index=returns.columns, dtype=float)
     for trade_date, row in trailing_vol.shift(1).iterrows():
         if trade_date in rebalance_dates and row.notna().all() and row.gt(0).all():
             current = _cap_and_normalize((1.0 / row), cap=weight_cap)
+            sources.loc[trade_date:] = "inverse_vol_month_end"
         weights.loc[trade_date] = current
-    return weights
+    return weights, sources
+
+
+def _validate_basket_report_frame(frame: pd.DataFrame) -> None:
+    """Validate the long-form basket frame before report metrics."""
+
+    required = {"trade_date", "basket_rule", "basket_return"}
+    missing = required.difference(frame.columns)
+    if missing:
+        raise ValueError(
+            "Stage 4 basket frame missing columns: " + ", ".join(sorted(missing))
+        )
+    equal_risk_rows = frame[frame["basket_rule"].eq(BasketRule.EQUAL_RISK.value)]
+    if equal_risk_rows.empty:
+        raise ValueError("Stage 4 basket frame has no equal_risk rows")
+    if equal_risk_rows["trade_date"].nunique() < 2:
+        raise ValueError("Stage 4 basket frame needs at least two equal_risk dates")
 
 
 def _basket_rows(
@@ -480,6 +523,7 @@ def _basket_rows(
     basket_rule: BasketRule,
     volatility_window: int,
     weight_cap: float,
+    weight_source: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Return long-form basket rows with component weights and contributions."""
 
@@ -504,6 +548,11 @@ def _basket_rows(
                     "rebalance_frequency": _DEFAULT_REBALANCE_FREQUENCY,
                     "volatility_window": volatility_window,
                     "weight_cap": weight_cap,
+                    "weight_source": (
+                        basket_rule.value
+                        if weight_source is None
+                        else str(weight_source.loc[trade_date])
+                    ),
                     "missing_data_rule": "complete_case_across_stage4_roots",
                 }
             )
@@ -556,34 +605,28 @@ def _validate_stage3_preconditions(*, root_codes: list[str]) -> None:
 
 
 def _load_quality_decisions(*, root_codes: list[str]) -> dict[str, str]:
-    """Load Stage 3 decisions from existing quality-card reports."""
+    """Load Stage 3 decisions from structured quality-card JSON sidecars."""
 
     decisions: dict[str, str] = {}
     for root_code in root_codes:
-        path = _quality_card_path(root_code)
+        path = _quality_card_json_path(root_code)
         if not path.exists():
-            raise ValueError(f"missing Stage 3 quality card for {root_code}")
-        text = path.read_text(encoding="utf-8")
-        marker = "结论：`"
-        start = text.find(marker)
-        if start < 0:
-            raise ValueError(f"Stage 3 quality card lacks decision for {root_code}")
-        start += len(marker)
-        end = text.find("`", start)
-        decision = text[start:end]
+            raise ValueError(f"missing Stage 3 quality-card JSON for {root_code}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        decision = str(payload.get("decision", ""))
         if decision not in {"accept", "observe", "reject"}:
             raise ValueError(f"unknown Stage 3 decision for {root_code}: {decision}")
         decisions[root_code] = decision
     return decisions
 
 
-def _quality_card_path(root_code: str) -> Path:
-    """Return the canonical Stage 3 quality-card path for one root."""
+def _quality_card_json_path(root_code: str) -> Path:
+    """Return the canonical Stage 3 quality-card JSON path for one root."""
 
     base = Path("docs/futures-v2-design/reports/stage-3/quality-cards")
     if root_code == "M.DCE":
-        return base / "commodity-futures-stage-3-m-quality-card.md"
-    return base / f"commodity-futures-stage-3-{_root_slug(root_code)}-quality-card.md"
+        return base / "commodity-futures-stage-3-m-quality-card.json"
+    return base / f"commodity-futures-stage-3-{_root_slug(root_code)}-quality-card.json"
 
 
 def _basket_return_matrix(*, frame: pd.DataFrame) -> dict[str, pd.Series]:
@@ -634,6 +677,7 @@ def _risk_contributions(
 ) -> list[dict[str, object]]:
     """Return latest volatility and risk contribution by root."""
 
+    returns = returns.sort_index()
     weight_series = pd.Series(weights)
     covariance = returns[list(weights)].tail(volatility_window).cov()
     portfolio_variance = float(weight_series.T @ covariance @ weight_series)
@@ -750,14 +794,30 @@ def _sensitivity_metrics(name: str, series: pd.Series) -> dict[str, object]:
 def _cap_and_normalize(values: pd.Series, *, cap: float) -> pd.Series:
     """Apply a long-only cap and normalize weights to one."""
 
+    if values.empty or values.isna().any() or values.lt(0).any():
+        raise ValueError("weight inputs must be non-missing and non-negative")
+    if float(values.sum()) <= 0:
+        raise ValueError("weight inputs must have positive total")
     weights = values / values.sum()
     capped = weights.clip(upper=cap)
     while capped.lt(cap).any() and capped.sum() < 0.999999:
         room = capped.lt(cap)
         remaining = 1.0 - float(capped.sum())
-        add = weights[room] / float(weights[room].sum()) * remaining
+        room_sum = float(weights[room].sum())
+        if room_sum <= 0:
+            raise ValueError("uncapped weight inputs must have positive total")
+        add = weights[room] / room_sum * remaining
         capped.loc[room] = (capped.loc[room] + add).clip(upper=cap)
     return capped / capped.sum()
+
+
+def _first_rebalance_date(equal_risk_rows: pd.DataFrame) -> date | None:
+    """Return the first date that used inverse-vol equal-risk weights."""
+
+    rows = equal_risk_rows[equal_risk_rows["weight_source"].eq("inverse_vol_month_end")]
+    if rows.empty:
+        return None
+    return rows["trade_date"].min()
 
 
 def _month_end_dates(index: pd.Index) -> list[date]:
@@ -809,10 +869,10 @@ def _sha256_file(path: Path) -> str:
 
 
 def _git_commit() -> str | None:
-    """Return the current git commit when available."""
+    """Return the current git commit hash and dirty marker if available."""
 
     try:
-        result = subprocess.run(
+        completed = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
@@ -820,7 +880,18 @@ def _git_commit() -> str | None:
         )
     except (OSError, subprocess.CalledProcessError):
         return None
-    return result.stdout.strip() or None
+    commit = completed.stdout.strip()
+    if not commit:
+        return None
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout.strip():
+        return f"{commit}-dirty"
+    return commit
 
 
 def _validate_stage4_parameters(

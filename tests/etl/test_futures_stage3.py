@@ -17,6 +17,7 @@ from tradepilot.etl.futures_stage3 import (
     build_quality_card,
     main,
     render_quality_card,
+    render_quality_card_json,
 )
 
 
@@ -65,11 +66,27 @@ class FuturesStage3Tests(unittest.TestCase):
         self.assertIn("结论：`accept`", text)
         self.assertIn("不构建商品篮子", text)
 
+    def test_render_json_includes_structured_decision(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage3_fixture(lakehouse_root)
+
+            card = build_quality_card(
+                lakehouse_root=lakehouse_root,
+                min_return_rows=4,
+            )
+            text = render_quality_card_json(card)
+
+        self.assertIn('"schema_version": 1', text)
+        self.assertIn('"decision": "accept"', text)
+        self.assertIn('"root_code": "M.DCE"', text)
+
     def test_cli_writes_quality_card_report(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             lakehouse_root = root / "lakehouse"
             output = root / "stage-3.md"
+            json_output = root / "stage-3.json"
             _write_stage3_fixture(lakehouse_root)
 
             result = CliRunner().invoke(
@@ -79,13 +96,17 @@ class FuturesStage3Tests(unittest.TestCase):
                     str(lakehouse_root),
                     "--output",
                     str(output),
+                    "--json-output",
+                    str(json_output),
                 ],
             )
 
             self.assertEqual(result.exit_code, 0, result.output)
             text = output.read_text(encoding="utf-8")
+            json_text = json_output.read_text(encoding="utf-8")
 
         self.assertIn("单品种质量卡", text)
+        self.assertIn('"decision": "reject"', json_text)
         self.assertIn("decision=reject", result.output)
 
     def test_rejects_missing_stage2_continuous_contract(self) -> None:

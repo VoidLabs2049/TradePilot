@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "stage": 3,
+  "generated_at": "2026-07-24T09:15:49.088509+00:00",
+  "code_version": "1e0827cb1863405789298d2b9768694aa1c0d0cd-dirty",
+  "snapshot_id": "a2c37e8ccf87aee3",
+  "lakehouse_root": "/home/nixos/workspace/TradePilot/data/lakehouse",
+  "root_code": "M.DCE",
+  "decision": "accept",
+  "decision_reasons": [
+    "meets fixed Stage 3 quality-card thresholds"
+  ],
+  "caveats": [],
+  "row_count": 5000,
+  "start_date": "2005-12-20",
+  "end_date": "2026-07-20",
+  "return_count": 4999,
+  "return_missing_count": 1,
+  "roll_count": 62,
+  "abnormal_roll_count": 0,
+  "annualized_return": 0.07306561680189949,
+  "annualized_volatility": 0.19969918726937458,
+  "max_drawdown": -0.4716804338105697
+}

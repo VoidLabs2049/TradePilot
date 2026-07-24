@@ -12,6 +12,8 @@ from click.testing import CliRunner
 
 from tradepilot.etl.futures_stage4 import (
     BasketRule,
+    _cap_and_normalize,
+    _risk_contributions,
     build_basket_frame,
     build_stage4_report,
     main,
@@ -45,6 +47,11 @@ class FuturesStage4Tests(unittest.TestCase):
         )
         self.assertEqual(set(frame["root_code"].unique()), {"M.DCE", "RB.SHF"})
         self.assertFalse(frame["basket_return"].isna().any())
+        self.assertIn("weight_source", frame.columns)
+        self.assertIn(
+            "initial_equal_weight_until_vol_ready",
+            set(frame["weight_source"]),
+        )
         latest = frame[
             frame["basket_rule"].eq(BasketRule.EQUAL_RISK.value)
             & frame["trade_date"].eq(frame["trade_date"].max())
@@ -86,6 +93,7 @@ class FuturesStage4Tests(unittest.TestCase):
         self.assertTrue(wrote_basket)
         self.assertIn("stage4_rule_frozen", text)
         self.assertIn("include AU.SHF", text)
+        self.assertIn("Equal-risk initial equal-weight days", text)
         self.assertIn("不运行 ETF 基线增量回测", text)
 
     def test_rejects_missing_stage3_quality_card(self) -> None:
@@ -100,7 +108,7 @@ class FuturesStage4Tests(unittest.TestCase):
             )
 
             with _working_directory(docs_root):
-                with self.assertRaisesRegex(ValueError, "missing Stage 3"):
+                with self.assertRaisesRegex(ValueError, "missing Stage 3.*JSON"):
                     build_basket_frame(
                         lakehouse_root=lakehouse_root,
                         root_codes=["M.DCE", "RB.SHF"],
@@ -163,6 +171,55 @@ class FuturesStage4Tests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("snapshot_id=", result.output)
         self.assertIn("商品篮子规则冻结报告", output_text)
+
+    def test_report_rejects_empty_equal_risk_rows(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lakehouse_root = root / "lakehouse"
+            docs_root = root / "docs-root"
+            _write_stage4_fixture(lakehouse_root=lakehouse_root, docs_root=docs_root)
+            frame = pd.DataFrame(
+                {
+                    "trade_date": [date(2025, 1, 1)],
+                    "basket_rule": [BasketRule.EQUAL_WEIGHT.value],
+                    "basket_return": [0.0],
+                }
+            )
+
+            with _working_directory(docs_root):
+                with self.assertRaisesRegex(ValueError, "no equal_risk rows"):
+                    build_stage4_report(
+                        frame=frame,
+                        lakehouse_root=lakehouse_root,
+                        root_codes=["M.DCE", "RB.SHF"],
+                        control_root_code="AU.SHF",
+                        output_path=root / "basket.parquet",
+                        volatility_window=4,
+                        min_vol_observations=2,
+                        weight_cap=0.70,
+                    )
+
+    def test_cap_and_normalize_rejects_zero_total(self) -> None:
+        with self.assertRaisesRegex(ValueError, "positive total"):
+            _cap_and_normalize(pd.Series([0.0, 0.0]), cap=0.70)
+
+    def test_risk_contribution_sorts_returns_before_tail(self) -> None:
+        dates = [date(2025, 1, 3), date(2025, 1, 1), date(2025, 1, 2)]
+        returns = pd.DataFrame(
+            {
+                "M.DCE": [0.03, 0.01, 0.02],
+                "RB.SHF": [0.01, 0.02, 0.03],
+            },
+            index=dates,
+        )
+
+        rows = _risk_contributions(
+            returns=returns,
+            weights={"M.DCE": 0.5, "RB.SHF": 0.5},
+            volatility_window=2,
+        )
+
+        self.assertEqual({row["root_code"] for row in rows}, {"M.DCE", "RB.SHF"})
 
 
 class _working_directory:
@@ -283,18 +340,18 @@ def _write_continuous_contract(
 
 
 def _write_quality_card(*, docs_root: Path, root_code: str, decision: str) -> None:
-    """Write one minimal Stage 3 quality-card fixture."""
+    """Write one minimal Stage 3 quality-card JSON fixture."""
 
     base = docs_root / "docs/futures-v2-design/reports/stage-3/quality-cards"
     if root_code == "M.DCE":
-        path = base / "commodity-futures-stage-3-m-quality-card.md"
+        path = base / "commodity-futures-stage-3-m-quality-card.json"
     else:
         path = (
             base
-            / f"commodity-futures-stage-3-{root_code.lower().replace('.', '-')}-quality-card.md"
+            / f"commodity-futures-stage-3-{root_code.lower().replace('.', '-')}-quality-card.json"
         )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"# Card\n\n结论：`{decision}`。\n", encoding="utf-8")
+    path.write_text(f'{{"decision": "{decision}"}}\n', encoding="utf-8")
 
 
 def _write_parquet(

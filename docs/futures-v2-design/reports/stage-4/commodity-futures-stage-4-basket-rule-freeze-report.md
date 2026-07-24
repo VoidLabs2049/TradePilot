@@ -1,8 +1,8 @@
 # TradePilot 商品期货阶段 4：商品篮子规则冻结报告
 
-Generated at: `2026-07-24T08:20:43.469779+00:00`
-Code version: `9bec58bc509e96f91ccf4aa82c530c77d4d1f798`
-Snapshot id: `35535fa46a9465b8`
+Generated at: `2026-07-24T09:16:02.242793+00:00`
+Code version: `1e0827cb1863405789298d2b9768694aa1c0d0cd-dirty`
+Snapshot id: `7b976d1ca885252e`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 Output path: `/home/nixos/workspace/TradePilot/data/lakehouse/derived/derived.futures_commodity_basket/part-00000.parquet`
 
@@ -22,6 +22,8 @@ Output path: `/home/nixos/workspace/TradePilot/data/lakehouse/derived/derived.fu
 | Weight cap | 25.0000% |
 | Missing data rule | complete_case_across_stage4_roots |
 | Performance field | continuous_return from Stage 2 adjusted_close |
+| Equal-risk initial equal-weight days | 127 |
+| First equal-risk rebalance date | 2018-09-28 |
 
 ## Candidate Decisions
 

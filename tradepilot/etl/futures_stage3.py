@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
 import hashlib
+import json
 import math
 import subprocess
 from pathlib import Path
@@ -153,12 +154,19 @@ class FuturesQualityCard:
     ),
     show_default=True,
 )
+@click.option(
+    "--json-output",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Optional structured JSON sidecar path for downstream stages.",
+)
 def main(
     lakehouse_root: Path,
     root_code: str,
     portfolio_notional: float,
     target_weight: float,
     output: Path,
+    json_output: Path | None,
 ) -> None:
     """Build and write one Stage 3 commodity futures quality-card report."""
 
@@ -170,6 +178,10 @@ def main(
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(render_quality_card(card), encoding="utf-8")
+    if json_output is not None:
+        json_output.parent.mkdir(parents=True, exist_ok=True)
+        json_output.write_text(render_quality_card_json(card), encoding="utf-8")
+        click.echo(f"wrote {json_output}")
     click.echo(f"wrote {output}")
     click.echo(f"snapshot_id={card.snapshot_id}")
     click.echo(f"decision={card.decision.value}")
@@ -399,6 +411,36 @@ def render_quality_card(
     )
     lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def render_quality_card_json(
+    card: FuturesQualityCard, *, caveats: list[str] | None = None
+) -> str:
+    """Render one Stage 3 quality card as structured JSON."""
+
+    payload = {
+        "schema_version": 1,
+        "stage": 3,
+        "generated_at": card.generated_at.isoformat(),
+        "code_version": card.code_version,
+        "snapshot_id": card.snapshot_id,
+        "lakehouse_root": str(card.lakehouse_root),
+        "root_code": card.root_code,
+        "decision": card.decision.value,
+        "decision_reasons": card.decision_reasons,
+        "caveats": caveats or [],
+        "row_count": card.row_count,
+        "start_date": card.start_date.isoformat(),
+        "end_date": card.end_date.isoformat(),
+        "return_count": card.return_count,
+        "return_missing_count": card.return_missing_count,
+        "roll_count": card.roll_count,
+        "abnormal_roll_count": card.abnormal_roll_count,
+        "annualized_return": card.annualized_return,
+        "annualized_volatility": card.annualized_volatility,
+        "max_drawdown": card.max_drawdown,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=True) + "\n"
 
 
 def _load_continuous_contract(*, lakehouse_root: Path, root_code: str) -> pd.DataFrame:

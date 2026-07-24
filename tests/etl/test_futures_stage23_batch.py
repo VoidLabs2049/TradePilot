@@ -48,6 +48,13 @@ class FuturesStage23BatchTests(unittest.TestCase):
                 / "quality-cards"
                 / "commodity-futures-stage-3-ta-zce-quality-card.md"
             ).read_text(encoding="utf-8")
+            blocked_card_json = (
+                docs_dir
+                / "reports"
+                / "stage-3"
+                / "quality-cards"
+                / "commodity-futures-stage-3-ta-zce-quality-card.json"
+            ).read_text(encoding="utf-8")
 
         self.assertEqual([result.root_code for result in results], ["M.DCE", "TA.ZCE"])
         self.assertEqual(results[0].stage2_status, "pass")
@@ -59,6 +66,7 @@ class FuturesStage23BatchTests(unittest.TestCase):
         self.assertIn("TA.ZCE", summary)
         self.assertTrue(stage2_report_exists)
         self.assertIn("Stage 2 failed", blocked_card)
+        self.assertIn('"decision": "reject"', blocked_card_json)
 
 
 def _write_batch_fixture(lakehouse_root: Path) -> None:

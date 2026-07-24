@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+import json
 from pathlib import Path
 
 import click
@@ -19,6 +20,7 @@ from tradepilot.etl.futures_stage3 import (
     FuturesQualityCard,
     build_quality_card,
     render_quality_card,
+    render_quality_card_json,
 )
 
 NON_GOLD_FUTURES_ROOT_CODES = (
@@ -157,6 +159,10 @@ def run_stage23_batch(
             )
             caveats = _stage2_caveats(start_date=start_date)
             _write_text(stage3_report_path, render_quality_card(card, caveats=caveats))
+            _write_text(
+                _stage3_json_path(stage3_report_path),
+                render_quality_card_json(card, caveats=caveats),
+            )
             results.append(
                 _success_result(
                     root_code=root_code,
@@ -172,6 +178,10 @@ def run_stage23_batch(
             _write_text(
                 stage3_report_path,
                 _render_blocked_quality_card(root_code=root_code, reason=reason),
+            )
+            _write_text(
+                _stage3_json_path(stage3_report_path),
+                _render_blocked_quality_card_json(root_code=root_code, reason=reason),
             )
             results.append(
                 Stage23BatchResult(
@@ -307,6 +317,20 @@ def _render_blocked_quality_card(*, root_code: str, reason: str) -> str:
     return "\n".join(lines)
 
 
+def _render_blocked_quality_card_json(*, root_code: str, reason: str) -> str:
+    """Render a structured Stage 3 blocked card."""
+
+    payload = {
+        "schema_version": 1,
+        "stage": 3,
+        "generated_at": datetime.now(tz=UTC).isoformat(),
+        "root_code": root_code,
+        "decision": "reject",
+        "decision_reasons": [reason],
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
 def _summary_row(result: Stage23BatchResult) -> list[str]:
     """Return one markdown table row for a batch result."""
 
@@ -352,6 +376,12 @@ def _stage3_report_path(*, docs_dir: Path, root_code: str) -> Path:
         quality_card_dir
         / f"commodity-futures-stage-3-{_root_slug(root_code)}-quality-card.md"
     )
+
+
+def _stage3_json_path(report_path: Path) -> Path:
+    """Return the structured JSON sidecar path for one Stage 3 quality card."""
+
+    return report_path.with_suffix(".json")
 
 
 def _parse_root_codes(root_codes: str) -> list[str]:
