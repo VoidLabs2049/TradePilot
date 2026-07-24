@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "stage": 3,
+  "generated_at": "2026-07-24T09:48:48.377548+00:00",
+  "code_version": "5d0928ca0b5dbe6b6d336b5bdaff3cbc63c25aa8",
+  "snapshot_id": "58a820a459526276",
+  "lakehouse_root": "/home/nixos/workspace/TradePilot/data/lakehouse",
+  "root_code": "P.DCE",
+  "continuous_contract_sha256": "bfe8f463f8ded68a5788109c5aad80f211b3e13377d36a5ca47cdb97966db8b0",
+  "decision": "observe",
+  "decision_reasons": [
+    "max drawdown is -80.8367%"
+  ],
+  "caveats": [],
+  "row_count": 4551,
+  "start_date": "2007-10-29",
+  "end_date": "2026-07-20",
+  "return_count": 4550,
+  "return_missing_count": 1,
+  "roll_count": 56,
+  "abnormal_roll_count": 0,
+  "annualized_return": 0.015491469897317867,
+  "annualized_volatility": 0.24276407060869556,
+  "max_drawdown": -0.808367001018137
+}

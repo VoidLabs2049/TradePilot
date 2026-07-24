@@ -117,7 +117,9 @@ class Stage1Report:
 @click.option(
     "--output",
     type=click.Path(path_type=Path, dir_okay=False),
-    default=Path("docs/futures-v2-design/commodity-futures-stage-1-m-roll-audit.md"),
+    default=Path(
+        "docs/futures-v2-design/reports/stage-1/commodity-futures-stage-1-m-roll-audit.md"
+    ),
     show_default=True,
 )
 def main(

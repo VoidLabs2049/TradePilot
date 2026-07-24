@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "stage": 3,
+  "generated_at": "2026-07-24T09:48:42.077380+00:00",
+  "code_version": "5d0928ca0b5dbe6b6d336b5bdaff3cbc63c25aa8",
+  "snapshot_id": "829df903de8b4566",
+  "lakehouse_root": "/home/nixos/workspace/TradePilot/data/lakehouse",
+  "root_code": "I.DCE",
+  "continuous_contract_sha256": "6f5adaadb13bb6739b06caa983f533a6bd6e0a97507cdfc57b12bdacb9e66e89",
+  "decision": "observe",
+  "decision_reasons": [
+    "abnormal roll return days: 2"
+  ],
+  "caveats": [],
+  "row_count": 3102,
+  "start_date": "2013-10-18",
+  "end_date": "2026-07-20",
+  "return_count": 3101,
+  "return_missing_count": 1,
+  "roll_count": 37,
+  "abnormal_roll_count": 2,
+  "annualized_return": 0.16161515133155557,
+  "annualized_volatility": 0.3453261384228237,
+  "max_drawdown": -0.6059827787155627
+}

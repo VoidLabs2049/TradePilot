@@ -295,7 +295,7 @@ AL / CU / RB / I / M / P / SC / TA
 
 ## 15. 相关文档与 canonical 入口
 
-- [商品期货学习与研究指南](./commodity-futures-learning-guide.md)
+- [商品期货学习与研究指南](../guides/commodity-futures-learning-guide.md)
 - [V2 投资工作流设计](./V2-投资工作流设计.md)
 - [V2 第一阶段统一数据接入框架设计](./V2-第一阶段-统一数据接入框架设计.md)
 - V1 连续合约管线：`docs/etf-v1-design/etf-all-weather-data-sources/futures-continuous-contract-pipeline.md`

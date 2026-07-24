@@ -161,7 +161,9 @@ class Phase0Report:
 @click.option(
     "--output",
     type=click.Path(path_type=Path, dir_okay=False),
-    default=Path("docs/futures-v2-design/commodity-futures-stage-0-report.md"),
+    default=Path(
+        "docs/futures-v2-design/reports/stage-0/commodity-futures-stage-0-report.md"
+    ),
     show_default=True,
 )
 @click.option(
