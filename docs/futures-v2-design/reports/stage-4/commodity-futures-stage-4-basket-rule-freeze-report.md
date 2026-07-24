@@ -1,8 +1,8 @@
 # TradePilot 商品期货阶段 4：商品篮子规则冻结报告
 
-Generated at: `2026-07-24T09:16:02.242793+00:00`
-Code version: `1e0827cb1863405789298d2b9768694aa1c0d0cd-dirty`
-Snapshot id: `7b976d1ca885252e`
+Generated at: `2026-07-24T09:49:05.030912+00:00`
+Code version: `5d0928ca0b5dbe6b6d336b5bdaff3cbc63c25aa8`
+Snapshot id: `097a8ddebaa9742d`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 Output path: `/home/nixos/workspace/TradePilot/data/lakehouse/derived/derived.futures_commodity_basket/part-00000.parquet`
 
@@ -80,13 +80,13 @@ Output path: `/home/nixos/workspace/TradePilot/data/lakehouse/derived/derived.fu
 | ferrous | 25.5031% |
 | metals | 23.0555% |
 
-## Required Pair Correlations
+## Rolling Pair Correlations
 
-| Pair | Correlation |
-| --- | --- |
-| AL.SHF/CU.SHF | 0.6018 |
-| RB.SHF/I.DCE | 0.7049 |
-| SC.INE/TA.ZCE | 0.6317 |
+| Pair | Window | Latest | Minimum | Maximum |
+| --- | --- | --- | --- | --- |
+| AL.SHF/CU.SHF | 252 | 0.6397 | 0.3593 | 0.7395 |
+| RB.SHF/I.DCE | 252 | 0.6732 | 0.5175 | 0.8842 |
+| SC.INE/TA.ZCE | 252 | 0.6703 | 0.1039 | 0.7926 |
 
 ## Sensitivity Checks
 

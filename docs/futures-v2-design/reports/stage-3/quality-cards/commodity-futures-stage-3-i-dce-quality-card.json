@@ -1,11 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "stage": 3,
-  "generated_at": "2026-07-24T09:15:45.937691+00:00",
-  "code_version": "1e0827cb1863405789298d2b9768694aa1c0d0cd-dirty",
-  "snapshot_id": "1334c0bb09f32ae2",
+  "generated_at": "2026-07-24T09:48:42.077380+00:00",
+  "code_version": "5d0928ca0b5dbe6b6d336b5bdaff3cbc63c25aa8",
+  "snapshot_id": "829df903de8b4566",
   "lakehouse_root": "/home/nixos/workspace/TradePilot/data/lakehouse",
   "root_code": "I.DCE",
+  "continuous_contract_sha256": "6f5adaadb13bb6739b06caa983f533a6bd6e0a97507cdfc57b12bdacb9e66e89",
   "decision": "observe",
   "decision_reasons": [
     "abnormal roll return days: 2"

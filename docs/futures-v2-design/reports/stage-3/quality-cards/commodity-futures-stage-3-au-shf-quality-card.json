@@ -1,11 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "stage": 3,
-  "generated_at": "2026-07-24T09:16:00.757322+00:00",
-  "code_version": "1e0827cb1863405789298d2b9768694aa1c0d0cd-dirty",
-  "snapshot_id": "3766bef1ac686b5c",
+  "generated_at": "2026-07-24T09:49:03.494823+00:00",
+  "code_version": "5d0928ca0b5dbe6b6d336b5bdaff3cbc63c25aa8",
+  "snapshot_id": "8981175f06e1f095",
   "lakehouse_root": "/home/nixos/workspace/TradePilot/data/lakehouse",
   "root_code": "AU.SHF",
+  "continuous_contract_sha256": "6c62030127b899f17212451ab5530be9baf24c1492663f7ccd3451a335a1f684",
   "decision": "accept",
   "decision_reasons": [
     "meets fixed Stage 3 quality-card thresholds"
