@@ -1,8 +1,8 @@
 # TradePilot 商品期货阶段 3：I.DCE 单品种质量卡
 
-Generated at: `2026-07-24T06:09:43.370633+00:00`
-Code version: `ea10455f0834aba1fb62a317d96d77f6306bcfcd-dirty`
-Snapshot id: `143ece803ccfb73e`
+Generated at: `2026-07-24T07:46:54.074230+00:00`
+Code version: `0e899f570a8796f015f3ab0f1980928681390da2-dirty`
+Snapshot id: `1d1397180a0c5f87`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 
 ## Scope

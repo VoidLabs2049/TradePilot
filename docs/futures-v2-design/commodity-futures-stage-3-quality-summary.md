@@ -1,6 +1,6 @@
 # TradePilot 商品期货阶段 3：非黄金候选质量汇总
 
-Generated at: `2026-07-24T06:09:56.029808+00:00`
+Generated at: `2026-07-24T07:47:07.096787+00:00`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 
 ## Scope

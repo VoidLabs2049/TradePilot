@@ -1,8 +1,8 @@
 # TradePilot 商品期货阶段 3：SC.INE 单品种质量卡
 
-Generated at: `2026-07-24T06:09:52.898666+00:00`
-Code version: `ea10455f0834aba1fb62a317d96d77f6306bcfcd-dirty`
-Snapshot id: `326b8d2f61d3af6f`
+Generated at: `2026-07-24T07:47:03.811213+00:00`
+Code version: `0e899f570a8796f015f3ab0f1980928681390da2-dirty`
+Snapshot id: `2354f72ecbfd20ea`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 
 ## Scope

@@ -1,8 +1,8 @@
 # TradePilot 商品期货阶段 2：AL.SHF 连续合约构建报告
 
-Generated at: `2026-07-24T06:09:29.407245+00:00`
-Code version: `ea10455f0834aba1fb62a317d96d77f6306bcfcd-dirty`
-Snapshot id: `bfd25bb4d4e672ad`
+Generated at: `2026-07-24T07:46:41.101208+00:00`
+Code version: `0e899f570a8796f015f3ab0f1980928681390da2-dirty`
+Snapshot id: `ba8cd989e24898a9`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 Output path: `/home/nixos/workspace/TradePilot/data/lakehouse/derived/derived.futures_continuous_contract/AL.SHF/part-00000.parquet`
 

@@ -1,8 +1,8 @@
 # TradePilot 商品期货阶段 2：I.DCE 连续合约构建报告
 
-Generated at: `2026-07-24T06:09:42.454098+00:00`
-Code version: `ea10455f0834aba1fb62a317d96d77f6306bcfcd-dirty`
-Snapshot id: `442326ee286c000a`
+Generated at: `2026-07-24T07:46:53.210616+00:00`
+Code version: `0e899f570a8796f015f3ab0f1980928681390da2-dirty`
+Snapshot id: `c368424d7127c545`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 Output path: `/home/nixos/workspace/TradePilot/data/lakehouse/derived/derived.futures_continuous_contract/I.DCE/part-00000.parquet`
 

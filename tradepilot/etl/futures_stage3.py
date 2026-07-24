@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
 import hashlib
+import math
 import subprocess
 from pathlib import Path
 
@@ -37,6 +38,44 @@ _REQUIRED_INSTRUMENT_COLUMNS = [
     "quote_unit",
 ]
 _TRADING_DAYS_PER_YEAR = 252
+_HISTORY_TABLE_HEADERS = [
+    "Root",
+    "Rows",
+    "Window",
+    "Return rows",
+    "Missing returns",
+    "Missing rate",
+    "Duplicate dates",
+]
+_ROLL_LIQUIDITY_TABLE_HEADERS = [
+    "Rolls",
+    "Abnormal roll returns",
+    "Avg holding days",
+    "Median volume",
+    "Median OI",
+    "Zero volume days",
+    "Zero OI days",
+]
+_RETURN_TABLE_HEADERS = [
+    "Ann return",
+    "Ann volatility",
+    "Max drawdown",
+    "Max daily gain",
+    "Max daily loss",
+    "Extreme days",
+]
+_INTEGER_LOT_TABLE_HEADERS = [
+    "Latest contract",
+    "Latest close",
+    "Multiplier",
+    "Trade unit",
+    "Quote unit",
+    "One-lot notional",
+    "Target notional",
+    "Nearest lots",
+    "Lot error",
+    "Lot error %",
+]
 
 
 class QualityDecision(StrEnum):
@@ -185,6 +224,7 @@ def build_quality_card(
     integer_lot_error = rounded_notional - target_notional
     return_count = len(valid_returns)
     return_missing_count = int(returns.isna().sum())
+    roll_count = int(frame["is_roll_day"].sum())
     abnormal_roll_count = int(
         roll_returns.abs().ge(abnormal_roll_return_threshold).sum()
     )
@@ -197,6 +237,8 @@ def build_quality_card(
         return_missing_count=return_missing_count,
         duplicate_trade_date_count=duplicate_trade_date_count,
         non_positive_adjusted_count=int(frame["adjusted_close"].le(0).sum()),
+        all_zero_volume=zero_volume_days == len(frame),
+        all_zero_oi=zero_oi_days == len(frame),
     )
     observe_reasons = _observe_reasons(
         abnormal_roll_count=abnormal_roll_count,
@@ -231,9 +273,9 @@ def build_quality_card(
         return_missing_count=return_missing_count,
         return_missing_rate=return_missing_count / len(frame),
         duplicate_trade_date_count=duplicate_trade_date_count,
-        roll_count=int(frame["is_roll_day"].sum()),
+        roll_count=roll_count,
         abnormal_roll_count=abnormal_roll_count,
-        average_holding_days=len(frame) / (int(frame["is_roll_day"].sum()) + 1),
+        average_holding_days=0.0 if roll_count == 0 else len(frame) / (roll_count + 1),
         median_volume=float(frame["volume"].median()),
         median_oi=float(frame["oi"].median()),
         zero_volume_days=zero_volume_days,
@@ -298,26 +340,8 @@ def render_quality_card(
     lines.append("")
     lines.extend(
         _markdown_table(
-            headers=[
-                "Root",
-                "Rows",
-                "Window",
-                "Return rows",
-                "Missing returns",
-                "Missing rate",
-                "Duplicate dates",
-            ],
-            rows=[
-                [
-                    card.root_code,
-                    str(card.row_count),
-                    f"{card.start_date.isoformat()} .. {card.end_date.isoformat()}",
-                    str(card.return_count),
-                    str(card.return_missing_count),
-                    f"{card.return_missing_rate:.4%}",
-                    str(card.duplicate_trade_date_count),
-                ]
-            ],
+            headers=_HISTORY_TABLE_HEADERS,
+            rows=[_history_table_row(card)],
         )
     )
     lines.append("")
@@ -325,26 +349,8 @@ def render_quality_card(
     lines.append("")
     lines.extend(
         _markdown_table(
-            headers=[
-                "Rolls",
-                "Abnormal roll returns",
-                "Avg holding days",
-                "Median volume",
-                "Median OI",
-                "Zero volume days",
-                "Zero OI days",
-            ],
-            rows=[
-                [
-                    str(card.roll_count),
-                    str(card.abnormal_roll_count),
-                    _number_text(card.average_holding_days),
-                    _number_text(card.median_volume),
-                    _number_text(card.median_oi),
-                    str(card.zero_volume_days),
-                    str(card.zero_oi_days),
-                ]
-            ],
+            headers=_ROLL_LIQUIDITY_TABLE_HEADERS,
+            rows=[_roll_liquidity_table_row(card)],
         )
     )
     lines.append("")
@@ -352,24 +358,8 @@ def render_quality_card(
     lines.append("")
     lines.extend(
         _markdown_table(
-            headers=[
-                "Ann return",
-                "Ann volatility",
-                "Max drawdown",
-                "Max daily gain",
-                "Max daily loss",
-                "Extreme days",
-            ],
-            rows=[
-                [
-                    f"{card.annualized_return:.4%}",
-                    f"{card.annualized_volatility:.4%}",
-                    f"{card.max_drawdown:.4%}",
-                    f"{card.max_daily_gain:.4%}",
-                    f"{card.max_daily_loss:.4%}",
-                    str(card.extreme_day_count),
-                ]
-            ],
+            headers=_RETURN_TABLE_HEADERS,
+            rows=[_return_table_row(card)],
         )
     )
     lines.append("")
@@ -377,32 +367,8 @@ def render_quality_card(
     lines.append("")
     lines.extend(
         _markdown_table(
-            headers=[
-                "Latest contract",
-                "Latest close",
-                "Multiplier",
-                "Trade unit",
-                "Quote unit",
-                "One-lot notional",
-                "Target notional",
-                "Nearest lots",
-                "Lot error",
-                "Lot error %",
-            ],
-            rows=[
-                [
-                    card.latest_contract,
-                    _number_text(card.latest_close),
-                    _number_text(card.multiplier),
-                    card.trade_unit,
-                    card.quote_unit,
-                    _number_text(card.one_lot_notional),
-                    _number_text(card.target_notional),
-                    str(card.nearest_lots),
-                    _number_text(card.integer_lot_error),
-                    f"{card.integer_lot_error_pct:.4%}",
-                ]
-            ],
+            headers=_INTEGER_LOT_TABLE_HEADERS,
+            rows=[_integer_lot_table_row(card)],
         )
     )
     lines.append("")
@@ -462,18 +428,21 @@ def _validate_continuous_frame(*, frame: pd.DataFrame, root_code: str) -> None:
         raise ValueError(f"continuous contract {root_code} is empty")
     if not frame["root_symbol"].eq(root_code).all():
         raise ValueError(f"continuous contract {root_code} has mixed root_symbol rows")
-    core_columns = [
+    required_full_columns = [
         "trade_date",
         "raw_close",
         "adjusted_close",
-        "continuous_return",
         "volume",
         "oi",
     ]
-    if frame[core_columns].iloc[1:].isna().any(axis=None):
+    if frame[required_full_columns].isna().any(axis=None):
+        raise ValueError(f"continuous contract {root_code} has missing core fields")
+    if frame["continuous_return"].iloc[1:].isna().any():
         raise ValueError(f"continuous contract {root_code} has missing core fields")
     if frame[["raw_close", "adjusted_close"]].le(0).any(axis=None):
         raise ValueError(f"continuous contract {root_code} has non-positive prices")
+    if frame[["volume", "oi"]].lt(0).any(axis=None):
+        raise ValueError(f"continuous contract {root_code} has negative volume/oi")
 
 
 def _load_normalized_dataset(
@@ -556,6 +525,8 @@ def _reject_reasons(
     return_missing_count: int,
     duplicate_trade_date_count: int,
     non_positive_adjusted_count: int,
+    all_zero_volume: bool,
+    all_zero_oi: bool,
 ) -> list[str]:
     """Return blocking Stage 3 quality-card reasons."""
 
@@ -572,6 +543,10 @@ def _reject_reasons(
         reasons.append(
             f"non-positive adjusted_close rows: {non_positive_adjusted_count}"
         )
+    if all_zero_volume:
+        reasons.append("volume is zero for the full sample")
+    if all_zero_oi:
+        reasons.append("OI is zero for the full sample")
     return reasons
 
 
@@ -603,7 +578,7 @@ def _annualized_return(valid_returns: pd.Series) -> float:
         return 0.0
     total_return = float((1 + valid_returns).prod())
     if total_return <= 0:
-        return -1.0
+        return math.nan
     return total_return ** (_TRADING_DAYS_PER_YEAR / len(valid_returns)) - 1
 
 
@@ -653,6 +628,64 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _history_table_row(card: FuturesQualityCard) -> list[str]:
+    """Return the history table row for one quality card."""
+
+    return [
+        card.root_code,
+        str(card.row_count),
+        f"{card.start_date.isoformat()} .. {card.end_date.isoformat()}",
+        str(card.return_count),
+        str(card.return_missing_count),
+        f"{card.return_missing_rate:.4%}",
+        str(card.duplicate_trade_date_count),
+    ]
+
+
+def _roll_liquidity_table_row(card: FuturesQualityCard) -> list[str]:
+    """Return the roll and liquidity table row for one quality card."""
+
+    return [
+        str(card.roll_count),
+        str(card.abnormal_roll_count),
+        _number_text(card.average_holding_days),
+        _number_text(card.median_volume),
+        _number_text(card.median_oi),
+        str(card.zero_volume_days),
+        str(card.zero_oi_days),
+    ]
+
+
+def _return_table_row(card: FuturesQualityCard) -> list[str]:
+    """Return the return and drawdown table row for one quality card."""
+
+    return [
+        _percent_text(card.annualized_return),
+        _percent_text(card.annualized_volatility),
+        _percent_text(card.max_drawdown),
+        _percent_text(card.max_daily_gain),
+        _percent_text(card.max_daily_loss),
+        str(card.extreme_day_count),
+    ]
+
+
+def _integer_lot_table_row(card: FuturesQualityCard) -> list[str]:
+    """Return the integer-lot sizing table row for one quality card."""
+
+    return [
+        card.latest_contract,
+        _number_text(card.latest_close),
+        _number_text(card.multiplier),
+        card.trade_unit,
+        card.quote_unit,
+        _number_text(card.one_lot_notional),
+        _number_text(card.target_notional),
+        str(card.nearest_lots),
+        _number_text(card.integer_lot_error),
+        _percent_text(card.integer_lot_error_pct),
+    ]
+
+
 def _markdown_table(headers: list[str], rows: list[list[str]]) -> list[str]:
     """Render a small markdown table."""
 
@@ -673,6 +706,14 @@ def _number_text(value: float) -> str:
     if float(value).is_integer():
         return str(int(value))
     return f"{value:.6g}"
+
+
+def _percent_text(value: float) -> str:
+    """Format a decimal number as percentage text."""
+
+    if math.isnan(value):
+        return "NaN"
+    return f"{value:.4%}"
 
 
 def _git_commit() -> str | None:

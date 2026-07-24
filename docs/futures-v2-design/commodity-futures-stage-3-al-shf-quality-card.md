@@ -1,8 +1,8 @@
 # TradePilot 商品期货阶段 3：AL.SHF 单品种质量卡
 
-Generated at: `2026-07-24T06:09:30.500199+00:00`
-Code version: `ea10455f0834aba1fb62a317d96d77f6306bcfcd-dirty`
-Snapshot id: `e6c11addb2a1fd23`
+Generated at: `2026-07-24T07:46:42.247613+00:00`
+Code version: `0e899f570a8796f015f3ab0f1980928681390da2-dirty`
+Snapshot id: `288fd6d553195f16`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 
 ## Scope

@@ -1,8 +1,8 @@
 # TradePilot 商品期货阶段 2：SC.INE 连续合约构建报告
 
-Generated at: `2026-07-24T06:09:51.980836+00:00`
-Code version: `ea10455f0834aba1fb62a317d96d77f6306bcfcd-dirty`
-Snapshot id: `ea2aec17a0ad9ce9`
+Generated at: `2026-07-24T07:47:02.891035+00:00`
+Code version: `0e899f570a8796f015f3ab0f1980928681390da2-dirty`
+Snapshot id: `1876043416ca96f0`
 Lakehouse root: `/home/nixos/workspace/TradePilot/data/lakehouse`
 Output path: `/home/nixos/workspace/TradePilot/data/lakehouse/derived/derived.futures_continuous_contract/SC.INE/part-00000.parquet`
 

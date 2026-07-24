@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -12,6 +13,7 @@ from click.testing import CliRunner
 
 from tradepilot.etl.futures_stage3 import (
     QualityDecision,
+    _annualized_return,
     build_quality_card,
     main,
     render_quality_card,
@@ -101,6 +103,53 @@ class FuturesStage3Tests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing core fields"):
                 build_quality_card(lakehouse_root=lakehouse_root)
 
+    def test_rejects_first_row_missing_price_or_liquidity(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage3_fixture(lakehouse_root, first_raw_close_missing=True)
+
+            with self.assertRaisesRegex(ValueError, "missing core fields"):
+                build_quality_card(lakehouse_root=lakehouse_root)
+
+    def test_rejects_negative_volume_or_oi(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage3_fixture(lakehouse_root, negative_volume=True)
+
+            with self.assertRaisesRegex(ValueError, "negative volume/oi"):
+                build_quality_card(lakehouse_root=lakehouse_root)
+
+    def test_full_zero_volume_or_oi_rejects_card(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage3_fixture(lakehouse_root, zero_volume=True)
+
+            card = build_quality_card(
+                lakehouse_root=lakehouse_root,
+                min_return_rows=4,
+            )
+
+        self.assertEqual(card.decision, QualityDecision.REJECT)
+        self.assertIn("volume is zero for the full sample", card.decision_reasons)
+
+    def test_no_roll_average_holding_days_is_zero(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            lakehouse_root = Path(temp_dir) / "lakehouse"
+            _write_stage3_fixture(lakehouse_root, no_roll=True)
+
+            card = build_quality_card(
+                lakehouse_root=lakehouse_root,
+                min_return_rows=4,
+            )
+
+        self.assertEqual(card.roll_count, 0)
+        self.assertEqual(card.average_holding_days, 0.0)
+
+    def test_annualized_return_returns_nan_for_wiped_out_series(self) -> None:
+        result = _annualized_return(pd.Series([0.01, -1.0]))
+
+        self.assertTrue(math.isnan(result))
+
     def test_rejects_conflicting_instrument_metadata(self) -> None:
         with TemporaryDirectory() as temp_dir:
             lakehouse_root = Path(temp_dir) / "lakehouse"
@@ -116,6 +165,10 @@ def _write_stage3_fixture(
     lakehouse_root: Path,
     *,
     missing_return: bool = False,
+    first_raw_close_missing: bool = False,
+    negative_volume: bool = False,
+    zero_volume: bool = False,
+    no_roll: bool = False,
     duplicate_instrument: bool = False,
 ) -> None:
     """Write a minimal Stage 2 derived frame and instrument metadata."""
@@ -131,24 +184,37 @@ def _write_stage3_fixture(
     returns = [pd.NA, 0.01, 0.009900990099, 0.009803921569, -0.004854368932, 0.01]
     if missing_return:
         returns[3] = pd.NA
+    active_contracts = [
+        "M2501.DCE",
+        "M2501.DCE",
+        "M2501.DCE",
+        "M2505.DCE",
+        "M2505.DCE",
+        "M2505.DCE",
+    ]
+    roll_days = [False, False, False, True, False, False]
+    if no_roll:
+        active_contracts = ["M2505.DCE"] * len(dates)
+        roll_days = [False] * len(dates)
+    raw_close = [1000.0, 1010.0, 1020.0, 1030.0, 1040.0, 1050.0]
+    if first_raw_close_missing:
+        raw_close[0] = pd.NA
+    volume = [1000.0, 1100.0, 1200.0, 1300.0, 1400.0, 1500.0]
+    if negative_volume:
+        volume[0] = -1.0
+    if zero_volume:
+        volume = [0.0] * len(dates)
     frame = pd.DataFrame(
         {
             "trade_date": dates,
             "root_symbol": ["M.DCE"] * len(dates),
-            "active_contract": [
-                "M2501.DCE",
-                "M2501.DCE",
-                "M2501.DCE",
-                "M2505.DCE",
-                "M2505.DCE",
-                "M2505.DCE",
-            ],
-            "raw_close": [1000.0, 1010.0, 1020.0, 1030.0, 1040.0, 1050.0],
+            "active_contract": active_contracts,
+            "raw_close": raw_close,
             "adjusted_close": [1000.0, 1010.0, 1020.0, 1030.0, 1025.0, 1035.25],
             "continuous_return": returns,
-            "volume": [1000.0, 1100.0, 1200.0, 1300.0, 1400.0, 1500.0],
+            "volume": volume,
             "oi": [2000.0, 2100.0, 2200.0, 2300.0, 2400.0, 2500.0],
-            "is_roll_day": [False, False, False, True, False, False],
+            "is_roll_day": roll_days,
         }
     )
     _write_parquet(
